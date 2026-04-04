@@ -48,6 +48,14 @@ _PLAINTEXT_COT_HEADER = re.compile(
 )
 
 
+_IM_PLANNING_VERB = re.compile(
+    r"(?is)^i['\u2019]?m\s+"
+    r"(?:refining|considering|trying|thinking|working|looking|going|noting|weighing|"
+    r"deciding|planning|attempting|figuring|drafting|preparing|answering|processing|"
+    r"reflecting|brainstorming|structuring|organizing|organising)\b"
+)
+
+
 def _line_looks_like_cot_continuation(line: str) -> bool:
     s = line.strip()
     if not s:
@@ -57,8 +65,19 @@ def _line_looks_like_cot_continuation(line: str) -> bool:
     if re.match(r"^[\-*•]\s", s):
         return True
     low = s.lower()
+    if _IM_PLANNING_VERB.match(s):
+        return True
     if low.startswith(
         (
+            "i need to ",
+            "i should ",
+            "i'll try",
+            "i will try",
+            "i want to ",
+            "first, ",
+            "first i ",
+            "the user ",
+            "this question ",
             "drafting",
             "establish",
             "determine",
@@ -83,6 +102,50 @@ def _line_looks_like_cot_continuation(line: str) -> bool:
     if s.endswith(":") and len(s) < 80 and " " in s:
         return True
     return False
+
+
+def visible_reply_looks_truncated_stub(s: str) -> bool:
+    """True when user-visible text is almost certainly incomplete (parser or stop mid-clause)."""
+    t = (s or "").strip()
+    if not t:
+        return True
+    if re.match(r"(?is)^i['\u2019]?m\s*$", t):
+        return True
+    if re.match(r"(?is)^i\s+am\s*$", t):
+        return True
+    return False
+
+
+def visible_reply_looks_abruptly_cut(s: str) -> bool:
+    """
+    Heuristic: reply probably hit max_tokens mid-sentence (e.g. ends with ``? I`` before ``'m``).
+    """
+    t = (s or "").rstrip()
+    if len(t) < 30:
+        return False
+    if t[-1] in (".", "!", "?", "…", '"', "'", ")", "]"):
+        return False
+    # Common cut: ``… on me? I`` (next tokens would be ``'m …``)
+    if re.search(r"[.!?:]\s+I\s*$", t):
+        return True
+    return False
+
+
+def join_continuation_fragment(partial: str, extra: str) -> str:
+    """Join first completion + continuation without spurious spaces (e.g. ``I`` + ``'m …``)."""
+    p = (partial or "").rstrip()
+    e = (extra or "").lstrip()
+    if not e:
+        return p
+    if not p:
+        return e
+    if p[-1].isspace():
+        return p + e
+    if e[0].isspace():
+        return p + e
+    if p[-1].isalnum() and e[0].isalnum():
+        return p + " " + e
+    return p + e
 
 
 def separate_plaintext_chain_of_thought(raw: str) -> tuple[str, str]:
@@ -401,6 +464,8 @@ def stringify_content_blocks(blocks: list[dict[str, Any]]) -> str:
             out.append(str(b.get("text", "")))
         elif t == "image_url":
             out.append(IMAGE_TOKEN)
+        elif t == "input_audio":
+            out.append(AUDIO_TOKEN)
         else:
             out.append(str(b))
     return "\n".join(out)
@@ -412,3 +477,28 @@ def estimate_tokens_approx(text: str) -> int:
 
 def new_tool_call_id() -> str:
     return f"call_{uuid.uuid4().hex[:12]}"
+
+
+def format_tool_declarations_block(openai_style_tools: list[dict[str, Any]]) -> str:
+    """
+    Gemma 4 native tool declarations embedded in the system prompt.
+    Each tool is one JSON blob wrapped in <|tool> ... <tool|>.
+    """
+    if not openai_style_tools:
+        return ""
+    parts: list[str] = []
+    for t in openai_style_tools:
+        fn = t.get("function") or {}
+        decl = {
+            "name": fn.get("name", ""),
+            "description": fn.get("description", ""),
+            "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+        }
+        parts.append(f"{TOOL_DECL_START}{json.dumps(decl, ensure_ascii=False)}{TOOL_DECL_END}")
+    return "\n".join(parts)
+
+
+def format_tool_response_token(name: str, content: str) -> str:
+    """Literal tool result channel for logging or manual transcript assembly."""
+    body = json.dumps({"name": name, "content": content}, ensure_ascii=False)
+    return f"{TOOL_RESPONSE_START}{body}{TOOL_RESPONSE_END}"

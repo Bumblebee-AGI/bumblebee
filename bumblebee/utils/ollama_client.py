@@ -51,8 +51,14 @@ class OllamaClient:
         return self._session
 
     async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
+        s = self._session
+        self._session = None
+        if s is not None and not s.closed:
+            try:
+                await s.close()
+            except BaseException:
+                pass
+        await asyncio.sleep(0)
 
     async def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         session = await self._session_get()

@@ -9,10 +9,9 @@ Bumblebee is not an agentic task runner. It does not complete tasks on your beha
 - Python 3.11+
 - [Ollama](https://ollama.com) with at least:
   ```bash
-  ollama pull gemma4:e4b        # chat + (by default) narrative/personality/evolution
+  ollama pull gemma4:26b       # chat (reflex + deliberate), narrative, personality, evolution
   ollama pull nomic-embed-text  # memory similarity (small; separate from Gemma)
   ```
-  Optional later: `gemma4:26b` and set `models.deliberate` in `configs/default.yaml` to that name if you want a heavier “mind” for synthesis only.
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 
 ## Install
@@ -24,7 +23,7 @@ uv sync
 # or: pip install -e ".[dev]"
 ```
 
-Harness defaults live only in `configs/default.yaml` (not the repo root). Entity definitions go in `configs/entities/<name>.yaml` (see `canary` and `example`). **`models.deliberate`** there is used for narrative / compiled personality / evolution; it defaults to **`gemma4:e4b`** so a single Gemma pull can cover everything. **`models.embedding`** is still **`nomic-embed-text`** for vector recall (not a chat model).
+Harness defaults live only in `configs/default.yaml` (not the repo root). Entity definitions go in `configs/entities/<name>.yaml` (see `canary` and `example`). **`models.reflex`** and **`models.deliberate`** default to **`gemma4:26b`** (reflex uses a smaller max token budget but the same weights). **`models.embedding`** is **`nomic-embed-text`** for vector recall (not a chat model).
 
 ## Usage
 

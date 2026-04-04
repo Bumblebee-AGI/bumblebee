@@ -1,9 +1,10 @@
-"""26B deliberate path with thinking + optional tools."""
+"""26B deliberate path with thinking + multi-step tools."""
 
 from __future__ import annotations
 
 import json
-from typing import Any, Awaitable, Callable
+from dataclasses import dataclass, field, replace
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
 from bumblebee.config import EntityConfig
 from bumblebee.cognition import gemma
@@ -11,18 +12,31 @@ from bumblebee.models import Input
 from bumblebee.utils.ollama_client import ChatCompletionResult, OllamaClient, ToolCallSpec
 
 
+@dataclass
+class DeliberateStreamEvent:
+    """One slice of a multi-round deliberate run (tool loop)."""
+
+    kind: Literal["intermediate", "final"]
+    display_text: str = ""
+    """Visible user-directed text from the model for this slice (intermediate or final)."""
+    history_entries: list[dict[str, Any]] = field(default_factory=list)
+    """Assistant + tool + follow-up messages to merge into rolling history (intermediate only)."""
+    merged_thinking: str | None = None
+    """CoT / reasoning accumulated across all model calls in this perceive cycle (final only)."""
+    last_result: ChatCompletionResult | None = None
+    """Raw completion for the final model call (truncation extension, metadata)."""
+
+
 class DeliberateCognition:
     def __init__(self, entity: EntityConfig, client: OllamaClient) -> None:
         self.entity = entity
         self.client = client
 
-    def _build_base_messages(
+    def _build_messages(
         self,
         system_prompt: str,
         messages: list[dict[str, Any]],
-        user_payload: dict[str, Any],
     ) -> list[dict[str, Any]]:
-        h = self.entity.harness.cognition
         msgs: list[dict[str, Any]] = [{"role": "system", "content": system_prompt[:12000]}]
         for m in messages:
             role = m.get("role", "user")
@@ -38,40 +52,60 @@ class DeliberateCognition:
                 entry["tool_call_id"] = m.get("tool_call_id", "")
                 entry["name"] = m.get("name", "")
             msgs.append(entry)
-        msgs.append(user_payload)
         return msgs
 
-    async def respond(
+    @staticmethod
+    def _assistant_content_for_message(res: ChatCompletionResult) -> str:
+        return (
+            res.raw_assistant_text
+            if (res.raw_assistant_text or "").strip()
+            else (res.content or "")
+        )
+
+    async def iter_responses(
         self,
-        inp: Input,
+        _inp: Input,
         system_prompt: str,
         messages: list[dict[str, Any]],
         *,
         tools: list[dict[str, Any]] | None = None,
         tool_executor: Callable[[ToolCallSpec], Awaitable[str]] | None = None,
-    ) -> ChatCompletionResult:
+    ) -> AsyncIterator[DeliberateStreamEvent]:
+        """Multi-round tool loop; yields intermediate user-visible text before tools run."""
         h = self.entity.harness.cognition
-        user_payload: dict[str, Any] = {"role": "user", "content": inp.text[:8000]}
-        msgs = self._build_base_messages(system_prompt, messages, user_payload)
+        msgs = self._build_messages(system_prompt, messages)
+        thinking_acc: list[str] = []
+        last: ChatCompletionResult | None = None
 
-        res = await self.client.chat_completion(
-            self.entity.cognition.deliberate_model,
-            msgs,
-            tools=tools,
-            temperature=h.temperature,
-            max_tokens=h.deliberate_max_tokens,
-            think=h.thinking_mode,
-        )
+        for _ in range(8):
+            res = await self.client.chat_completion(
+                self.entity.cognition.deliberate_model,
+                msgs,
+                tools=tools,
+                temperature=h.temperature,
+                max_tokens=h.deliberate_max_tokens,
+                think=h.thinking_mode,
+            )
+            last = res
+            if res.thinking:
+                thinking_acc.append(res.thinking)
 
-        if tool_executor and res.tool_calls:
+            if not tool_executor or not res.tool_calls:
+                merged = "\n\n".join(thinking_acc) if thinking_acc else None
+                yield DeliberateStreamEvent(
+                    kind="final",
+                    display_text=(res.content or "").strip(),
+                    history_entries=[],
+                    merged_thinking=merged,
+                    last_result=res,
+                )
+                return
+
             for tc in res.tool_calls:
                 if not tc.id:
                     tc.id = gemma.new_tool_call_id()
-            assistant_content = (
-                res.raw_assistant_text
-                if res.raw_assistant_text.strip()
-                else (res.content or "")
-            )
+
+            assistant_content = self._assistant_content_for_message(res)
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
                 "content": assistant_content,
@@ -100,17 +134,48 @@ class DeliberateCognition:
                 )
             follow_user = {
                 "role": "user",
-                "content": "Continue: integrate tool results into your reply for the user.",
+                "content": (
+                    "Continue: integrate tool results into your reply for the person you're talking to."
+                ),
             }
-            msgs2 = msgs + [assistant_msg] + tool_msgs + [follow_user]
-            res2 = await self.client.chat_completion(
-                self.entity.cognition.deliberate_model,
-                msgs2,
-                tools=tools,
-                temperature=h.temperature,
-                max_tokens=min(h.deliberate_max_tokens, 2048),
-                think=h.thinking_mode,
+            msgs = msgs + [assistant_msg] + tool_msgs + [follow_user]
+
+            yield DeliberateStreamEvent(
+                kind="intermediate",
+                display_text=(res.content or "").strip(),
+                history_entries=[assistant_msg] + tool_msgs + [follow_user],
             )
-            if isinstance(res2, ChatCompletionResult):
-                return res2
-        return res
+
+        merged = "\n\n".join(thinking_acc) if thinking_acc else None
+        yield DeliberateStreamEvent(
+            kind="final",
+            display_text=(last.content or "").strip() if last else "",
+            history_entries=[],
+            merged_thinking=merged,
+            last_result=last or ChatCompletionResult(content=""),
+        )
+
+    async def respond(
+        self,
+        _inp: Input,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_executor: Callable[[ToolCallSpec], Awaitable[str]] | None = None,
+    ) -> ChatCompletionResult:
+        """Aggregate a full deliberate run (single return value)."""
+        final_ev: DeliberateStreamEvent | None = None
+        async for ev in self.iter_responses(
+            _inp,
+            system_prompt,
+            messages,
+            tools=tools,
+            tool_executor=tool_executor,
+        ):
+            if ev.kind == "final":
+                final_ev = ev
+        if not final_ev or not final_ev.last_result:
+            return ChatCompletionResult(content="")
+        r = final_ev.last_result
+        return replace(r, thinking=final_ev.merged_thinking)

@@ -61,7 +61,9 @@ def format_help_html(entity_name: str) -> str:
         "/status — mood, stack, memory snapshot\n"
         "/memories — recent episode summaries\n"
         "/feelings — how I'm doing inside\n"
-        "/reset — clear <i>conversation</i> history (not your memories DB)\n\n"
+        "/reset — clear <i>conversation</i> turns only (SQLite memories unchanged).\n"
+        "Full wipe (episodes, people, beliefs, etc.): run "
+        "<code>bumblebee wipe &lt;entity&gt; --yes</code> on the host.\n\n"
         "Send a photo with an optional caption; I'll look with the model's eyes."
     )
 
@@ -98,13 +100,10 @@ def format_commands_page(page: int, *, per_page: int = 5) -> tuple[str, int, int
 
 
 async def build_status_html(entity: "Entity", app_version: str) -> str:
-    db = await entity.store.connect()
-    try:
+    async with entity.store.session() as db:
         n_ep = await entity.store.count_episodes(db)
         n_people = await entity.store.count_relationships(db)
         first_ts = await entity.store.min_episode_timestamp(db)
-    finally:
-        await db.close()
     cfg = entity.config
     st = entity.emotions.get_state()
     awake = compute_awake_summary(

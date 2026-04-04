@@ -16,6 +16,11 @@ class Platform(ABC):
         ...
 
     @abstractmethod
+    async def send_tool_activity(self, description: str) -> None:
+        """Harness-only status line before an external tool runs (web, file, MCP)."""
+        ...
+
+    @abstractmethod
     async def on_message(self, callback: Callable[..., Any]) -> None:
         ...
 

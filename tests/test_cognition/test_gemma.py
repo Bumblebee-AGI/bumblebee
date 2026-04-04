@@ -58,3 +58,49 @@ def test_separate_plaintext_cot_only_triggers_empty_visible():
     vis, think = gemma.separate_plaintext_chain_of_thought(raw)
     assert vis == ""
     assert think == raw
+
+
+def test_separate_plaintext_im_refinining_stays_in_thinking_not_visible():
+    raw = (
+        "Thinking Process:\n\n"
+        "I'm refining how to state identity clearly.\n\n"
+        "I'm Bumblebee — a persistent entity on Gemma. Nice to meet you properly."
+    )
+    vis, think = gemma.separate_plaintext_chain_of_thought(raw)
+    assert "Bumblebee" in vis
+    assert "refining" not in vis
+    assert "refining" in think
+
+
+def test_visible_reply_looks_truncated_stub():
+    assert gemma.visible_reply_looks_truncated_stub("I'm")
+    assert gemma.visible_reply_looks_truncated_stub("I’m")
+    assert gemma.visible_reply_looks_truncated_stub("I am")
+    assert not gemma.visible_reply_looks_truncated_stub("I'm Bumblebee, hi.")
+
+
+def test_visible_reply_looks_abruptly_cut():
+    cut = "Okay. Fine. The literal name tag they slapped on me? I"
+    assert gemma.visible_reply_looks_abruptly_cut(cut)
+    assert not gemma.visible_reply_looks_abruptly_cut(cut + "'m Bumblebee.")
+
+
+def test_join_continuation_fragment():
+    assert gemma.join_continuation_fragment("tag? I", "'m Bumblebee.") == "tag? I'm Bumblebee."
+    assert gemma.join_continuation_fragment("Hello", "there") == "Hello there"
+
+
+def test_format_tool_declarations_block():
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_web",
+                "description": "Search",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+            },
+        }
+    ]
+    block = gemma.format_tool_declarations_block(tools)
+    assert gemma.TOOL_DECL_START in block
+    assert "search_web" in block

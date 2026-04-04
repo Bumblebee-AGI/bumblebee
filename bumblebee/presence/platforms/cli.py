@@ -29,9 +29,11 @@ from bumblebee.presence.platforms.cli_render import (
     render_feelings_introspection,
     render_memories_introspection,
     render_shutdown,
+    render_side_panel,
     render_startup,
     STYLE_ENTITY,
     STYLE_VALUE,
+    STYLE_WHISPER,
 )
 
 
@@ -177,7 +179,10 @@ class CLIPlatform(Platform):
         await self._before_generation(estimated_reply_len=48)
         reply = ""
         try:
-            reply = await self.entity.cli_opening(stream=self.stream_delta)
+            reply = await self.entity.cli_opening(
+                stream=self.stream_delta,
+                reply_platform=self,
+            )
         except Exception as e:
             await self._cancel_thinking()
             render_error(self.console, str(e))
@@ -189,6 +194,13 @@ class CLIPlatform(Platform):
         body = Text(content, style=STYLE_VALUE)
         self.console.print(prefix, body, sep="", end="")
         self.console.print()
+
+    async def send_tool_activity(self, description: str) -> None:
+        t = (description or "").strip()
+        if not t:
+            return
+        await self._cancel_thinking()
+        self.console.print(Text(f"   {t}", style=STYLE_WHISPER), highlight=False)
 
     async def on_message(self, callback: Callable[..., Any]) -> None:
         self._cb = callback
@@ -268,6 +280,8 @@ class CLIPlatform(Platform):
         self._emitted_this_turn = False
         self._chunk_acc = ""
         self._turn_visible = ""
+        if self.immersive:
+            render_side_panel(self.console, self.entity)
         self._sync_toolbar_state()
         self._invalidate_app()
 

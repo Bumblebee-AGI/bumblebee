@@ -69,11 +69,8 @@ class ConsolidationJob:
         n_every = max(1, self._cfg.harness.memory.narrative_every_n_consolidations)
         if not entity_facade or self._run_count % n_every != 0:
             return
-        db = await entity_facade.store.connect()
-        try:
+        async with entity_facade.store.session() as db:
             try:
                 await entity_facade.run_narrative_cycle(db)
             except Exception as e:
                 log.warning("narrative_cycle_failed", module="memory", error=str(e))
-        finally:
-            await db.close()

@@ -45,6 +45,19 @@ class DriveSystem:
             self._d.comfort,
         ]
 
+    def recalibrate_rates_from_traits(self) -> None:
+        t = self.entity.personality.core_traits
+        self._d.curiosity.growth_rate = 0.015 + 0.04 * t.get("curiosity", 0.5)
+        self._d.connection.growth_rate = 0.012 + 0.03 * t.get("warmth", 0.5)
+        self._d.expression.growth_rate = 0.01 + 0.035 * t.get("openness", 0.5)
+        self._d.autonomy.growth_rate = 0.008 + 0.03 * t.get("assertiveness", 0.5)
+        self._d.comfort.growth_rate = 0.01 + 0.04 * t.get("neuroticism", 0.3)
+
+    def reset_levels(self) -> None:
+        for d in self.all_drives():
+            d.level = 0.0
+        self._last_initiative = 0.0
+
     def tick(self, silence_seconds: float = 0.0) -> list[Drive]:
         """Grow drives on heartbeat; return drives that crossed threshold."""
         crossed: list[Drive] = []

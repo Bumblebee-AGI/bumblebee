@@ -39,16 +39,16 @@ class OllamaSettings:
 
 @dataclass
 class ModelSettings:
-    reflex: str = "gemma4:e4b"
-    deliberate: str = "gemma4:e4b"
+    reflex: str = "gemma4:26b"
+    deliberate: str = "gemma4:26b"
     embedding: str = "nomic-embed-text"
 
 
 @dataclass
 class CognitionSettings:
     thinking_mode: bool = True
-    temperature: float = 0.8
-    reflex_max_tokens: int = 256
+    temperature: float = 0.75
+    reflex_max_tokens: int = 512
     deliberate_max_tokens: int = 2048
     thinking_budget: int = 4096
     max_context_tokens: int = 32768
@@ -59,7 +59,7 @@ class CognitionSettings:
 @dataclass
 class IdentityHarnessSettings:
     emotion_decay_rate: float = 0.001
-    drive_tick_interval: int = 60
+    drive_tick_interval: int = 120
     evolution_interval: int = 100
     narrative_interval: int = 500
 
@@ -68,7 +68,7 @@ class IdentityHarnessSettings:
 class MemoryHarnessSettings:
     database_path: str = "~/.bumblebee/entities/{entity_name}/memory.db"
     episode_significance_threshold: float = 0.3
-    consolidation_interval: int = 3600
+    consolidation_interval: int = 7200
     memory_decay_rate: float = 0.0001
     max_recall_results: int = 10
     embedding_dimensions: int = 768
@@ -79,7 +79,7 @@ class MemoryHarnessSettings:
 
 @dataclass
 class PresenceHarnessSettings:
-    heartbeat_interval: int = 60
+    heartbeat_interval: int = 120
     initiative_cooldown: int = 1800
     typing_speed_base: float = 30.0
     typing_speed_variance: float = 0.3
@@ -95,6 +95,16 @@ class LoggingSettings:
 
 
 @dataclass
+class FirecrawlSettings:
+    """Optional Firecrawl API (Bearer key in env). When set, preferred for fetch_url / search_web."""
+
+    api_key_env: str = "FIRECRAWL_API_KEY"
+    base_url: str = "https://api.firecrawl.dev/v1"
+    prefer_for_fetch: bool = True
+    prefer_for_search: bool = True
+
+
+@dataclass
 class HarnessConfig:
     ollama: OllamaSettings = field(default_factory=OllamaSettings)
     models: ModelSettings = field(default_factory=ModelSettings)
@@ -103,6 +113,7 @@ class HarnessConfig:
     memory: MemoryHarnessSettings = field(default_factory=MemoryHarnessSettings)
     presence: PresenceHarnessSettings = field(default_factory=PresenceHarnessSettings)
     logging: LoggingSettings = field(default_factory=LoggingSettings)
+    firecrawl: FirecrawlSettings = field(default_factory=FirecrawlSettings)
 
 
 @dataclass
@@ -126,7 +137,7 @@ class EntityCognition:
     reflex_model: str = ""
     deliberate_model: str = ""
     thinking_mode: bool = True
-    temperature: float = 0.8
+    temperature: float = 0.75
     max_context_tokens: int = 32768
     thinking_budget: int = 4096
 
@@ -135,6 +146,7 @@ class EntityCognition:
 class EntityPresence:
     platforms: list[dict[str, Any]] = field(default_factory=list)
     daemon: dict[str, int] = field(default_factory=dict)
+    tool_activity: bool = True
 
 
 @dataclass
@@ -149,6 +161,10 @@ class EntityConfig:
 
     def db_path(self) -> str:
         return _expand(self.harness.memory.database_path, self.name)
+
+    def knowledge_path(self) -> str:
+        """Curated knowledge markdown (optional): same directory as the entity SQLite file."""
+        return str(Path(self.db_path()).expanduser().parent / "knowledge.md")
 
     def log_path(self) -> str:
         return _expand(self.harness.logging.file, self.name)
@@ -165,6 +181,10 @@ def _merge_dict(base: dict, override: dict) -> dict:
 
 
 def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
+    fc_raw = {**FirecrawlSettings().__dict__, **(d.get("firecrawl") or {})}
+    for bkey in ("prefer_for_fetch", "prefer_for_search"):
+        if bkey in fc_raw:
+            fc_raw[bkey] = bool(fc_raw[bkey])
     return HarnessConfig(
         ollama=OllamaSettings(**{**OllamaSettings().__dict__, **d.get("ollama", {})}),
         models=ModelSettings(**{**ModelSettings().__dict__, **d.get("models", {})}),
@@ -177,6 +197,7 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
             **{**PresenceHarnessSettings().__dict__, **d.get("presence", {})}
         ),
         logging=LoggingSettings(**{**LoggingSettings().__dict__, **d.get("logging", {})}),
+        firecrawl=FirecrawlSettings(**fc_raw),
     )
 
 
@@ -192,6 +213,24 @@ def load_harness_config(path: Path | None = None) -> HarnessConfig:
 def load_entity_yaml(path: Path) -> dict[str, Any]:
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
+
+def resolve_firecrawl_settings(
+    harness: HarnessConfig,
+    entity_raw: dict[str, Any],
+) -> FirecrawlSettings:
+    """Merge harness defaults with optional top-level ``firecrawl:`` on the entity YAML."""
+    fc = harness.firecrawl
+    o = entity_raw.get("firecrawl") or {}
+    if not o:
+        return fc
+    merged = {
+        "api_key_env": str(o.get("api_key_env", fc.api_key_env)),
+        "base_url": str(o.get("base_url", fc.base_url)).rstrip("/"),
+        "prefer_for_fetch": bool(o.get("prefer_for_fetch", fc.prefer_for_fetch)),
+        "prefer_for_search": bool(o.get("prefer_for_search", fc.prefer_for_search)),
+    }
+    return FirecrawlSettings(**merged)
 
 
 def validate_traits(traits: dict[str, float]) -> None:
@@ -235,6 +274,7 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
     presence = EntityPresence(
         platforms=list(pr.get("platforms") or [{"type": "cli"}]),
         daemon=dict(pr.get("daemon") or {}),
+        tool_activity=bool(pr.get("tool_activity", True)),
     )
     return EntityConfig(
         name=name,
@@ -269,6 +309,13 @@ def validate_entity_env(entity: EntityConfig) -> list[str]:
             envk = pl.get("token_env", "TELEGRAM_TOKEN")
             if not os.environ.get(envk):
                 warnings.append(f"Telegram platform: env {envk} not set")
+    fc = resolve_firecrawl_settings(entity.harness, entity.raw)
+    if (fc.prefer_for_fetch or fc.prefer_for_search) and not (
+        os.environ.get(fc.api_key_env) or ""
+    ).strip():
+        warnings.append(
+            f"Firecrawl: env {fc.api_key_env} not set — fetch_url/search_web fall back to ddgs/aiohttp"
+        )
     return warnings
 
 

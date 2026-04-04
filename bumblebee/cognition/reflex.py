@@ -1,4 +1,4 @@
-"""Fast E4B path — minimal context."""
+"""Fast reflex path — minimal context, same model family as deliberate by default."""
 
 from __future__ import annotations
 
@@ -18,16 +18,15 @@ class ReflexCognition:
 
     async def respond(
         self,
-        inp: Input,
+        _inp: Input,
         system_prompt: str,
         recent_messages: list[dict[str, str]],
         context: ContextPackage,
     ) -> tuple[ChatCompletionResult, str]:
         h = self.entity.harness.cognition
         msgs: list[dict] = [{"role": "system", "content": system_prompt[:6000]}]
-        for m in recent_messages[-4:]:
+        for m in recent_messages[-6:]:
             msgs.append(m)
-        msgs.append({"role": "user", "content": inp.text[:4000]})
         res = await self.client.chat_completion(
             self.entity.cognition.reflex_model,
             msgs,
@@ -45,7 +44,7 @@ class ReflexCognition:
 
     async def respond_stream(
         self,
-        inp: Input,
+        _inp: Input,
         system_prompt: str,
         recent_messages: list[dict[str, str]],
         context: ContextPackage,
@@ -53,9 +52,8 @@ class ReflexCognition:
     ) -> tuple[ChatCompletionResult, str]:
         h = self.entity.harness.cognition
         msgs: list[dict] = [{"role": "system", "content": system_prompt[:6000]}]
-        for m in recent_messages[-4:]:
+        for m in recent_messages[-6:]:
             msgs.append(m)
-        msgs.append({"role": "user", "content": inp.text[:4000]})
         gen = await self.client.chat_completion(
             self.entity.cognition.reflex_model,
             msgs,

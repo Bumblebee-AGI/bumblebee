@@ -37,6 +37,9 @@ class InnerVoiceProcessor:
     def full_context(self) -> str:
         return " | ".join(list(self._buffer)[-5:])
 
+    def clear_buffer(self) -> None:
+        self._buffer.clear()
+
     def process(self, thinking: str | None, visible_reply: str) -> InnerVoiceSlice:
         t = thinking or ""
         cues = re.findall(r"\b(fear|hope|doubt|trust|curious|angry|sad|joy)\w*\b", t, re.I)

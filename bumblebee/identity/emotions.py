@@ -34,6 +34,15 @@ class EmotionEngine:
     def get_state(self) -> EmotionalState:
         return self._state
 
+    def reset_to_initial(self) -> None:
+        """Fresh mood from current YAML traits (e.g. after a full memory wipe)."""
+        self._baseline = _baseline_from_traits(self.entity)
+        self._state = EmotionalState(
+            primary=EmotionCategory.NEUTRAL,
+            intensity=0.4,
+            stability=0.85 - 0.35 * self.entity.personality.core_traits.get("neuroticism", 0.3),
+        )
+
     def apply_recall_imprints(
         self,
         imprint_episode_times: list[tuple[ImprintRecord, float]],

@@ -32,16 +32,31 @@ drives:
   initiative_cooldown: 1800
 
 cognition:
-  reflex_model: "gemma4:e4b"
-  deliberate_model: "gemma4:e4b"
+  reflex_model: "gemma4:26b"
+  deliberate_model: "gemma4:26b"
   thinking_mode: true
-  temperature: 0.8
+  temperature: 0.75
   max_context_tokens: 32768
   thinking_budget: 4096
 
+# Optional: Firecrawl API key in env (see harness default.yaml ``firecrawl.api_key_env``).
+# firecrawl:
+#   api_key_env: "FIRECRAWL_API_KEY"
+#   prefer_for_search: true
+#   prefer_for_fetch: true
+
+# Optional: MCP servers (stdio) — tools appear as mcp_<server>_<toolname> in the registry
+# mcp_servers:
+#   github:
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-github"]
+#     env:
+#       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxx"
+
 presence:
+  tool_activity: true
   platforms:
     - type: "cli"
   daemon:
-    heartbeat_interval: 60
-    memory_consolidation: 3600
+    heartbeat_interval: 120
+    memory_consolidation: 7200

@@ -1,12 +1,71 @@
-"""Gemma/OpenAI-style tool registration and execution."""
+"""Gemma/OpenAI-style tool registration, schema generation, and execution."""
 
 from __future__ import annotations
 
 import inspect
 import json
+from collections import Counter
+from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
+from bumblebee.cognition import gemma
 from bumblebee.utils.ollama_client import ToolCallSpec
+
+
+def extract_domain(url: str) -> str:
+    s = (url or "").strip()
+    if not s:
+        return ""
+    if "://" not in s:
+        s = f"https://{s}"
+    try:
+        parsed = urlparse(s)
+        host = parsed.hostname or ""
+    except ValueError:
+        return ""
+    if not host:
+        return ""
+    if host.lower().startswith("www."):
+        host = host[4:]
+    return host
+
+
+def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
+    if tool_name == "search_web":
+        return f'🔍 looking up "{args.get("query", "something")}"...'
+    if tool_name == "fetch_url":
+        domain = extract_domain(str(args.get("url", "") or ""))
+        return f"🌐 reading something on {domain}..." if domain else "🌐 reading that page..."
+    if tool_name == "read_file":
+        filename = Path(str(args.get("path", "") or "")).name
+        return f"📄 checking {filename}..."
+    if tool_name == "get_current_time":
+        return "🕐 checking the time..."
+    if tool_name == "update_knowledge":
+        action = str(args.get("action", "") or "").lower()
+        section = str(args.get("section", "") or "something")
+        emoji = {"add": "📌", "update": "✏️", "remove": "🗑️"}.get(action, "📝")
+        verb = {"add": "adding", "update": "updating", "remove": "removing"}.get(
+            action, "editing"
+        )
+        return f"{emoji} {verb} knowledge: {section}..."
+    if tool_name.startswith("mcp_"):
+        parts = tool_name.split("_", 2)
+        server = (parts[1] if len(parts) >= 2 else "mcp").lower()
+        emoji_map = {
+            "github": "🐙",
+            "spotify": "🎵",
+            "slack": "💬",
+            "notion": "📝",
+            "calendar": "📅",
+            "gmail": "📧",
+            "maps": "📍",
+            "weather": "🌤️",
+        }
+        emoji = emoji_map.get(server, "🔌")
+        return f"{emoji} asking {server}..."
+    return None
 
 
 class ToolFn:
@@ -24,7 +83,14 @@ class ToolFn:
             if pname == "self":
                 continue
             ann = p.annotation if p.annotation != inspect.Parameter.empty else str
-            props[pname] = {"type": "string" if ann is str else "string"}
+            json_type = "string"
+            if ann is int:
+                json_type = "integer"
+            elif ann is float:
+                json_type = "number"
+            elif ann is bool:
+                json_type = "boolean"
+            props[pname] = {"type": json_type}
             if p.default == inspect.Parameter.empty:
                 required.append(pname)
         return {
@@ -44,9 +110,13 @@ class ToolFn:
         }
 
 
-def tool(name: str, description: str) -> Callable[[Callable[..., Awaitable[str]]], ToolFn]:
-    def deco(fn: Callable[..., Awaitable[str]]) -> ToolFn:
-        return ToolFn(name, description, fn)
+def tool(name: str, description: str) -> Callable[[Callable[..., Awaitable[str]]], Callable[..., Awaitable[str]]]:
+    """Decorator: define an async tool; register it on a registry via ``registry.register_decorated``."""
+
+    def deco(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
+        setattr(fn, "_bumblebee_tool_name", name)
+        setattr(fn, "_bumblebee_tool_description", description)
+        return fn
 
     return deco
 
@@ -54,15 +124,56 @@ def tool(name: str, description: str) -> Callable[[Callable[..., Awaitable[str]]
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolFn] = {}
+        self._call_counts: Counter[str] = Counter()
 
     def register(self, t: ToolFn) -> None:
         self._tools[t.name] = t
 
-    def register_fn(self, name: str, description: str, fn: Callable[..., Awaitable[str]]) -> None:
-        self.register(ToolFn(name, description, fn))
+    def register_fn(
+        self,
+        name: str,
+        description: str,
+        fn: Callable[..., Awaitable[str]],
+        *,
+        parameters_schema: dict[str, Any] | None = None,
+    ) -> None:
+        t = ToolFn(name, description, fn)
+        if parameters_schema and isinstance(parameters_schema, dict):
+            t.schema = parameters_schema
+        self.register(t)
+
+    def unregister(self, name: str) -> None:
+        self._tools.pop(name, None)
+
+    def register_decorated(self, fn: Callable[..., Awaitable[str]]) -> None:
+        n = getattr(fn, "_bumblebee_tool_name", None)
+        d = getattr(fn, "_bumblebee_tool_description", None)
+        if not n or not d:
+            raise ValueError("Function missing @tool metadata")
+        self.register_fn(str(n), str(d), fn)
 
     def openai_tools(self) -> list[dict[str, Any]]:
         return [t.openai_tool() for t in self._tools.values()]
+
+    def gemma_tool_declarations(self) -> str:
+        return gemma.format_tool_declarations_block(self.openai_tools())
+
+    def system_tool_instruction_block(self) -> str:
+        """Append to system prompt: native declarations + short usage cue."""
+        decl = self.gemma_tool_declarations()
+        if not decl:
+            return ""
+        names = ", ".join(sorted(self._tools.keys()))
+        return (
+            "\n\n[Tools available to you — use when curiosity or the moment calls for it, "
+            "not as a chore for the user]\n"
+            f"You may call: {names}.\n"
+            "When you invoke a tool, wait for its result before finishing your reply.\n\n"
+            f"{decl}"
+        )
+
+    def usage_snapshot(self) -> dict[str, int]:
+        return dict(self._call_counts)
 
     async def execute(self, spec: ToolCallSpec) -> str:
         fn = self._tools.get(spec.name)
@@ -70,9 +181,16 @@ class ToolRegistry:
             return json.dumps({"error": f"unknown tool {spec.name}"})
         try:
             kwargs = dict(spec.arguments)
-            return await fn.fn(**kwargs)
+            out = await fn.fn(**kwargs)
+            self._call_counts[spec.name] += 1
+            return out
         except TypeError:
-            return await fn.fn()
+            try:
+                out = await fn.fn()
+                self._call_counts[spec.name] += 1
+                return out
+            except Exception as e:
+                return json.dumps({"error": str(e)})
         except Exception as e:
             return json.dumps({"error": str(e)})
 

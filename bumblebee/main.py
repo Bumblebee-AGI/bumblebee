@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import shutil
 import signal
+import subprocess
 from importlib import metadata
 from pathlib import Path
 
@@ -25,11 +27,24 @@ from bumblebee.presence.platforms.cli import CLIPlatform
 from bumblebee.presence.platforms.discord_platform import DiscordPlatform, token_from_config
 from bumblebee.presence.platforms.telegram_platform import TelegramPlatform
 from bumblebee.utils.log import setup_logging
-from bumblebee.utils.ollama_bootstrap import bootstrap_stack
+from bumblebee.utils.ollama_bootstrap import bootstrap_stack, shutdown_spawned_ollama
 
 
 def _async(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
+
+
+KNOWLEDGE_STARTER_TEMPLATE = """## [locked] about yourself
+write anything you want the entity to know about itself.
+(locked sections can't be edited by the entity — only by you)
+
+## [locked] about your creator
+who made you? what do you know about them?
+
+## things you care about
+topics, opinions, facts — whatever matters.
+(the entity can edit unlocked sections like this one)
+"""
 
 
 def _app_version() -> str:
@@ -74,7 +89,7 @@ def _load_repo_dotenv() -> None:
 
 
 async def _wait_until_stopped() -> None:
-    """Block until SIGINT (Ctrl+C). Works on Windows where Event().wait() alone may not unblock."""
+    """Block until SIGINT (Ctrl+C) or SIGTERM where available."""
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
 
@@ -84,23 +99,60 @@ async def _wait_until_stopped() -> None:
         except RuntimeError:
             pass
 
-    prev: object | None = None
-    used_asyncio_handler = False
+    prev_sigint: object | None = None
+    prev_sigterm: object | None = None
+    used_asyncio_sigint = False
     try:
         loop.add_signal_handler(signal.SIGINT, _schedule_stop)
-        used_asyncio_handler = True
+        used_asyncio_sigint = True
     except (NotImplementedError, RuntimeError):
-        prev = signal.signal(signal.SIGINT, _schedule_stop)
+        prev_sigint = signal.signal(signal.SIGINT, _schedule_stop)
+    if hasattr(signal, "SIGTERM"):
+        try:
+            loop.add_signal_handler(signal.SIGTERM, _schedule_stop)
+        except (NotImplementedError, RuntimeError):
+            try:
+                prev_sigterm = signal.signal(signal.SIGTERM, _schedule_stop)
+            except ValueError:
+                pass
     try:
         await stop.wait()
     finally:
-        if used_asyncio_handler:
+        if used_asyncio_sigint:
             try:
                 loop.remove_signal_handler(signal.SIGINT)
             except (NotImplementedError, RuntimeError):
                 pass
-        elif prev is not None:
-            signal.signal(signal.SIGINT, prev)
+        elif prev_sigint is not None:
+            signal.signal(signal.SIGINT, prev_sigint)
+        if hasattr(signal, "SIGTERM"):
+            try:
+                loop.remove_signal_handler(signal.SIGTERM)
+            except (NotImplementedError, RuntimeError, ValueError):
+                pass
+            if prev_sigterm is not None:
+                try:
+                    signal.signal(signal.SIGTERM, prev_sigterm)
+                except ValueError:
+                    pass
+
+
+async def _graceful_run_shutdown(daemon: PresenceDaemon, platforms: list, ent: Entity) -> None:
+    """Best-effort cleanup when the loop is cancelling (Ctrl+C); shield so close() can finish."""
+    try:
+        await asyncio.shield(daemon.stop())
+    except BaseException:
+        pass
+    for p in platforms:
+        try:
+            await asyncio.shield(p.disconnect())
+        except BaseException:
+            pass
+    try:
+        await asyncio.shield(ent.shutdown())
+    except BaseException:
+        pass
+    shutdown_spawned_ollama()
 
 
 def _prepare_ollama_cli(entity_name: str, with_ollama: bool, pull_models: bool) -> None:
@@ -148,6 +200,8 @@ def cmd_talk(entity_name: str, with_ollama: bool, pull_models: bool) -> None:
         asyncio.run(_talk(entity_name))
     except KeyboardInterrupt:
         click.echo("\nStopped.", err=True)
+    finally:
+        shutdown_spawned_ollama()
 
 
 async def _talk(entity_name: str) -> None:
@@ -164,13 +218,17 @@ async def _talk(entity_name: str) -> None:
     await cli_p.connect()
 
     async def on_inp(inp):
-        return await ent.perceive(inp, stream=cli_p.stream_delta)
+        reply, _ = await ent.perceive(inp, stream=cli_p.stream_delta, reply_platform=cli_p)
+        return reply
 
     await cli_p.on_message(on_inp)
     try:
         await cli_p.run_repl()
     finally:
-        await ent.shutdown()
+        try:
+            await asyncio.shield(ent.shutdown())
+        except BaseException:
+            pass
 
 
 @cli.command("run")
@@ -193,6 +251,8 @@ def cmd_run(entity_name: str, with_ollama: bool, pull_models: bool) -> None:
         asyncio.run(_run(entity_name))
     except KeyboardInterrupt:
         click.echo("\nStopped.", err=True)
+    finally:
+        shutdown_spawned_ollama()
 
 
 async def _run(entity_name: str) -> None:
@@ -207,7 +267,6 @@ async def _run(entity_name: str) -> None:
         ec.harness.logging.format,
     )
     ent = Entity(ec)
-    ent.register_proactive_sink(lambda m: click.echo(f"\n[{ec.name}]: {m}\n"))
 
     daemon = PresenceDaemon(ent)
 
@@ -223,7 +282,19 @@ async def _run(entity_name: str) -> None:
                 click.echo("Discord token missing; skipping Discord.", err=True)
                 continue
             chans = pl.get("channels") or []
-            discord_p = DiscordPlatform(tok, [str(c) for c in chans])
+            proactive_raw = pl.get("proactive_channel_id")
+            proactive_cid: int | None = None
+            if proactive_raw is not None:
+                try:
+                    proactive_cid = int(proactive_raw)
+                except (TypeError, ValueError):
+                    proactive_cid = None
+            discord_p = DiscordPlatform(
+                tok,
+                [str(c) for c in chans],
+                entity=ent,
+                proactive_channel_id=proactive_cid,
+            )
             platforms.append(discord_p)
         elif t == "telegram":
             tok = token_from_config(pl.get("token_env", "TELEGRAM_TOKEN"))
@@ -231,19 +302,43 @@ async def _run(entity_name: str) -> None:
                 click.echo("Telegram token missing; skipping Telegram.", err=True)
                 continue
             raw_allow = pl.get("allowed_user_ids")
-            allow_set: set[int] | None = None
+            allow_users: set[int] | None = None
             if isinstance(raw_allow, list) and len(raw_allow) > 0:
-                allow_set = {int(x) for x in raw_allow}
+                allow_users = {int(x) for x in raw_allow}
+            raw_chats = pl.get("allowed_chat_ids")
+            allow_chats: set[int] | None = None
+            if isinstance(raw_chats, list) and len(raw_chats) > 0:
+                allow_chats = {int(x) for x in raw_chats}
             telegram_p = TelegramPlatform(
                 tok,
                 entity=ent,
                 app_version=_app_version(),
-                allowed_user_ids=allow_set,
+                allowed_user_ids=allow_users,
+                allowed_chat_ids=allow_chats,
             )
             platforms.append(telegram_p)
 
     cli_p = CLIPlatform(ent, app_version=_app_version(), immersive=False)
     has_cli = any((p.get("type") or "").lower() == "cli" for p in ec.presence.platforms)
+
+    async def proactive_fanout(message: str) -> None:
+        sent = False
+        if discord_p:
+            try:
+                await discord_p.send_proactive_default(message)
+                sent = True
+            except Exception:
+                pass
+        if telegram_p:
+            try:
+                await telegram_p.send_proactive_default(message)
+                sent = True
+            except Exception:
+                pass
+        if not sent:
+            click.echo(f"\n[{ec.name}]: {message}\n")
+
+    ent.register_proactive_sink(proactive_fanout)
 
     async def route_reply(inp, text: str):
         meta = ent.voice_ctl.meta_for_response(
@@ -258,9 +353,10 @@ async def _run(entity_name: str) -> None:
         else:
             await asyncio.sleep(delay)
         if inp.platform == "discord" and discord_p:
-            await discord_p.send_message(inp.channel, text)
+            await discord_p.send_plain_chunks(inp.channel, text, chunk_pause=meta.chunk_pause)
+            await discord_p.sync_emotion_presence(ent.emotions.get_state().primary)
         elif inp.platform == "telegram" and telegram_p:
-            await telegram_p.send_message(inp.channel, text)
+            await telegram_p.send_plain_chunks(inp.channel, text, pause=meta.chunk_pause)
 
     async def _telegram_typing_worker(chat_id: int, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -272,6 +368,13 @@ async def _run(entity_name: str) -> None:
 
     async def on_inp(inp):
         stream = cli_p.stream_delta if inp.platform == "cli" else None
+        reply_pf = None
+        if inp.platform == "cli":
+            reply_pf = cli_p
+        elif inp.platform == "discord":
+            reply_pf = discord_p
+        elif inp.platform == "telegram":
+            reply_pf = telegram_p
         stop_typing = asyncio.Event()
         typing_task: asyncio.Task[None] | None = None
         if inp.platform == "telegram" and telegram_p:
@@ -279,7 +382,9 @@ async def _run(entity_name: str) -> None:
                 _telegram_typing_worker(int(inp.channel), stop_typing)
             )
         try:
-            reply = await ent.perceive(inp, stream=stream)
+            reply, needs_platform_route = await ent.perceive(
+                inp, stream=stream, reply_platform=reply_pf
+            )
         finally:
             stop_typing.set()
             if typing_task is not None:
@@ -291,7 +396,8 @@ async def _run(entity_name: str) -> None:
         if inp.platform == "cli":
             return reply
         try:
-            await route_reply(inp, reply)
+            if needs_platform_route and reply:
+                await route_reply(inp, reply)
         except Exception as e:
             click.echo(f"Error: {e}", err=True)
         return ""
@@ -309,10 +415,7 @@ async def _run(entity_name: str) -> None:
         try:
             await cli_p.run_repl()
         finally:
-            await daemon.stop()
-            for p in platforms:
-                await p.disconnect()
-            await ent.shutdown()
+            await _graceful_run_shutdown(daemon, platforms + [cli_p], ent)
     else:
         click.echo(f"{ec.name} running (no CLI). Ctrl+C to stop.")
         try:
@@ -320,10 +423,7 @@ async def _run(entity_name: str) -> None:
         except asyncio.CancelledError:
             pass
         finally:
-            await daemon.stop()
-            for p in platforms:
-                await p.disconnect()
-            await ent.shutdown()
+            await _graceful_run_shutdown(daemon, platforms, ent)
 
 
 @cli.command("status")
@@ -368,6 +468,31 @@ def cmd_evolve(entity_name: str) -> None:
     asyncio.run(_go())
 
 
+@cli.command("knowledge")
+@click.argument("entity_name")
+def cmd_knowledge(entity_name: str) -> None:
+    """Create (if missing) and open the entity's knowledge.md in $EDITOR (default notepad / nano)."""
+    harness = load_harness_config()
+    ec = load_entity_config(entity_name, harness)
+    kpath = Path(ec.knowledge_path()).expanduser()
+    kpath.parent.mkdir(parents=True, exist_ok=True)
+    if not kpath.is_file():
+        kpath.write_text(KNOWLEDGE_STARTER_TEMPLATE, encoding="utf-8", newline="\n")
+    editor = (os.environ.get("EDITOR") or "").strip()
+    if not editor:
+        if os.name == "nt":
+            subprocess.run(["notepad", str(kpath)], check=False)
+        else:
+            nano = shutil.which("nano") or "nano"
+            subprocess.run([nano, str(kpath)], check=False)
+        return
+    try:
+        parts = shlex.split(editor, posix=os.name != "nt") + [str(kpath)]
+    except ValueError as e:
+        raise click.ClickException(f"Could not parse EDITOR: {e}") from e
+    subprocess.run(parts, check=False)
+
+
 @cli.command("recall")
 @click.argument("entity_name")
 @click.argument("query")
@@ -378,21 +503,56 @@ def cmd_recall(entity_name: str, query: str) -> None:
     ent = Entity(ec)
 
     async def _recall():
-        db = await ent.store.connect()
         try:
-            qe = await ent.client.embed(ec.harness.models.embedding, query)
-            if not qe:
-                click.echo("Could not embed query (Ollama?).")
-                await ent.shutdown()
-                return
-            pairs = await ent.store.search_episodes_by_embedding(db, qe, limit=8)
-            for eid, score in pairs:
-                click.echo(f"{score:.3f}  {eid}")
+            async with ent.store.session() as db:
+                qe = await ent.client.embed(ec.harness.models.embedding, query)
+                if not qe:
+                    click.echo("Could not embed query (Ollama?).")
+                    return
+                pairs = await ent.store.search_episodes_by_embedding(db, qe, limit=8)
+                for eid, score in pairs:
+                    click.echo(f"{score:.3f}  {eid}")
         finally:
-            await db.close()
-        await ent.shutdown()
+            try:
+                await asyncio.shield(ent.shutdown())
+            except BaseException:
+                pass
 
     asyncio.run(_recall())
+
+
+@cli.command("wipe")
+@click.argument("entity_name")
+@click.option(
+    "--yes",
+    "skip_confirm",
+    is_flag=True,
+    help="Skip confirmation (non-interactive).",
+)
+def cmd_wipe(entity_name: str, skip_confirm: bool) -> None:
+    """Delete in-memory chat turns and all SQLite memory (episodes, people, beliefs, narrative, etc.)."""
+    harness = load_harness_config()
+    ec = load_entity_config(entity_name, harness)
+    db_path = ec.db_path()
+    if not skip_confirm:
+        click.echo(
+            f"This clears conversation context and wipes the memory database for {ec.name!r}:\n  {db_path}",
+            err=True,
+        )
+        if not click.confirm("Proceed?"):
+            raise click.Abort()
+    setup_logging(ec.name, ec.harness.logging.level, None, "console")
+    ent = Entity(ec)
+
+    async def _wipe():
+        await ent.wipe_experiential_state()
+        try:
+            await asyncio.shield(ent.shutdown())
+        except BaseException:
+            pass
+
+    asyncio.run(_wipe())
+    click.echo(f"Wiped {ec.name} (DB + rolling chat + inner voice; YAML traits restored from file).")
 
 
 @cli.command("export")

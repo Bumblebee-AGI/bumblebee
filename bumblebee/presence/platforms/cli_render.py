@@ -6,11 +6,18 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from rich.console import Console
+from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
 
 from bumblebee.identity.drives import Drive
 from bumblebee.models import EmotionalState
+from bumblebee.utils.clock import (
+    entity_uptime,
+    format_local_now_casual_lower,
+    parse_entity_created_timestamp,
+    time_since_last_interaction,
+)
 
 
 # Restrained palette: warm gold for identity, dim gray for labels, default for values.
@@ -231,6 +238,57 @@ def render_feelings_introspection(
     parts.append(f"— been in this shade for about {ago}")
     body = " ".join(parts) + "."
     console.print(Text(body, style=STYLE_VALUE))
+    console.print()
+
+
+def render_side_panel(console: Console, entity: object) -> None:
+    """Compact mood / drives / inner voice / memory blips (CLI 'sidebar' column)."""
+    st = getattr(entity, "emotions").get_state()
+    drives = getattr(entity, "drives").all_drives()
+    dline = dominant_drive_line(drives)
+    inner_obj = getattr(entity, "inner_voice", None)
+    inner = ""
+    if inner_obj is not None:
+        inner = (inner_obj.recent_summary() or "").strip()[:320]
+    if not inner:
+        inner = "…"
+    db_path = str(getattr(getattr(entity, "store", None), "db_path", "") or "")
+    mem_lines = _sync_recent_summaries(db_path, 4)
+    mem_preview = "\n".join(
+        (f"• {m[:72]}…" if len(m) > 72 else f"• {m}") for m in mem_lines
+    ) or "—"
+    cfg = getattr(entity, "config", None)
+    raw = getattr(cfg, "raw", {}) or {} if cfg is not None else {}
+    tnow = time.time()
+    clock_now = format_local_now_casual_lower()
+    origin = parse_entity_created_timestamp(raw.get("created"))
+    if origin is not None:
+        alive_line = f"alive · {entity_uptime(origin, now=tnow)}"
+    else:
+        alive_line = "alive · (no created in yaml)"
+    completed = getattr(entity, "_last_turn_completed_at", None)
+    last_c = getattr(entity, "_last_conversation", {}) or {}
+    nm = str(last_c.get("person_name") or "").strip()
+    if isinstance(completed, (int, float)) and float(completed) > 0 and nm:
+        gap = time_since_last_interaction(float(completed), now=tnow)
+        last_line = f"last exchange · {gap} ago · {nm}"
+    else:
+        last_line = "last exchange · —"
+    body = (
+        f"{clock_now}\n{alive_line}\n{last_line}\n\n"
+        f"mood · {st.primary.value} ({st.intensity:.1f})\n"
+        f"drives · {dline}\n\ninner voice\n{inner}\n\nrecent memories\n{mem_preview}"
+    )
+    w = console.width or 88
+    panel_w = max(28, min(44, w // 3))
+    console.print(
+        Panel(
+            Text(body, style=STYLE_VALUE),
+            title=Text("self", style=STYLE_MARK),
+            border_style=STYLE_RULE,
+            width=panel_w,
+        )
+    )
     console.print()
 
 

@@ -8,14 +8,14 @@ ollama:
   retry_delay: 2.0
 
 models:
-  reflex: "gemma4:e4b"
-  deliberate: "gemma4:e4b"
+  reflex: "gemma4:26b"
+  deliberate: "gemma4:26b"
   embedding: "nomic-embed-text"
 
 cognition:
   thinking_mode: true
-  temperature: 0.8
-  reflex_max_tokens: 256
+  temperature: 0.75
+  reflex_max_tokens: 512
   deliberate_max_tokens: 2048
   thinking_budget: 4096
   max_context_tokens: 32768
@@ -24,14 +24,14 @@ cognition:
 
 identity:
   emotion_decay_rate: 0.001
-  drive_tick_interval: 60
+  drive_tick_interval: 120
   evolution_interval: 100
   narrative_interval: 500
 
 memory:
   database_path: "~/.bumblebee/entities/{entity_name}/memory.db"
   episode_significance_threshold: 0.3
-  consolidation_interval: 3600
+  consolidation_interval: 7200
   memory_decay_rate: 0.0001
   max_recall_results: 10
   embedding_dimensions: 768
@@ -40,7 +40,7 @@ memory:
   imprint_recall_weight: 0.35
 
 presence:
-  heartbeat_interval: 60
+  heartbeat_interval: 120
   initiative_cooldown: 1800
   typing_speed_base: 30
   typing_speed_variance: 0.3
@@ -51,3 +51,11 @@ logging:
   level: "INFO"
   file: "~/.bumblebee/entities/{entity_name}/bumblebee.log"
   format: "json"
+
+# Optional: Firecrawl (https://firecrawl.dev) — Bearer key in env. When set, preferred for
+# fetch_url (scrape) and search_web (search). Entity YAML can override with top-level ``firecrawl:``.
+firecrawl:
+  api_key_env: "FIRECRAWL_API_KEY"
+  base_url: "https://api.firecrawl.dev/v1"
+  prefer_for_fetch: true
+  prefer_for_search: true

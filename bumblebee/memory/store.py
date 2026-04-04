@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 import aiosqlite
 import numpy as np
@@ -115,16 +116,61 @@ def cosine_sim(a: list[float], b: list[float]) -> float:
     return float(np.dot(va, vb) / (na * nb))
 
 
+_EXPERIENCE_TABLES = (
+    "imprints",
+    "episodes",
+    "relationships",
+    "beliefs",
+    "narrative",
+    "inner_voice",
+    "entity_state",
+    "evolution_log",
+)
+
+
 class MemoryStore:
     def __init__(self, db_path: str) -> None:
         self.db_path = str(Path(db_path).expanduser())
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    async def wipe_experience_tables(self, conn: aiosqlite.Connection) -> None:
+        """Delete all lived-memory rows; schema remains. Order safe without FK enforcement."""
+        for table in _EXPERIENCE_TABLES:
+            await conn.execute(f"DELETE FROM {table}")
+        await conn.commit()
 
     async def connect(self) -> aiosqlite.Connection:
         conn = await aiosqlite.connect(self.db_path)
         await conn.executescript(SCHEMA)
         await conn.commit()
         return conn
+
+    @asynccontextmanager
+    async def session(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Open DB and always close — including on asyncio cancellation (Ctrl+C / task cancel)."""
+        conn = await self.connect()
+        try:
+            yield conn
+        finally:
+            try:
+                await conn.close()
+            except Exception:
+                pass
+
+    async def aclose(self) -> None:
+        """Best-effort WAL checkpoint on shutdown so Ctrl+C leaves a clean file on disk."""
+        p = Path(self.db_path)
+        if not p.is_file():
+            return
+        try:
+            conn = await self.connect()
+            try:
+                await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                await conn.commit()
+            finally:
+                await conn.close()
+        except Exception:
+            pass
 
     async def search_episodes_by_embedding(
         self,

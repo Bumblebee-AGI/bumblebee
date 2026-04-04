@@ -93,6 +93,7 @@ class Input:
     channel: str = "cli"
     platform: str = "cli"
     images: list[dict[str, Any]] = field(default_factory=list)
+    audio: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
