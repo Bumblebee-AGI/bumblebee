@@ -10,6 +10,7 @@ decoded strings; those correspond 1:1 to tokenizer control token spellings.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -35,6 +36,92 @@ REDACTED_THINK_CLOSE = "</redacted_thinking>"
 
 # Empty thought channel (suppress spurious CoT when thinking mode is off; large models)
 EMPTY_THOUGHT_TURN = f"{TURN_START}model\n{CHANNEL_THOUGHT}\n{CHANNEL_END}\n"
+
+# Unstructured chain-of-thought some models write in plain text (no <|channel>thought tokens).
+_PLAINTEXT_COT_HEADER = re.compile(
+    r"(?is)^\s*(?:"
+    r"(?:\*\*\s*)?thinking\s+process(?:\s*\*\*)?"
+    r"|(?:\*\*\s*)?chain\s+of\s+thought(?:\s*\*\*)?"
+    r"|(?:\*\*\s*)?internal\s+analysis(?:\s*\*\*)?"
+    r"|(?:\*\*\s*)?scratch\s*pad(?:\s*\*\*)?"
+    r")\s*:",
+)
+
+
+def _line_looks_like_cot_continuation(line: str) -> bool:
+    s = line.strip()
+    if not s:
+        return True
+    if re.match(r"^\d+\.\s", s):
+        return True
+    if re.match(r"^[\-*•]\s", s):
+        return True
+    low = s.lower()
+    if low.startswith(
+        (
+            "drafting",
+            "establish",
+            "determine",
+            "review",
+            "analyze",
+            "analyse",
+            "consider",
+            "the goal",
+            "step ",
+            "final ",
+            "potential",
+            "identify",
+            "summarize",
+            "summarise",
+            "breakdown",
+            "break down",
+            "output",
+            "constraint",
+        )
+    ):
+        return True
+    if s.endswith(":") and len(s) < 80 and " " in s:
+        return True
+    return False
+
+
+def separate_plaintext_chain_of_thought(raw: str) -> tuple[str, str]:
+    """
+    When the model emits a leading 'Thinking Process:' / numbered analysis block in plain text,
+    split user-visible reply from content that should stay in inner monologue only.
+
+    Returns (visible_fragment, thinking_blob). If there is no separate reply, visible is '' and
+    thinking_blob is the full ``raw`` (caller should not show it to the user).
+    """
+    t = raw.strip()
+    if not t:
+        return "", ""
+    m = _PLAINTEXT_COT_HEADER.match(t)
+    if not m:
+        return t, ""
+    after = t[m.end() :].lstrip("\n")
+    if not after:
+        return "", t
+    pos = 0
+    n = len(after)
+    while pos < n:
+        dbl = after.find("\n\n", pos)
+        if dbl == -1:
+            return "", t
+        seg_start = dbl + 2
+        while seg_start < n and after[seg_start] in " \t\r":
+            seg_start += 1
+        if seg_start >= n:
+            return "", t
+        line_end = after.find("\n", seg_start)
+        first_line = after[seg_start:line_end] if line_end != -1 else after[seg_start:]
+        if not _line_looks_like_cot_continuation(first_line):
+            visible = after[seg_start:].strip()
+            if visible:
+                thinking = (t[: m.end()] + after[:seg_start]).strip()
+                return visible, thinking
+        pos = dbl + 2
+    return "", t
 
 
 @dataclass

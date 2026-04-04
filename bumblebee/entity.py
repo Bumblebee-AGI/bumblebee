@@ -43,6 +43,13 @@ _CLI_OPENING_USER = (
 )
 
 
+def _reply_too_thin(text: str) -> bool:
+    t = (text or "").strip()
+    if len(t) < 2:
+        return True
+    return t in ("…", "...", "—", "-")
+
+
 async def _emit_text_stream(
     on_delta: Callable[[str], Awaitable[None]],
     text: str,
@@ -153,6 +160,31 @@ class Entity:
     async def _tool_exec(self, spec: ToolCallSpec) -> str:
         return await self.tools.execute(spec)
 
+    async def _fallback_plain_reply(self, inp: Input) -> str:
+        """When the main path yields no visible text (parsing/Ollama quirks), one short no-thinking completion."""
+        name = self.config.name
+        sys_ = (
+            f"You are {name}, texting naturally. Answer in 1–3 short sentences. "
+            "No stage directions: do not describe pauses, actions, or parenthetical asides—only words you say."
+        )
+        try:
+            res = await self.client.chat_completion(
+                self.config.cognition.reflex_model,
+                [
+                    {"role": "system", "content": sys_},
+                    {"role": "user", "content": inp.text[:4000]},
+                ],
+                temperature=min(0.9, self.config.harness.cognition.temperature),
+                max_tokens=min(384, self.config.harness.cognition.reflex_max_tokens + 128),
+                think=False,
+            )
+            out = (res.content or "").strip()
+            if not _reply_too_thin(out):
+                return out
+        except Exception as e:
+            log.warning("fallback_reply_failed", module="entity", error=str(e))
+        return "yeah i'm here — what's up?"
+
     async def run_narrative_cycle(self, conn) -> None:
         eps = await self.episodic.fetch_top_for_narrative(conn, 22)
         ep_payload = [
@@ -215,7 +247,7 @@ class Entity:
 
         self.dormant = False
         db = await self.store.connect()
-        async with db:
+        try:
             await self._ensure_state_hydrated(db)
 
             rel_existing = await self.relational.get(db, inp.person_id)
@@ -297,6 +329,7 @@ class Entity:
 
             reply_text = ""
             thinking: str | None = None
+            mood_sig = "neutral"
 
             if route == "reflex":
                 if stream:
@@ -314,7 +347,7 @@ class Entity:
                         self._history + [user_msg],
                         ctx,
                     )
-                reply_text = res.content or "…"
+                reply_text = (res.content or "").strip()
                 if mood_sig == "positive":
                     await self.emotions.process_stimulus(
                         "positive",
@@ -335,8 +368,14 @@ class Entity:
                     tools=self.tools.openai_tools(),
                     tool_executor=self._tool_exec,
                 )
-                reply_text = res.content or "…"
+                reply_text = (res.content or "").strip()
                 thinking = res.thinking
+
+            if _reply_too_thin(reply_text):
+                log.info("reply_fallback_triggered", module="entity", route=route)
+                reply_text = await self._fallback_plain_reply(inp)
+
+            if route == "deliberate":
                 slice_ = self.inner_voice.process(thinking, reply_text)
                 await self.inner_voice.persist_summary(
                     db,
@@ -401,6 +440,8 @@ class Entity:
                 inp.person_name,
                 warmth_delta=0.02 if meaningful else 0.0,
             )
+        finally:
+            await db.close()
 
         return reply_text
 
@@ -434,7 +475,7 @@ class Entity:
                 pass
         await self.emotions.tick()
         db = await self.store.connect()
-        async with db:
+        try:
             await self._ensure_state_hydrated(db)
             ev = self.config.harness.identity.evolution_interval
             if (
@@ -447,6 +488,8 @@ class Entity:
                     await self.evolution.run_deep_cycle(db, self.client, self)
                 except Exception as e:
                     log.warning("evolution_cycle_failed", module="entity", error=str(e))
+        finally:
+            await db.close()
 
     async def initiate(self, drive: Drive) -> str:
         eng = InitiativeEngine(self.config, self.client)

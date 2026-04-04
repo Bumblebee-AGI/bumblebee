@@ -28,7 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-bumblebee = "bumblebee.main:cli"
+bumblebee = "bumblebee.main:main"
 
 [build-system]
 requires = ["hatchling"]

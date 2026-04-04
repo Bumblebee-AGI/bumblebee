@@ -9,7 +9,7 @@ import os
 from typing import TYPE_CHECKING, Any, Callable
 
 from telegram import BotCommand, InlineQueryResultArticle, InputTextMessageContent, Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -150,8 +150,10 @@ class TelegramPlatform(Platform):
             return
         try:
             db = await self._entity.store.connect()
-            async with db:
+            try:
                 summaries = await self._entity.episodic.recent_summaries(db, 5)
+            finally:
+                await db.close()
             await self._reply_html(
                 update,
                 format_memories_html(self._entity.config.name, summaries),
@@ -340,6 +342,13 @@ class TelegramPlatform(Platform):
         except Exception as e:
             log.warning("set_my_commands_failed: %s", e)
 
+    async def send_typing(self, chat_id: int) -> None:
+        """Telegram client 'typing…' indicator (refreshed every few seconds while model runs)."""
+        try:
+            await self.app.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
+        except Exception as e:
+            log.debug("send_typing_failed: %s", e)
+
     async def send_message(self, channel: str, content: str) -> None:
         chat_id = int(channel)
         for part in split_telegram_chunks(content, 4096):
@@ -356,6 +365,22 @@ class TelegramPlatform(Platform):
         await self.app.updater.stop()
         await self.app.stop()
         await self.app.shutdown()
+
+    def get_person_id(self, message: Any) -> str:
+        if isinstance(message, Update):
+            u = message.effective_user
+            return str(u.id) if u else ""
+        return ""
+
+    def get_person_name(self, message: Any) -> str:
+        if isinstance(message, Update):
+            u = message.effective_user
+            if not u:
+                return ""
+            if u.first_name:
+                return f"{u.first_name} {u.last_name}".strip() if u.last_name else u.first_name
+            return u.username or str(u.id)
+        return ""
 
 
 def token_from_config(token_env: str) -> str:

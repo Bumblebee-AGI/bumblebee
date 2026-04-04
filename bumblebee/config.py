@@ -273,11 +273,10 @@ def validate_entity_env(entity: EntityConfig) -> list[str]:
 
 
 async def validate_ollama_models(entity: EntityConfig, client: OllamaClient) -> tuple[bool, list[str]]:
-    """Require entity chat models plus harness deliberate (personality/narrative/evolution) and embedding."""
+    """Require chat models only. Embedding is optional: recall and episode vectors skip until you ``ollama pull`` it."""
     ok, missing = await client.ensure_models(
         entity.cognition.reflex_model,
         entity.cognition.deliberate_model,
         entity.harness.models.deliberate,
-        entity.harness.models.embedding,
     )
     return ok, missing

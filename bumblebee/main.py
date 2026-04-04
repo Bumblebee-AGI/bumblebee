@@ -39,21 +39,38 @@ def _app_version() -> str:
         return "0.1.0"
 
 
-def _load_repo_dotenv() -> None:
-    """Load repo-root `.env` into the process (project-local; does not touch user/machine env)."""
-    root = Path(__file__).resolve().parent.parent
-    path = root / ".env"
+def _apply_dotenv_file(path: Path) -> None:
+    """Set os.environ keys from a single .env file.
+
+    Non-empty existing values are kept; missing or blank entries are filled from the file.
+    """
     if not path.is_file():
         return
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, val = line.partition("=")
-        key = key.strip()
+        key = key.strip().removeprefix("\ufeff")
         val = val.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = val
+        if not key:
+            continue
+        # Fill when unset or empty so a stale Windows env entry can't block `.env`.
+        if (os.environ.get(key) or "").strip():
+            continue
+        os.environ[key] = val
+
+
+def _load_repo_dotenv() -> None:
+    """Load `.env` from cwd first, then package parent (repo root when running from source).
+
+    A normal (non-editable) install puts code under site-packages; ``parent.parent`` then
+    is not your project folder, so tokens in the repo ``.env`` are missed unless we also
+    read ``Path.cwd() / ".env"``.
+    """
+    _apply_dotenv_file(Path.cwd() / ".env")
+    pkg_root = Path(__file__).resolve().parent.parent
+    _apply_dotenv_file(pkg_root / ".env")
 
 
 async def _wait_until_stopped() -> None:
@@ -101,7 +118,8 @@ def _prepare_ollama_cli(entity_name: str, with_ollama: bool, pull_models: bool) 
 
 @click.group()
 def cli() -> None:
-    pass
+    # Runs before every subcommand; keep in sync with ``main()`` for entry points that call ``cli`` only.
+    _load_repo_dotenv()
 
 
 @cli.command("create")
@@ -233,15 +251,43 @@ async def _run(entity_name: str) -> None:
             len(text),
             inp.platform,
         )
-        await asyncio.sleep(min(3.0, meta.typing_delay_seconds))
+        delay = min(3.0, meta.typing_delay_seconds)
+        if inp.platform == "telegram" and telegram_p:
+            await telegram_p.send_typing(int(inp.channel))
+            await asyncio.sleep(delay)
+        else:
+            await asyncio.sleep(delay)
         if inp.platform == "discord" and discord_p:
             await discord_p.send_message(inp.channel, text)
         elif inp.platform == "telegram" and telegram_p:
             await telegram_p.send_message(inp.channel, text)
 
+    async def _telegram_typing_worker(chat_id: int, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            await telegram_p.send_typing(chat_id)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=4.5)
+            except asyncio.TimeoutError:
+                continue
+
     async def on_inp(inp):
         stream = cli_p.stream_delta if inp.platform == "cli" else None
-        reply = await ent.perceive(inp, stream=stream)
+        stop_typing = asyncio.Event()
+        typing_task: asyncio.Task[None] | None = None
+        if inp.platform == "telegram" and telegram_p:
+            typing_task = asyncio.create_task(
+                _telegram_typing_worker(int(inp.channel), stop_typing)
+            )
+        try:
+            reply = await ent.perceive(inp, stream=stream)
+        finally:
+            stop_typing.set()
+            if typing_task is not None:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
         if inp.platform == "cli":
             return reply
         try:
@@ -333,7 +379,7 @@ def cmd_recall(entity_name: str, query: str) -> None:
 
     async def _recall():
         db = await ent.store.connect()
-        async with db:
+        try:
             qe = await ent.client.embed(ec.harness.models.embedding, query)
             if not qe:
                 click.echo("Could not embed query (Ollama?).")
@@ -342,6 +388,8 @@ def cmd_recall(entity_name: str, query: str) -> None:
             pairs = await ent.store.search_episodes_by_embedding(db, qe, limit=8)
             for eid, score in pairs:
                 click.echo(f"{score:.3f}  {eid}")
+        finally:
+            await db.close()
         await ent.shutdown()
 
     asyncio.run(_recall())
@@ -388,7 +436,6 @@ def cmd_import(bundle_dir: str) -> None:
 
 
 def main() -> None:
-    _load_repo_dotenv()
     cli()
 
 

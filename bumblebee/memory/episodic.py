@@ -187,7 +187,13 @@ class EpisodicMemory:
         tags: list[str],
     ) -> Episode:
         emb_model = self.entity.harness.models.embedding
-        emb = await client.embed(emb_model, summary + "\n" + raw_context[:2000])
+        emb: list[float] | None = None
+        try:
+            vec = await client.embed(emb_model, summary + "\n" + raw_context[:2000])
+            if vec:
+                emb = vec
+        except Exception:
+            pass
         ep = Episode(
             id=new_id("ep_"),
             timestamp=time.time(),

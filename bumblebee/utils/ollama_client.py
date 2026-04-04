@@ -101,8 +101,18 @@ class OllamaClient:
         raise last_err or RuntimeError("list_models failed")
 
     async def ensure_models(self, *names: str) -> tuple[bool, list[str]]:
-        available = set(await self.list_models())
-        missing = [n for n in names if n and n not in available]
+        """Treat ``model`` and ``model:any-tag`` as satisfied if Ollama lists a matching id."""
+        listed = await self.list_models()
+        available = set(listed)
+        missing: list[str] = []
+        for n in names:
+            if not n:
+                continue
+            if n in available:
+                continue
+            if any(m == n or m.startswith(f"{n}:") for m in listed):
+                continue
+            missing.append(n)
         return (len(missing) == 0, missing)
 
     async def chat_completion(
@@ -183,9 +193,30 @@ class OllamaClient:
             text = gemma.stringify_content_blocks(raw_content)
         else:
             text = str(raw_content)
-        parsed = gemma.parse_assistant_output(text)
-        thinking = parsed.thinking
-        visible = parsed.visible_user_text
+
+        reasoning_text = ""
+        for key in ("reasoning_content", "reasoning"):
+            v = msg.get(key)
+            if isinstance(v, str) and v.strip():
+                reasoning_text = v.strip()
+                break
+
+        vis_raw, plaintext_cot = gemma.separate_plaintext_chain_of_thought(text)
+        parsed = gemma.parse_assistant_output(vis_raw)
+        visible = parsed.visible_user_text.strip()
+        if not visible and vis_raw.strip():
+            loose = gemma.strip_thinking_for_history(vis_raw).strip()
+            if loose:
+                visible = loose
+
+        thinking_parts: list[str] = []
+        if parsed.thinking:
+            thinking_parts.append(parsed.thinking)
+        if plaintext_cot:
+            thinking_parts.append(plaintext_cot)
+        if reasoning_text:
+            thinking_parts.append(reasoning_text)
+        thinking: str | None = "\n\n".join(thinking_parts) if thinking_parts else None
         tool_calls: list[ToolCallSpec] = []
         for tc in msg.get("tool_calls") or []:
             fn = tc.get("function") or {}
@@ -219,7 +250,7 @@ class OllamaClient:
             if k in usage:
                 u[k] = int(usage[k])
         return ChatCompletionResult(
-            content=visible.strip(),
+            content=visible,
             thinking=thinking,
             tool_calls=tool_calls,
             finish_reason=(choices[0].get("finish_reason")),

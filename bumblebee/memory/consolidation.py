@@ -70,8 +70,10 @@ class ConsolidationJob:
         if not entity_facade or self._run_count % n_every != 0:
             return
         db = await entity_facade.store.connect()
-        async with db:
+        try:
             try:
                 await entity_facade.run_narrative_cycle(db)
             except Exception as e:
                 log.warning("narrative_cycle_failed", module="memory", error=str(e))
+        finally:
+            await db.close()

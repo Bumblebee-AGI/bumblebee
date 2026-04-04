@@ -38,3 +38,23 @@ def test_empty_thought_fragment_contains_channel():
     frag = gemma.empty_thought_channel_fragment()
     assert gemma.CHANNEL_THOUGHT in frag
     assert gemma.CHANNEL_END in frag
+
+
+def test_separate_plaintext_cot_then_reply():
+    raw = (
+        "Thinking Process:\n\n"
+        "1. Analyze input.\n"
+        "2. Draft reply.\n\n"
+        "yeah, man. just vibing."
+    )
+    vis, think = gemma.separate_plaintext_chain_of_thought(raw)
+    assert "yeah, man" in vis
+    assert "Thinking Process" in think
+    assert "Analyze input" in think
+
+
+def test_separate_plaintext_cot_only_triggers_empty_visible():
+    raw = "Thinking Process:\n\n1. foo\n2. bar"
+    vis, think = gemma.separate_plaintext_chain_of_thought(raw)
+    assert vis == ""
+    assert think == raw

@@ -99,10 +99,12 @@ def format_commands_page(page: int, *, per_page: int = 5) -> tuple[str, int, int
 
 async def build_status_html(entity: "Entity", app_version: str) -> str:
     db = await entity.store.connect()
-    async with db:
+    try:
         n_ep = await entity.store.count_episodes(db)
         n_people = await entity.store.count_relationships(db)
         first_ts = await entity.store.min_episode_timestamp(db)
+    finally:
+        await db.close()
     cfg = entity.config
     st = entity.emotions.get_state()
     awake = compute_awake_summary(
