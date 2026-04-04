@@ -1,0 +1,53 @@
+# Bumblebee harness defaults
+# Entity-specific overrides go in configs/entities/<name>.yaml
+
+ollama:
+  base_url: "http://localhost:11434"
+  timeout: 120
+  retry_attempts: 3
+  retry_delay: 2.0
+
+models:
+  reflex: "gemma4:e4b"
+  deliberate: "gemma4:e4b"
+  embedding: "nomic-embed-text"
+
+cognition:
+  thinking_mode: true
+  temperature: 0.8
+  reflex_max_tokens: 256
+  deliberate_max_tokens: 2048
+  thinking_budget: 4096
+  max_context_tokens: 32768
+  escalation_threshold: 0.4
+  image_token_budget: 280
+
+identity:
+  emotion_decay_rate: 0.001
+  drive_tick_interval: 60
+  evolution_interval: 100
+  narrative_interval: 500
+
+memory:
+  database_path: "~/.bumblebee/entities/{entity_name}/memory.db"
+  episode_significance_threshold: 0.3
+  consolidation_interval: 3600
+  memory_decay_rate: 0.0001
+  max_recall_results: 10
+  embedding_dimensions: 768
+  narrative_every_n_consolidations: 3
+  imprint_decay_half_life_seconds: 2592000
+  imprint_recall_weight: 0.35
+
+presence:
+  heartbeat_interval: 60
+  initiative_cooldown: 1800
+  typing_speed_base: 30
+  typing_speed_variance: 0.3
+  message_chunk_max: 400
+  chunk_delay: 1.5
+
+logging:
+  level: "INFO"
+  file: "~/.bumblebee/entities/{entity_name}/bumblebee.log"
+  format: "json"
