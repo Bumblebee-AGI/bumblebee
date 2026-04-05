@@ -221,7 +221,7 @@ def _run_hybrid_env_and_home(env_path: Path) -> tuple[str, str]:
     click.echo("\n--- Hybrid (home brain + Railway body) ---\n")
     click.echo(
         "Brain: Ollama + bumblebee inference gateway + Cloudflare Tunnel on this machine.\n"
-        "Body: bumblebee worker (+ API) on Railway with Postgres. See docs/deployment/railway-cli-walkthrough.md.\n"
+        "Body: bumblebee worker (+ API) on Railway with Postgres. Use Railway CLI from repo root (railway variable, railway up).\n"
     )
 
     updates: dict[str, str] = {}
@@ -315,7 +315,7 @@ def _run_hybrid_railway(entity_choice: str | None, base_url: str, tok: str) -> N
     entity = _resolve_entity_name_for_railway(entity_choice)
     if not entity:
         click.echo("Skipping Railway CLI — set BUMBLEBEE_ENTITY after you add an entity YAML.")
-        click.echo("Docs: docs/architecture/inference-boundary.md, docs/deployment/railway-cli-walkthrough.md")
+        click.echo("Inference: tunnel must end at the gateway only; see .env.example and bumblebee/inference_gateway/.")
         return
 
     pg_service = _prompt_line("Railway Postgres plugin service name (for DATABASE_URL reference)", default="Postgres")
@@ -363,7 +363,7 @@ def _run_hybrid_railway(entity_choice: str | None, base_url: str, tok: str) -> N
 
     _print_railway_cheat_sheet(entity, base_url, pg_service)
 
-    click.echo("Docs: docs/architecture/inference-boundary.md, docs/deployment/railway-cli-walkthrough.md")
+    click.echo("Inference: tunnel must end at the gateway only; see .env.example and bumblebee/inference_gateway/.")
 
 
 def run_setup_wizard(*, profile: str = "ask") -> None:

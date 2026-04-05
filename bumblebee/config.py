@@ -36,7 +36,7 @@ class DeploymentSettings:
 
 @dataclass
 class InferenceSettings:
-    """Brain endpoint selection (see docs/architecture/inference-boundary.md)."""
+    """Brain endpoint selection (tunnel should terminate only at the inference gateway)."""
 
     provider: str = ""  # local | remote_gateway — empty derives from deployment.mode
     base_url: str = ""  # remote gateway or OpenAI-compatible root; empty uses ollama.base_url
@@ -343,7 +343,7 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
 
 
 def apply_harness_env_overrides(h: HarnessConfig) -> None:
-    """Railway-friendly env overrides (see docs/operations/env-vars.md)."""
+    """Railway-friendly env overrides (see .env.example)."""
     dm = (os.environ.get("BUMBLEBEE_DEPLOYMENT_MODE") or "").strip().lower()
     if dm in ("local", "hybrid_railway"):
         h.deployment.mode = dm

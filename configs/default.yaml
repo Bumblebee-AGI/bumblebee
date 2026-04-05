@@ -1,7 +1,7 @@
 # Bumblebee harness defaults
 # Entity-specific overrides go in configs/entities/<name>.yaml
 #
-# Deployment / inference (see docs/architecture/deployment-modes.md)
+# Deployment / inference (see .env.example and BUMBLEBEE_* vars)
 deployment:
   mode: local # local | hybrid_railway
 

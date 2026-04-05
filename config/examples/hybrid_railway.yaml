@@ -1,5 +1,5 @@
 # Example harness overlay: Bumblebee runtime on Railway; inference via home gateway.
-# Set DATABASE_URL and BUMBLEBEE_INFERENCE_* env vars in Railway (see docs/deployment/hybrid-railway.md).
+# Set DATABASE_URL and BUMBLEBEE_INFERENCE_* env vars in Railway (see .env.example).
 
 deployment:
   mode: hybrid_railway

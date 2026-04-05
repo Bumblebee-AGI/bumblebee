@@ -85,7 +85,6 @@ include = [
     "assets/branding/**",
     "config/**",
     "configs/**",
-    "docs/**",
     "tests/**",
 ]
 

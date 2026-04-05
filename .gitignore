@@ -2,8 +2,9 @@
 .env.*
 !.env.example
 
-# Maintainer-only Telegram app (not shipped in this repo)
+# Maintainer / local-only trees (not shipped in this repo)
 onboarding/
+docs/
 
 # Python
 __pycache__/

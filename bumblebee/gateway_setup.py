@@ -97,7 +97,7 @@ def _print_config_template(*, tunnel_name: str, gateway_host: str, gateway_port:
     click.echo(
         "The tunnel hostname must forward to the gateway only — "
         + click.style("not", bold=True)
-        + " a shared reverse proxy. See docs/architecture/inference-boundary.md.\n"
+        + " a shared reverse proxy — terminate the tunnel only at this gateway.\n"
     )
 
 
@@ -286,4 +286,4 @@ def run_gateway_setup_wizard(
     if base_url:
         click.echo("Verify through the tunnel (after cloudflared is up):")
         click.echo(f'  curl -sS -H "Authorization: Bearer <token>" {base_url}/health\n')
-    click.echo("Docs: docs/deployment/local-inference-node.md, docs/deployment/hybrid-railway.md\n")
+    click.echo("Hybrid: .env.example + configs/default.yaml (deployment / inference).\n")

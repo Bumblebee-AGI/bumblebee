@@ -16,7 +16,7 @@ The first entitative harness. Gemma 4-native persistent digital entities.
 
 **Bumblebee** is a framework and agentic harness for creating digital entities that run on **your own hardware**. You define a personality — traits, voice, drives, emotional range. It develops the rest: opinions, relationships, habits, a journal it writes in at night. It lives on your Telegram. It costs nothing to run. It remembers everything.
 
-**Inference** stays **local** by default — Ollama on your GPU, no API keys, no subscriptions. **Hybrid** mode keeps the brain at home behind a gateway and tunnel while an always-on **worker** runs on Railway with Postgres — see [deployment modes](docs/architecture/deployment-modes.md).
+**Inference** stays **local** by default — Ollama on your GPU, no API keys, no subscriptions. **Hybrid** mode keeps the brain at home behind a gateway and tunnel while an always-on **worker** runs on Railway with Postgres. Use **`bumblebee setup`**, **`.env.example`**, and **`configs/default.yaml`** (`deployment`, `inference`) for wiring.
 
 **Quick links:** [Requirements](#requirements) · [Install & usage](#install) · [Setup wizard](#setup-wizard) · [Gateway setup](#gateway-setup-hybrid-home-brain) · [Telegram](#telegram) · [Platforms](#platforms) · [Tools](#tools) · [Native tools (table)](#native-tool-reference) · [Knowledge & journal](#knowledge-system) · [CLI reference](#cli-reference) · [Architecture](#architecture)
 
@@ -69,7 +69,7 @@ Harness defaults live only in `configs/default.yaml` (not the repo root). Entity
 
 For a guided first-time path, run **`bumblebee setup`**. The default recommendation is **hybrid**: Ollama + the Bumblebee inference gateway + Cloudflare Tunnel on your home PC, and the entity **worker** (and optional API) on **Railway** with Postgres. The wizard can merge **`.env`**, optionally run **`npm run ollama:reset`**, **`bumblebee gateway on`** (Windows), and **`railway`** variable/deploy commands when those tools are installed and you confirm each step.
 
-- **Docs:** [docs/operations/setup-wizard.md](docs/operations/setup-wizard.md) · [docs/operations/env-vars.md](docs/operations/env-vars.md)
+- **Reference:** **`.env.example`** (env inventory) · **`bumblebee setup --help`** (guided hybrid/local flow)
 - **Entity personality / YAML only:** `bumblebee create` (the full wizard can call this after env + Railway prep).
 
 Use **`bumblebee setup --profile local`** for a single-machine stack without the Railway block.
@@ -78,7 +78,7 @@ Use **`bumblebee setup --profile local`** for a single-machine stack without the
 
 If you already know you want the **home inference stack** (bearer token + Cloudflare Tunnel ingress to the gateway + `.env`), use **`bumblebee gateway setup`**. It walks through tunnel configuration and gateway env vars **together**, then on Windows can run **`bumblebee gateway on`**. This is narrower than **`bumblebee setup`** (no Railway/entity flow).
 
-The home gateway process needs **`pip install 'bumblebee[gateway]'`**. Operational detail: [docs/deployment/local-inference-node.md](docs/deployment/local-inference-node.md).
+The home gateway process needs **`pip install 'bumblebee[gateway]'`**. Bind **`127.0.0.1`**, terminate the tunnel **only** at the gateway (not a broad reverse proxy), bearer auth on **`INFERENCE_GATEWAY_TOKEN`**.
 
 ## Usage
 
@@ -295,7 +295,7 @@ An **always-on daemon** ticks continuously: emotions, drives, memory consolidati
 
 **Multi-platform adapters** expose the same entity on CLI, Telegram, Discord, and elsewhere you configure, with consistent memory and emotional continuity.
 
-See **`docs/architecture/`** (overview, deployment modes, inference boundary, security) for deeper design detail.
+Deeper design (inference boundary, hybrid trust model) is reflected in **`configs/default.yaml`**, gateway code under **`bumblebee/inference_gateway/`**, and comments in **`.env.example`**.
 
 ## Entity creation
 
@@ -490,7 +490,7 @@ Got into shoegaze after talking about My Bloody Valentine.
 
 Harness defaults live in **`configs/default.yaml`**. Per-entity overrides go in **`configs/entities/<name>.yaml`** — models, **`cognition`** (including **`rolling_history_max_messages`** and **`history_compression`**), **`presence`**, **`automations`** (schedules, emergence, journal), optional top-level **`tools:`**, **`mcp_servers`**, Firecrawl, etc.
 
-**Deployment / inference:** `deployment.mode` (`local` | `hybrid_railway`) and `inference` keys align with **`.env`** (`BUMBLEBEE_DEPLOYMENT_MODE`, `BUMBLEBEE_INFERENCE_PROVIDER`, tunnel **`BUMBLEBEE_INFERENCE_BASE_URL`**, gateway token). See [docs/architecture/deployment-modes.md](docs/architecture/deployment-modes.md).
+**Deployment / inference:** `deployment.mode` (`local` | `hybrid_railway`) and `inference` keys align with **`.env`** (`BUMBLEBEE_DEPLOYMENT_MODE`, `BUMBLEBEE_INFERENCE_PROVIDER`, tunnel **`BUMBLEBEE_INFERENCE_BASE_URL`**, gateway token).
 
 **Hybrid attachments:** harness **`attachments.backend`** can be **`object_s3_compat`** with S3-compatible env vars (see **`.env.example`**) for durable blobs when the worker runs in the cloud.
 
