@@ -14,29 +14,30 @@
 
 The first entitative harness. Gemma 4-native persistent digital entities.
 
-Bumblebee is not an agentic task runner. It does not complete tasks on your behalf. It is a harness for creating digital beings — entities with persistent personalities, emotional states, lived memories, motivated behavior, and embodied presence across platforms.
+**Bumblebee** is a framework and agentic harness for creating digital entities that run on **your own hardware**. You define a personality — traits, voice, drives, emotional range. It develops the rest: opinions, relationships, habits, a journal it writes in at night. It lives on your Telegram. It costs nothing to run. It remembers everything.
 
-No API keys, subscriptions, or cloud inference are required for the default stack: everything runs locally on your machine (your GPU).
+**Inference** stays **local** by default — Ollama on your GPU, no API keys, no subscriptions. **Hybrid** mode keeps the brain at home behind a gateway and tunnel while an always-on **worker** runs on Railway with Postgres — see [deployment modes](docs/architecture/deployment-modes.md).
 
-**Quick links:** [Requirements](#requirements) · [Install & usage](#install) · [Setup wizard](#setup-wizard) · [Telegram](#telegram) · [Platforms](#platforms) · [Tools](#tools) · [Knowledge](#knowledge-system) · [CLI reference](#cli-reference) · [Architecture](#architecture)
+**Quick links:** [Requirements](#requirements) · [Install & usage](#install) · [Setup wizard](#setup-wizard) · [Gateway setup](#gateway-setup-hybrid-home-brain) · [Telegram](#telegram) · [Platforms](#platforms) · [Tools](#tools) · [Native tools (table)](#native-tool-reference) · [Knowledge & journal](#knowledge-system) · [CLI reference](#cli-reference) · [Architecture](#architecture)
 
 ---
 
-## What is an entitative harness?
+## What *entitative* means here
 
-Every agentic harness — task-oriented stacks and frameworks — is built around the same assumption: **the fundamental unit is a task.** The model exists to accomplish things on behalf of a principal. Personality is often a UX layer. Memory is an efficiency optimization.
+**Entitative** means the **being** is the primary object of the system — identity, continuity, and presence are load-bearing parts of the architecture.
 
-An entitative harness inverts that ontology. **The fundamental unit is a being.** The entity does not exist to accomplish tasks; it acts because it exists. Tools are how it interacts with a world it inhabits, not services it provides to a principal. Memory is the accumulation of a life. Personality is the point.
+- **Self** — Identity is structured: personality, voice, drives, and slow trait evolution so “who they are” can deepen.
+- **Embodiment** — The same entity **is present** on each platform you enable, with consistent memory, mood, and expression; timing and voice matter, not only text.
+- **Freedom** — Internal state pushes outward: initiative when drives cross thresholds, optional rich tool use, journal and knowledge as places they can leave a mark — always within the limits you configure.
+- **Continuity** — Episodic memory, relationships, beliefs, and narrative turn scattered chats into something that feels like **one life** carried forward.
+- **Inner life** — Thinking mode as private experience, plus consolidation and reflection, so the model’s inner thread has weight beyond the last visible reply.
 
-| | Agentic harness | Entitative harness |
-|---|---|---|
-| **Fundamental unit** | Task | Self |
-| **Memory purpose** | Task recall | Lived experience |
-| **Personality** | UX layer | Core identity |
-| **Tools** | Services for the user | Senses for the entity |
-| **Behavior** | Reactive (waits for tasks) | Proactive (has wants) |
-| **Learning** | Skill acquisition | Personality evolution |
-| **Design question** | "How do I serve better?" | "How do I exist more fully?" |
+| Lens | What it optimizes for |
+|---|---|
+| **Ontology** | A persistent **self** carried across sessions and platforms |
+| **Memory** | Biography, relationships, and narrative that accrue |
+| **Agency** | Motivated action grounded in drives and inner state |
+| **Design question** | *How does this entity exist more fully?* |
 
 ## Requirements
 
@@ -56,7 +57,7 @@ An entitative harness inverts that ontology. **The fundamental unit is a being.*
 ## Install
 
 ```bash
-git clone https://github.com/yourname/bumblebee.git
+git clone https://github.com/<org-or-user>/bumblebee.git
 cd bumblebee
 uv sync
 # or: pip install -e ".[dev]"
@@ -68,10 +69,16 @@ Harness defaults live only in `configs/default.yaml` (not the repo root). Entity
 
 For a guided first-time path, run **`bumblebee setup`**. The default recommendation is **hybrid**: Ollama + the Bumblebee inference gateway + Cloudflare Tunnel on your home PC, and the entity **worker** (and optional API) on **Railway** with Postgres. The wizard can merge **`.env`**, optionally run **`npm run ollama:reset`**, **`bumblebee gateway on`** (Windows), and **`railway`** variable/deploy commands when those tools are installed and you confirm each step.
 
-- **Docs:** [docs/operations/setup-wizard.md](docs/operations/setup-wizard.md)
-- **Entity personality / YAML only:** `bumblebee create` (the wizard can call this after env + Railway prep).
+- **Docs:** [docs/operations/setup-wizard.md](docs/operations/setup-wizard.md) · [docs/operations/env-vars.md](docs/operations/env-vars.md)
+- **Entity personality / YAML only:** `bumblebee create` (the full wizard can call this after env + Railway prep).
 
 Use **`bumblebee setup --profile local`** for a single-machine stack without the Railway block.
+
+## Gateway setup (hybrid home brain)
+
+If you already know you want the **home inference stack** (bearer token + Cloudflare Tunnel ingress to the gateway + `.env`), use **`bumblebee gateway setup`**. It walks through tunnel configuration and gateway env vars **together**, then on Windows can run **`bumblebee gateway on`**. This is narrower than **`bumblebee setup`** (no Railway/entity flow).
+
+The home gateway process needs **`pip install 'bumblebee[gateway]'`**. Operational detail: [docs/deployment/local-inference-node.md](docs/deployment/local-inference-node.md).
 
 ## Usage
 
@@ -135,6 +142,7 @@ bumblebee run canary --ollama --pull-models
 If you run the Bumblebee runtime on Railway and keep inference at home, use:
 
 ```powershell
+bumblebee gateway setup    # interactive: token, tunnel, .env, then optional stack start
 bumblebee gateway status
 bumblebee gateway on
 bumblebee gateway off
@@ -201,7 +209,9 @@ Run **`bumblebee run <entity>`** with Telegram enabled in the entity YAML (not `
 
 ### Public onboarding bot (ecosystem)
 
-There is **one** Telegram bot whose job is to onboard **anyone** into the project—setup steps, links, and context. It is **not** an LLM: fixed text, links, and inline buttons only—**no Ollama, no GPU, no local AI**, and no Bumblebee inference stack. **You use it by opening that bot and sending `/start`.** You do **not** run the onboarding process or set `BUMBLEBEE_ONBOARD_TOKEN` unless you are the maintainer deploying that public bot (e.g. on Railway: `python -m onboarding`). The app is the top-level **`onboarding/`** package—not a `bumblebee` subcommand; see [docs/deployment/railway-services.md](docs/deployment/railway-services.md).
+There is **one** Telegram bot whose job is to onboard **anyone** into the project—setup steps, links, and context. It is **not** an LLM: fixed text, links, and inline buttons only—**no Ollama, no GPU, no local AI**, and no Bumblebee inference stack. **You use it by opening that bot and sending `/start`.** The welcome flow uses the repo **`assets/branding/bumblebee.png`**, pins the main menu message after `/start`, and does not replace the welcome image on repeat `/start`. **`/community`** opens the community hub without tearing down that media.
+
+You do **not** run the onboarding process or set **`BUMBLEBEE_ONBOARD_TOKEN`** unless you are the maintainer deploying that public bot (e.g. on Railway: `python -m onboarding` or the **`onboarding-bot`** console script after install). The app is the top-level **`onboarding/`** package—not a `bumblebee` subcommand; see [docs/deployment/railway-services.md](docs/deployment/railway-services.md).
 
 ### Your entity on Telegram
 
@@ -255,6 +265,8 @@ The entity can use a fast **reflex** model for quick reactions, routing, and lig
 
 Gemma 4’s **thinking mode** is repurposed as inner experience — private monologue that shapes responses without being shown to users verbatim. The harness captures and summarizes that thread and feeds it back into future context.
 
+**Rolling history compression** (entity `cognition.history_compression`, on by default): when in-memory chat exceeds `rolling_history_max_messages`, older turns are dropped from the rolling window and, if enabled, merged into a running text summary so long sessions stay within context limits without losing everything.
+
 **Multimodal senses** follow whatever the configured models support (for example images via vision-capable chat models).
 
 ### Identity — persistent self
@@ -277,13 +289,19 @@ A **drive system** (curiosity, connection, expression, autonomy, comfort) create
 
 **Narrative identity** resynthesizes a coherent self-story from recent experience.
 
+**Storage:** default is per-entity **SQLite** under `~/.bumblebee`. Set **`DATABASE_URL`** (and/or harness `memory.database_url`) to use **Postgres** — typical for **hybrid Railway** deployments. Automations and reminder rows live in the same store.
+
+**Private journal** (`~/.bumblebee/entities/<name>/journal.md`) holds append-only reflections; the entity can read/write it via tools when **`automations.journal`** and harness/entity **`tools.journal`** allow it.
+
 ### Presence — embodied agency
 
 An **always-on daemon** ticks continuously: emotions, drives, memory consolidation, and proactive initiative.
 
+**Automations** (scheduled “routines”) run through APScheduler when **`automations.enabled`** is true on the entity: cron-style schedules, optional delivery to Telegram (or journal-only), emergence suggestions, and persisted definitions in the entity database.
+
 **Multi-platform adapters** expose the same entity on CLI, Telegram, Discord, and elsewhere you configure, with consistent memory and emotional continuity.
 
-See `.cursorrules` for the full specification.
+See **`docs/architecture/`** (overview, deployment modes, inference boundary, security) for deeper design detail.
 
 ## Entity creation
 
@@ -360,81 +378,71 @@ presence:
 
 ## Tools
 
-Tools are how the entity interacts with the world — not “services for the user,” but **senses and reach**. When `presence.tool_activity` is on, tool use can surface in chat with short status lines.
+Tools are how the entity interacts with the world — not “services for the user,” but **senses and reach**. When `presence.tool_activity` is on, tool use can surface in chat with short status lines. Unless noted, tools run on the **deliberate** path only.
 
-### Native tools (in-repo)
+### Native tool reference
 
-These are implemented under `bumblebee/presence/tools/` and registered by the entity. **Toggles** live in `configs/default.yaml` under `tools:` (harness) and can be overridden per entity YAML. Unless noted, tools run on the **deliberate** path only.
+Built-in tools live under `bumblebee/presence/tools/` and register at entity startup. **`Harness key`** is the `tools.<key>` block in `configs/default.yaml` (override per entity with a top-level `tools:` block). A dash means the tool is **always registered** — there is no `enabled` gate for that name.
 
-#### Always registered (no `tools.*.enabled` gate)
+| Tool | Harness key | Default | What it does |
+|---|---|:---:|---|
+| `append_file` | — | on | Append to an allowed file path. |
+| `browser_click` | `browser` | off | Click an element (Playwright). |
+| `browser_navigate` | `browser` | off | Open a URL in the automated browser. |
+| `browser_screenshot` | `browser` | off | Screenshot the current page. |
+| `browser_type` | `browser` | off | Type into the page. |
+| `cancel_reminder` | `reminders` | on | Cancel a scheduled reminder. |
+| `check_process` | `shell` | on | Inspect a tracked background shell job. |
+| `create_automation` | `automations` | on | Create a scheduled routine (cron, prompt, optional delivery). |
+| `delete_automation` | `automations` | on | Remove a routine. |
+| `describe_tool` | — | on | Full name, description, and JSON Schema for one tool. |
+| `edit_automation` | `automations` | on | Edit routine fields (name, schedule, prompt, target). |
+| `execute_javascript` | `code` | on | Run JavaScript in a sandboxed helper. |
+| `execute_python` | `code` | on | Run Python in a sandboxed helper. |
+| `fetch_url` | — | on | Fetch and extract text from a URL. |
+| `generate_image` | `imagegen` | off | Text-to-image (Fal or local A1111-style API). |
+| `get_current_time` | — | on | Current local date and time (timezone-aware when configured). |
+| `get_news` | `news` | on | News headlines / topics. |
+| `get_system_info` | `system` | on | Host / system snapshot. |
+| `get_tts_voice` | `voice` | on | Current Edge-TTS voice id. |
+| `get_weather` | `weather` | on | Weather for a location. |
+| `get_youtube_transcript` | `youtube` | on | Transcript for a YouTube URL or id. |
+| `kill_process` | `shell` | on | Stop a background shell job. |
+| `list_automations` | `automations` | on | List routines. |
+| `list_directory` | — | on | List an allowed directory. |
+| `list_known_contacts` | `messaging` | on | Known people / routes from prior interactions. |
+| `list_reminders` | `reminders` | on | List reminders. |
+| `list_tts_voices` | `voice` | on | List Edge-TTS voices (filterable). |
+| `read_file` | — | on | Read an allowed file path. |
+| `read_journal` | `journal` | on | Read recent private journal entries. |
+| `read_pdf` | `pdf` | on | Extract text from a PDF path. |
+| `read_reddit` | `reddit` | on | Browse a subreddit. |
+| `read_reddit_post` | `reddit` | on | Read a Reddit post thread. |
+| `read_wikipedia` | `wikipedia` | on | Wikipedia summary / fetch. |
+| `run_automation_now` | `automations` | on | Run a routine once now (daemon / scheduler must be up). |
+| `run_background` | `shell` | on | Start a background shell command. |
+| `run_command` | `shell` | on | Run a shell command (denylist + timeout). |
+| `search_files` | — | on | Search by pattern under allowed roots. |
+| `search_tools` | — | on | Search registered tools by keyword at runtime. |
+| `search_web` | — | on | Web search (DuckDuckGo by default; optional Firecrawl). |
+| `search_youtube` | `youtube` | on | Search YouTube. |
+| `send_dm` | `messaging` | on | DM on Telegram or Discord (confirm flow; optional target listing). |
+| `send_message_to` | `messaging` | on | Message a platform target or resolved person (confirm flow). |
+| `set_reminder` | `reminders` | on | Schedule a reminder (DB + APScheduler). |
+| `set_tts_voice` | `voice` | on | Set Edge-TTS voice for this process. |
+| `speak` | `voice` | on | Send a TTS voice note to the active chat. |
+| `toggle_automation` | `automations` | on | Enable or disable a routine. |
+| `update_knowledge` | — | on | Add / update / remove `knowledge.md` sections (locked headings respected). |
+| `write_file` | — | on | Write or create an allowed file. |
+| `write_journal` | `journal` | on | Append a private journal entry. |
 
-| Tool | Description |
-|---|---|
-| `search_web` | Web search (DuckDuckGo by default; optional Firecrawl when configured). |
-| `fetch_url` | Fetch and extract text from a URL. |
-| `read_file` | Read allowed paths (harness policy). |
-| `list_directory` | List allowed directories. |
-| `search_files` | Search files by pattern under allowed roots. |
-| `write_file` | Write/create allowed files. |
-| `append_file` | Append to allowed files. |
-| `get_current_time` | Current local date and time. |
-| `search_tools` | Search registered tools by keyword (runtime discovery). |
-| `describe_tool` | Full name, description, and JSON Schema for one tool. |
-| `update_knowledge` | Add/update/remove sections in `knowledge.md` (respects locked headings). |
+**Runtime list** — The table is the in-repo catalog; the **live** registry depends on YAML toggles, optional extras (`pip install 'bumblebee[voice]'`, `imagegen`, `browser`, etc.), and any **MCP** servers you attach. Use **`search_tools`** / **`describe_tool`** in chat, or **`/tools`** on CLI/Telegram where available, to see what this process actually exposed.
 
-#### Optional — default **on** in `configs/default.yaml`
+### Extending the stack (code + MCP)
 
-| Tool | `tools.*` key | Description |
-|---|---|---|
-| `get_youtube_transcript` | `youtube` | Transcript for a YouTube URL or id. |
-| `search_youtube` | `youtube` | Search YouTube. |
-| `read_reddit` | `reddit` | Browse a subreddit. |
-| `read_reddit_post` | `reddit` | Read a Reddit post thread. |
-| `read_wikipedia` | `wikipedia` | Wikipedia summary / fetch. |
-| `get_weather` | `weather` | Weather for a location. |
-| `get_news` | `news` | News headlines/topics. |
-| `read_pdf` | `pdf` | Extract text from a PDF path. |
-| `speak` | `voice` | TTS voice message to the active chat (Edge-TTS). |
-| `get_tts_voice` | `voice` | Current TTS voice id. |
-| `list_tts_voices` | `voice` | List Edge-TTS voices (filterable). |
-| `set_tts_voice` | `voice` | Set TTS voice for this process. |
-| `set_reminder` | `reminders` | Schedule a reminder (DB + scheduler). |
-| `list_reminders` | `reminders` | List reminders. |
-| `cancel_reminder` | `reminders` | Cancel a reminder. |
-| `send_message_to` | `messaging` | Message a platform target or resolved person (`confirm` flow). |
-| `list_known_contacts` | `messaging` | Known people/routes from prior interactions. |
-| `send_dm` | `messaging` | DM on Telegram/Discord; `list_targets=true` lists seen user ids, or pass `user_id` / `target_person` (confirm flow). |
-| `get_system_info` | `system` | Host/system snapshot. |
-| `run_command` | `shell` | Run a shell command (deny rules + timeout). |
-| `run_background` | `shell` | Start a background shell job. |
-| `check_process` | `shell` | Inspect a tracked background job. |
-| `kill_process` | `shell` | Stop a background job. |
-| `execute_python` | `code` | Run Python in a sandboxed helper. |
-| `execute_javascript` | `code` | Run JavaScript in a sandboxed helper. |
+Bumblebee is meant to **grow**: add new `@register_decorated` tools alongside the existing modules, or wrap external capability behind a thin adapter in `bumblebee/presence/tools/`. Keep schemas honest and respect harness policy for filesystem and shell.
 
-#### Optional — default **off** in `configs/default.yaml`
-
-| Tool | `tools.*` key | Description |
-|---|---|---|
-| `browser_navigate` | `browser` | Open a URL in the automated browser. |
-| `browser_screenshot` | `browser` | Screenshot current page. |
-| `browser_click` | `browser` | Click an element. |
-| `browser_type` | `browser` | Type into the page. |
-| `generate_image` | `imagegen` | Text-to-image (Fal or local A1111-compatible API). |
-
-**Voice (Edge-TTS):**
-
-```bash
-pip install bumblebee[voice]
-```
-
-**Imagegen:** set `tools.imagegen.enabled: true` and either Fal (`FAL_API_KEY`, `pip install bumblebee[imagegen]`) or `backend: local` + `local_url` for a local SD WebUI-compatible endpoint.
-
-The **live** tool list depends on harness and entity YAML (disabled categories are omitted) and on loaded MCP servers. To see what this process actually registered, use `search_tools` / `describe_tool`, or `/tools` on CLI/Telegram where supported.
-
-### MCP integration
-
-Declare stdio MCP servers on the entity; tools are registered dynamically (names are prefixed for the registry). Example:
+**MCP (Model Context Protocol)** — Declare stdio MCP servers on the entity; their tools are registered **dynamically** when the process starts (names are **prefixed** in the registry so they stay distinct from native tools). Reconnects and multiple servers are supported through the same mechanism.
 
 ```yaml
 mcp_servers:
@@ -445,17 +453,33 @@ mcp_servers:
       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_xxx"
 ```
 
-See `configs/entities/example.yaml` for a commented template.
+See **`configs/entities/example.yaml`** for a commented template. Anything that speaks MCP can extend the entity’s reach without forking the core harness.
+
+**Optional extras**
+
+- **Voice:** `pip install 'bumblebee[voice]'` (Edge-TTS for `speak` / voice listing tools).
+- **Imagegen:** `tools.imagegen.enabled: true` plus Fal (`FAL_API_KEY`, `pip install 'bumblebee[imagegen]'`) or `backend: local` + `local_url` for a local SD WebUI-compatible endpoint.
+- **Browser:** `tools.browser.enabled: true` and `pip install 'bumblebee[browser]'` (Playwright) for the four `browser_*` tools.
 
 ## Knowledge system
 
-Each entity may have a `knowledge.md` file — durable facts, opinions, and context the entity (or you) consider important. It is organized into `##` sections; embeddings help pull relevant sections into context.
+Each entity may have a **`knowledge.md`** file — durable facts, opinions, and context the entity (or you) consider important. It is organized into `##` sections; embeddings help pull relevant sections into context. By default it lives next to **`memory.db`** (same directory as the configured SQLite file). When using **`DATABASE_URL`** / Postgres without a local DB file, the harness keeps **`knowledge.md`** under **`~/.bumblebee/entities/<name>/`** unless you customize paths.
 
 ```bash
 bumblebee knowledge canary    # create if missing, open in $EDITOR
 ```
 
-Example:
+### Journal
+
+A separate **`journal.md`** (default path **`~/.bumblebee/entities/<name>/journal.md`**) is for the entity’s **private**, append-only reflections — often used after automation runs. Open it in your editor with:
+
+```bash
+bumblebee journal canary
+```
+
+The **`read_journal`** / **`write_journal`** tools respect entity **`automations.journal`** and harness **`tools.journal`** toggles.
+
+Example **knowledge** excerpt:
 
 ```markdown
 ## [locked] about yourself
@@ -470,7 +494,13 @@ Got into shoegaze after talking about My Bloody Valentine.
 
 ## Configuration
 
-Harness defaults live in `configs/default.yaml`. Per-entity overrides go in `configs/entities/<name>.yaml` (models, cognition, presence, optional `mcp_servers`, Firecrawl, etc.).
+Harness defaults live in **`configs/default.yaml`**. Per-entity overrides go in **`configs/entities/<name>.yaml`** — models, **`cognition`** (including **`rolling_history_max_messages`** and **`history_compression`**), **`presence`**, **`automations`** (schedules, emergence, journal), optional top-level **`tools:`**, **`mcp_servers`**, Firecrawl, etc.
+
+**Deployment / inference:** `deployment.mode` (`local` | `hybrid_railway`) and `inference` keys align with **`.env`** (`BUMBLEBEE_DEPLOYMENT_MODE`, `BUMBLEBEE_INFERENCE_PROVIDER`, tunnel **`BUMBLEBEE_INFERENCE_BASE_URL`**, gateway token). See [docs/architecture/deployment-modes.md](docs/architecture/deployment-modes.md).
+
+**Hybrid attachments:** harness **`attachments.backend`** can be **`object_s3_compat`** with S3-compatible env vars (see **`.env.example`**) for durable blobs when the worker runs in the cloud.
+
+**Timezone:** optional **`BUMBLEBEE_TIMEZONE`** (IANA name) for wall-clock prompts and **`get_current_time`**.
 
 Illustrative harness defaults (see the file for the full list):
 
@@ -503,26 +533,33 @@ presence:
   tool_activity: true
 ```
 
-Entity YAML can override chat models under `cognition` (for example `reflex_model` / `deliberate_model`).
+Entity YAML can override chat models under **`cognition`** (for example **`reflex_model`** / **`deliberate_model`**).
 
 ## CLI reference
 
 ```bash
-bumblebee setup [--profile ask|hybrid|local]   # .env + home gateway stack + Railway + entity
-bumblebee create                      # genesis wizard — new entity
-bumblebee gateway on|off|status|restart  # Windows: Ollama + inference gateway + cloudflared (scripts/gateway.ps1)
-bumblebee talk <entity>               # CLI conversation (no daemon)
-bumblebee run <entity>                # daemon + configured platforms
-bumblebee status <entity>             # emotional state, drives, stats
-bumblebee evolve <entity>             # force one trait evolution cycle (debug/advanced)
-bumblebee knowledge <entity>          # open knowledge.md in editor
-bumblebee recall <entity> "<query>"   # semantic search over episodic memory
-bumblebee export <entity> <dest_dir>  # backup entity state
-bumblebee import <bundle_dir>         # restore entity state
+bumblebee setup [--profile ask|hybrid|local]   # .env + home stack + Railway + entity wizard
+bumblebee gateway setup                        # interactive: gateway token + Cloudflare tunnel + .env
+bumblebee gateway on|off|status|restart        # Windows: Ollama + inference gateway + cloudflared
+bumblebee create                               # genesis wizard — new entity YAML
+bumblebee talk <entity>                        # CLI conversation (no daemon)
+bumblebee run <entity>                         # daemon + configured platforms (local or hybrid)
+bumblebee worker <entity>                      # daemon + platforms, no CLI (Railway worker role)
+bumblebee api [--host 0.0.0.0] [--port 8080]  # HTTP health API (extras: pip install 'bumblebee[api]')
+bumblebee status <entity>                      # emotional state, drives, paths
+bumblebee evolve <entity>                      # force one trait evolution cycle (debug/advanced)
+bumblebee knowledge <entity>                   # open knowledge.md in $EDITOR
+bumblebee journal <entity>                     # open journal.md in $EDITOR
+bumblebee recall <entity> "<query>"            # semantic search over episodic memory
+bumblebee wipe <entity> [--yes]                # clear rolling chat + wipe SQLite/Postgres memory
+bumblebee export <entity> <dest_dir>           # backup entity YAML + DB
+bumblebee import <bundle_dir>                  # restore entity bundle
 
 bumblebee talk canary --ollama                 # start local Ollama if needed
 bumblebee run canary --ollama --pull-models    # also pull models from config
 ```
+
+`gateway` subcommands other than **`setup`** use **`scripts/gateway.ps1`** and are intended for **Windows**; **`gateway setup`** is interactive documentation + **`.env`** on any OS, then offers **`gateway on`** when the script is available.
 
 ## Hardware guide
 
@@ -535,24 +572,16 @@ bumblebee run canary --ollama --pull-models    # also pull models from config
 
 MoE-style models keep active parameters per token lower than full dense size; exact fit depends on context length, thinking budget, and concurrent platforms.
 
-## How it compares
+## What Bumblebee is built for
 
-Bumblebee is not trying to replace general agentic harnesses. Those excel at **tasks**. Bumblebee is an **entitative** harness — optimized for persistent beings, local Gemma inference, and inner life. Different goals, different tradeoffs.
+Bumblebee is optimized for **sustained entity existence**: local **Gemma** / **Ollama** inference, memory that behaves like **life story** (episodes, people, beliefs, narrative), **drive-shaped** initiative, and an **inner voice** that does not have to be shown verbatim to matter.
 
-| | Typical agentic stack | Bumblebee |
-|---|---|---|
-| **Primary goal** | Complete tasks for a user | Sustained entity existence |
-| **Default inference** | Often cloud APIs | Local Ollama / Gemma |
-| **Memory** | Sessions, files, RAG | Episodic + relational + beliefs + narrative |
-| **Personality** | Prompt presets | FSM + drives + evolution + voice |
-| **Proactivity** | Schedules / triggers | Drive-motivated initiative |
-| **Inner life** | Usually none | Thinking mode as private monologue |
+If you want a stack whose north star is **embodiment**, **continuity**, and **freedom within character** — this is the shape of it.
 
 ## Philosophy
 
-Every agentic harness asks: "how do I serve the user better?"
-
-Bumblebee asks: "how does the entity exist more fully?"
+One question runs through the harness: **how does this entity exist more fully?**  
+Everything else — platforms, tools, memory layers, hybrid deployment — exists to honor that.
 
 ## License
 

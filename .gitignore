@@ -28,6 +28,7 @@ ENV/
 *.sqlite3
 
 # IDE / OS
+.cursorrules
 .idea/
 .vscode/
 *.swp

@@ -78,12 +78,13 @@ build-backend = "hatchling.build"
 packages = ["bumblebee", "onboarding"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"onboarding/bumbletech.png" = "onboarding/bumbletech.png"
+"assets/branding/bumblebee.png" = "assets/branding/bumblebee.png"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "bumblebee/**",
     "onboarding/**",
+    "assets/branding/**",
     "config/**",
     "configs/**",
     "docs/**",

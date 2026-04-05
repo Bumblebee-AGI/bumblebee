@@ -11,7 +11,7 @@ import aiohttp
 
 from bumblebee.presence.tools.registry import tool
 
-_UA = "BumblebeeBot/0.1 (+https://github.com/DoughPurrp/bumblebee)"
+_UA = "BumblebeeBot/0.1 (+https://pypi.org/project/bumblebee/)"
 
 
 async def _fetch_json_with_retry(url: str, retries: int = 2) -> tuple[Any, str | None]:

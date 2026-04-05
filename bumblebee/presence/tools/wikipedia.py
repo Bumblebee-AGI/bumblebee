@@ -67,7 +67,7 @@ async def read_wikipedia(topic: str, full_article: bool = False) -> str:
         return json.dumps({"error": "empty topic"})
     enc = quote(t.replace(" ", "_"), safe="")
     summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{enc}"
-    headers = {"User-Agent": "BumblebeeBot/0.1 (https://github.com/DoughPurrp/bumblebee)"}
+    headers = {"User-Agent": "BumblebeeBot/0.1 (+https://pypi.org/project/bumblebee/)"}
     try:
         async with aiohttp.ClientSession(
             headers=headers,
