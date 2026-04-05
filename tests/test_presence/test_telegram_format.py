@@ -2,6 +2,7 @@ from bumblebee.presence.platforms.telegram_format import (
     command_menu_items,
     format_commands_page,
     format_start_html,
+    format_tools_html,
     split_telegram_chunks,
 )
 
@@ -34,4 +35,22 @@ def test_command_menu_items_are_short():
     items = command_menu_items()
     assert items
     assert any(name == "start" for name, _ in items)
+    assert any(name == "tools" for name, _ in items)
     assert all(len(desc) <= 256 for _, desc in items)
+
+
+def test_tools_html_lists_registered_tools():
+    class _Tools:
+        def list_tools(self):
+            return [
+                ("search_web", "Search the web"),
+                ("get_current_time", "Get current date and time"),
+            ]
+
+    class _Entity:
+        tools = _Tools()
+
+    out = format_tools_html(_Entity())
+    assert "Active tools" in out
+    assert "search_web" in out
+    assert "get_current_time" in out

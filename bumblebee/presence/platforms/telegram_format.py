@@ -103,6 +103,12 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         category="Runtime",
     ),
     TelegramCommandSpec(
+        name="tools",
+        summary="List all currently active tools for this entity",
+        usage="/tools",
+        category="Runtime",
+    ),
+    TelegramCommandSpec(
         name="ping",
         summary="Quick liveness check",
         usage="/ping",
@@ -151,7 +157,7 @@ def format_help_html(entity_name: str) -> str:
         "<b>Useful commands</b>\n"
         "• <code>/status</code>, <code>/feelings</code>, <code>/memories [count]</code>\n"
         "• <code>/me</code> to inspect relationship state\n"
-        "• <code>/models</code> and <code>/ping</code> for runtime checks\n"
+        "• <code>/models</code>, <code>/tools</code>, and <code>/ping</code> for runtime checks\n"
         "• <code>/reset</code> to clear rolling chat turns only\n\n"
         "<b>Important</b>\n"
         "• <code>/reset</code> does <i>not</i> wipe SQLite memories.\n"
@@ -311,6 +317,38 @@ def format_models_html(entity: "Entity") -> str:
         f"context window · {cfg.cognition.max_context_tokens // 1000}k tokens\n"
         f"tools registered · {len(entity.tools.openai_tools())}"
     )
+
+
+def format_tools_html(entity: "Entity") -> str:
+    """Render active runtime tools for this entity, including dynamic MCP tools."""
+    rows: list[tuple[str, str]] = []
+    list_fn = getattr(entity.tools, "list_tools", None)
+    if callable(list_fn):
+        rows = list_fn()
+    else:
+        for t in entity.tools.openai_tools():
+            fn = t.get("function", {}) if isinstance(t, dict) else {}
+            rows.append(
+                (
+                    str(fn.get("name") or ""),
+                    str(fn.get("description") or ""),
+                )
+            )
+        rows = sorted([r for r in rows if r[0]], key=lambda r: r[0])
+
+    lines = [f"<b>Active tools</b> · {len(rows)} total", ""]
+    if not rows:
+        lines.append("No tools are currently registered.")
+        return "\n".join(lines)
+
+    for name, desc in rows:
+        summary = (desc or "").strip()
+        if len(summary) > 180:
+            summary = summary[:177] + "..."
+        lines.append(f"• <code>{html.escape(name)}</code>")
+        if summary:
+            lines.append(f"  {html.escape(summary)}")
+    return "\n".join(lines)
 
 
 def format_ping_html(app_version: str) -> str:

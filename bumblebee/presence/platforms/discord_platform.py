@@ -136,7 +136,14 @@ class DiscordPlatform(Platform):
             person_id=str(message.author.id),
             person_name=str(message.author.display_name or message.author.name),
             channel=str(message.channel.id),
-            metadata={"channel_name": getattr(message.channel, "name", "") or ""},
+            metadata={
+                "channel_name": getattr(message.channel, "name", "") or "",
+                "chat_type": (
+                    "dm"
+                    if isinstance(message.channel, discord.DMChannel)
+                    else "guild"
+                ),
+            },
             platform="discord",
             images=images,
             audio=audio_parts,

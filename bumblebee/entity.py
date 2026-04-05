@@ -229,11 +229,13 @@ class Entity:
         await pf.send_message(str(target), str(message))
 
     def _remember_person_route(self, inp: Input) -> None:
+        chat_type = str((inp.metadata or {}).get("chat_type") or "").strip().lower()
         route = {
             "platform": inp.platform,
             "channel": inp.channel,
             "person_id": inp.person_id,
             "person_name": inp.person_name,
+            "chat_type": chat_type,
             "at": time.time(),
         }
         pid = (inp.person_id or "").strip()
@@ -243,17 +245,81 @@ class Entity:
         if pname:
             self._person_routes[f"name:{pname}"] = route
 
-    def resolve_person_route(self, target_person: str) -> dict[str, str | float] | None:
+    def list_known_person_routes(self, platform: str = "") -> list[dict[str, str | float]]:
+        pf = (platform or "").strip().lower()
+        out: list[dict[str, str | float]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+        for r in self._person_routes.values():
+            rp = str(r.get("platform") or "").strip().lower()
+            if pf and rp != pf:
+                continue
+            key = (
+                rp,
+                str(r.get("channel") or ""),
+                str(r.get("person_id") or ""),
+                str(r.get("person_name") or ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(dict(r))
+        out.sort(key=lambda x: float(x.get("at") or 0.0), reverse=True)
+        return out
+
+    @staticmethod
+    def _pick_best_route(
+        candidates: list[dict[str, str | float]],
+        *,
+        platform: str,
+        prefer_private: bool,
+    ) -> dict[str, str | float] | None:
+        cands = list(candidates)
+        if platform:
+            cands = [c for c in cands if str(c.get("platform") or "").strip().lower() == platform]
+        if not cands:
+            return None
+        if prefer_private:
+            priv = [
+                c
+                for c in cands
+                if str(c.get("chat_type") or "").strip().lower() in ("private", "dm", "direct")
+            ]
+            if priv:
+                cands = priv
+        cands.sort(key=lambda x: float(x.get("at") or 0.0), reverse=True)
+        return cands[0] if cands else None
+
+    def resolve_person_route(
+        self,
+        target_person: str,
+        *,
+        platform: str = "",
+        prefer_private: bool = True,
+    ) -> dict[str, str | float] | None:
         t = (target_person or "").strip()
         if not t:
             return None
+        pf = (platform or "").strip().lower()
+        low = t.casefold()
+
+        exact: list[dict[str, str | float]] = []
         by_id = self._person_routes.get(t)
         if by_id:
-            return by_id
-        by_name = self._person_routes.get(f"name:{t.casefold()}")
+            exact.append(dict(by_id))
+        by_name = self._person_routes.get(f"name:{low}")
         if by_name:
-            return by_name
-        return None
+            exact.append(dict(by_name))
+        picked = self._pick_best_route(exact, platform=pf, prefer_private=prefer_private)
+        if picked:
+            return picked
+
+        fuzzy: list[dict[str, str | float]] = []
+        for r in self.list_known_person_routes(pf):
+            pid = str(r.get("person_id") or "").strip()
+            pname = str(r.get("person_name") or "").strip().casefold()
+            if pid == t or pname == low or low in pname:
+                fuzzy.append(r)
+        return self._pick_best_route(fuzzy, platform=pf, prefer_private=prefer_private)
 
     async def fetch_cli_header_counts(self) -> tuple[int, int, float | None]:
         async with self.store.session() as conn:
@@ -346,6 +412,7 @@ class Entity:
             self.tools.register_decorated(reminders_tools.cancel_reminder)
         if self._tool_enabled("messaging", True):
             self.tools.register_decorated(messaging_tools.send_message_to)
+            self.tools.register_decorated(messaging_tools.list_known_contacts)
         if self._tool_enabled("system", True):
             self.tools.register_decorated(system_info_tools.get_system_info)
         if self._tool_enabled("shell", True):

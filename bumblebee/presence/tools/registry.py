@@ -219,6 +219,13 @@ class ToolRegistry:
     def openai_tools(self) -> list[dict[str, Any]]:
         return [t.openai_tool() for t in self._tools.values()]
 
+    def list_tools(self) -> list[tuple[str, str]]:
+        """Return (name, description) for currently-registered tools."""
+        return sorted(
+            [(t.name, t.description) for t in self._tools.values()],
+            key=lambda row: row[0],
+        )
+
     def gemma_tool_declarations(self) -> str:
         return gemma.format_tool_declarations_block(self.openai_tools())
 

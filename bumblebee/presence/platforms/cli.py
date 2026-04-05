@@ -302,6 +302,29 @@ class CLIPlatform(Platform):
         self.console.print()
         render_feelings_introspection(self.console, self.entity_name, self.entity.emotions.get_state())
 
+    def _slash_tools(self) -> None:
+        list_fn = getattr(self.entity.tools, "list_tools", None)
+        if callable(list_fn):
+            rows = list_fn()
+        else:
+            rows = []
+            for t in self.entity.tools.openai_tools():
+                fn = t.get("function", {}) if isinstance(t, dict) else {}
+                name = str(fn.get("name") or "").strip()
+                desc = str(fn.get("description") or "").strip()
+                if name:
+                    rows.append((name, desc))
+            rows = sorted(rows, key=lambda r: r[0])
+        self.console.print()
+        self.console.print(Text(f"Active tools ({len(rows)})", style=STYLE_LABEL))
+        if not rows:
+            self.console.print(Text("none", style=STYLE_WHISPER))
+            return
+        for name, desc in rows:
+            self.console.print(Text(f"  - {name}", style=STYLE_VALUE))
+            if desc:
+                self.console.print(Text(f"      {desc}", style=STYLE_WHISPER))
+
     async def _graceful_bye(self) -> None:
         if getattr(self.entity.store, "dialect", "sqlite") == "sqlite":
             episodes_end = _sync_episode_count(self.entity.store.db_path)
@@ -384,6 +407,9 @@ class CLIPlatform(Platform):
                     continue
                 if line == "/feelings":
                     self._slash_feelings()
+                    continue
+                if line == "/tools":
+                    self._slash_tools()
                     continue
 
                 self._exchange_count += 1

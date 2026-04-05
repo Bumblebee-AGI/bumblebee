@@ -87,7 +87,7 @@ cognition:
   history_message_char_limit: 1500
   thinking_mode: false
   temperature: 0.75
-  max_context_tokens: 16384
+  max_context_tokens: 8192
   thinking_budget: 2048
 
 presence:

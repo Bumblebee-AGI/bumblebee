@@ -139,12 +139,41 @@ Equivalent wrappers in the repo root:
 .\gateway-off.cmd
 ```
 
+NPM shortcuts in this repo (`package.json`):
+
+```powershell
+npm run deploy:canary   # deploy bumblebee-worker + bumblebee-api to Railway
+npm run ollama:reset    # full local Ollama cleanup + safe restart checks
+```
+
+List all available npm scripts anytime:
+
+```powershell
+npm run
+```
+
+One-command Ollama cleanup + safe restart (recommended when it falls back to CPU unexpectedly):
+
+```powershell
+npm run ollama:reset
+```
+
+What `ollama:reset` does:
+
+- Stops the gateway stack (`bumblebee gateway off`)
+- Kills leftover `ollama.exe` runner processes
+- Shows pre-start GPU/process checks
+- Persists safe defaults in **User** env (`OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_KEEP_ALIVE=60s`, `OLLAMA_CONTEXT_LENGTH=8192`, `OLLAMA_NUM_PARALLEL=1`)
+- Restarts gateway (`on` + `status`)
+- Warms `gemma4:26b` once and prints post-start checks (`ollama ps` + GPU memory summary)
+
 Advanced direct script form:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\gateway.ps1 status
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\gateway.ps1 on
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\gateway.ps1 off
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\ollama-reset.ps1
 ```
 
 Notes:

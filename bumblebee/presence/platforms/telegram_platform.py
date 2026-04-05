@@ -30,6 +30,7 @@ from bumblebee.presence.platforms.telegram_format import (
     format_ping_html,
     format_reset_html,
     format_start_html,
+    format_tools_html,
     format_unknown_command,
     split_telegram_chunks,
 )
@@ -97,6 +98,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("feelings", self._on_feelings_command))
         self.app.add_handler(CommandHandler("me", self._on_me_command))
         self.app.add_handler(CommandHandler("models", self._on_models_command))
+        self.app.add_handler(CommandHandler("tools", self._on_tools_command))
         self.app.add_handler(CommandHandler("ping", self._on_ping_command))
         self.app.add_handler(CommandHandler("reset", self._on_reset_command))
         self.app.add_handler(MessageHandler(filters.PHOTO, self._on_photo))
@@ -271,6 +273,12 @@ class TelegramPlatform(Platform):
         _ = context
         await self._reply_html(update, format_models_html(self._entity))
 
+    async def _on_tools_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._check_allowed(update, notify=True):
+            return
+        _ = context
+        await self._reply_html(update, format_tools_html(self._entity))
+
     async def _on_ping_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._check_allowed(update, notify=True):
             return
@@ -307,6 +315,7 @@ class TelegramPlatform(Platform):
             person_name=(u.first_name or u.username or str(u.id)) if u else "User",
             channel=str(msg.chat_id),
             platform="telegram",
+            metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
         )
         self._dispatch_callback(inp)
 
@@ -332,6 +341,7 @@ class TelegramPlatform(Platform):
                 channel=str(msg.chat_id),
                 platform="telegram",
                 images=[{"base64": b64, "mime": "image/jpeg"}],
+                metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
             )
             self._dispatch_callback(inp)
         except Exception as e:
@@ -367,6 +377,7 @@ class TelegramPlatform(Platform):
                 channel=str(msg.chat_id),
                 platform="telegram",
                 audio=[{"base64": b64, "format": "ogg"}],
+                metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
             )
             self._dispatch_callback(inp)
         except Exception as e:
@@ -401,6 +412,7 @@ class TelegramPlatform(Platform):
                 channel=str(msg.chat_id),
                 platform="telegram",
                 images=[{"base64": b64, "mime": mime or "image/jpeg"}],
+                metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
             )
             self._dispatch_callback(inp)
         except Exception as e:

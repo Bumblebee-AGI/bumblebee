@@ -44,7 +44,10 @@ class DeliberateCognition:
             role = m.get("role", "user")
             content = m.get("content", "")
             if isinstance(content, list):
-                content = gemma.stringify_content_blocks(content)
+                # Preserve multimodal user/tool payloads (e.g. image_url) for OpenAI-compatible backends.
+                # Only assistant content should be flattened to text for history carryover.
+                if role == "assistant":
+                    content = gemma.stringify_content_blocks(content)
             elif role == "assistant" and isinstance(content, str):
                 content = gemma.strip_thinking_for_history(content)
             entry: dict[str, Any] = {"role": role, "content": content}
