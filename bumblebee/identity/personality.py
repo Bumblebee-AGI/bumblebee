@@ -10,7 +10,7 @@ from bumblebee.utils.clock import time_context_block
 
 if TYPE_CHECKING:
     from bumblebee.config import EntityConfig
-    from bumblebee.utils.ollama_client import OllamaClient
+    from bumblebee.inference.protocol import InferenceProvider
 
 
 class PersonalityEngine:
@@ -189,7 +189,7 @@ class PersonalityEngine:
         emotional_state: EmotionalState,
         context: dict[str, Any],
         *,
-        client: OllamaClient | None = None,
+        client: InferenceProvider | None = None,
         inner_summary: str | None = None,
         relationship_blurb: str | None = None,
         memory_blurb: str | None = None,

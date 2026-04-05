@@ -1,0 +1,18 @@
+# Example harness overlay: Bumblebee runtime on Railway; inference via home gateway.
+# Set DATABASE_URL and BUMBLEBEE_INFERENCE_* env vars in Railway (see docs/deployment/hybrid-railway.md).
+
+deployment:
+  mode: hybrid_railway
+
+inference:
+  provider: remote_gateway
+  base_url: "" # set via BUMBLEBEE_INFERENCE_BASE_URL in Railway
+  api_key_env: BUMBLEBEE_INFERENCE_GATEWAY_TOKEN
+  timeout: 120
+
+memory:
+  database_url: "" # prefer DATABASE_URL env on Railway (Postgres)
+
+attachments:
+  backend: object_s3_compat
+  prefix: bumblebee

@@ -7,12 +7,12 @@ import math
 import time
 from typing import Optional
 
-from bumblebee.memory.store import MemoryStore
+from bumblebee.storage.protocol import RelationalStore
 from bumblebee.models import Relationship
 
 
 class RelationalMemory:
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(self, store: RelationalStore) -> None:
         self.store = store
 
     async def get(self, conn, person_id: str) -> Optional[Relationship]:

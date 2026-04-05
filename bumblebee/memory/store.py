@@ -129,6 +129,8 @@ _EXPERIENCE_TABLES = (
 
 
 class MemoryStore:
+    dialect: str = "sqlite"
+
     def __init__(self, db_path: str) -> None:
         self.db_path = str(Path(db_path).expanduser())
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)

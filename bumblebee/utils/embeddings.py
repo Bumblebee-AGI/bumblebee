@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from bumblebee.utils.ollama_client import OllamaClient
+from bumblebee.inference.protocol import InferenceProvider
 
 
-async def embed_text(client: OllamaClient, model: str, text: str) -> list[float]:
+async def embed_text(client: InferenceProvider, model: str, text: str) -> list[float]:
     return await client.embed(model, text)

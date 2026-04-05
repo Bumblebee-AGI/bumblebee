@@ -39,3 +39,14 @@ class Platform(ABC):
     @abstractmethod
     def get_person_name(self, message: Any) -> str:
         ...
+
+    async def send_attachment_bytes(
+        self,
+        channel: str,
+        data: bytes,
+        *,
+        content_type: str | None = None,
+        filename: str = "attachment.bin",
+    ) -> None:
+        """Send binary outbound (e.g. bytes loaded from ``Entity.read_stored_attachment``). CLI: no-op."""
+        return None

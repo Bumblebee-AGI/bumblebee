@@ -19,6 +19,7 @@ from bumblebee.cognition.reflex import ReflexCognition
 from bumblebee.cognition.router import CognitionRouter, ContextPackage
 from bumblebee.cognition import gemma, senses
 from bumblebee.config import EntityConfig, resolve_firecrawl_settings, validate_ollama_models
+from bumblebee.inference import InferenceProvider, build_inference_provider
 from bumblebee.identity.drives import Drive, DriveSystem
 from bumblebee.identity.emotions import EmotionEngine
 from bumblebee.identity.evolution import EvolutionEngine
@@ -30,7 +31,6 @@ from bumblebee.memory.imprints import ImprintStore
 from bumblebee.memory.knowledge import KnowledgeStore
 from bumblebee.memory.narrative import NarrativeMemory, NarrativeSynthesizer
 from bumblebee.memory.relational import RelationalMemory
-from bumblebee.memory.store import MemoryStore
 from bumblebee.models import EmotionCategory, ImprintRecord, Input
 from bumblebee.presence.embodiment import Embodiment
 from bumblebee.presence.initiative import InitiativeEngine
@@ -42,7 +42,14 @@ from bumblebee.presence.tools.registry import ToolRegistry, format_tool_activity
 from bumblebee.presence.tools import time_tools
 from bumblebee.presence.tools import web as web_tools
 from bumblebee.utils.clock import parse_entity_created_timestamp
-from bumblebee.utils.ollama_client import ChatCompletionResult, OllamaClient, ToolCallSpec
+from bumblebee.storage import (
+    attachment_refs_episode_note,
+    build_attachment_store,
+    create_memory_store,
+    load_stored_attachment,
+    persist_incoming_attachments,
+)
+from bumblebee.utils.ollama_client import ChatCompletionResult, ToolCallSpec
 
 log = structlog.get_logger("bumblebee.entity")
 
@@ -126,14 +133,9 @@ async def _deliver_embodied_deliberate_segment(
 class Entity:
     def __init__(self, config: EntityConfig) -> None:
         self.config = config
-        h = config.harness.ollama
-        self.client = OllamaClient(
-            base_url=h.base_url,
-            timeout=h.timeout,
-            retry_attempts=h.retry_attempts,
-            retry_delay=h.retry_delay,
-        )
-        self.store = MemoryStore(config.db_path())
+        self.client: InferenceProvider = build_inference_provider(config.harness)
+        self.store = create_memory_store(config)
+        self.attachments = build_attachment_store(config)
         self.personality = PersonalityEngine(config)
         self.emotions = EmotionEngine(config)
         self.drives = DriveSystem(config)
@@ -183,6 +185,21 @@ class Entity:
 
     def register_proactive_sink(self, fn: Callable[[str], Awaitable[None]]) -> None:
         self._proactive_sends.append(fn)
+
+    async def fetch_cli_header_counts(self) -> tuple[int, int, float | None]:
+        async with self.store.session() as conn:
+            ne = await self.store.count_episodes(conn)
+            nr = await self.store.count_relationships(conn)
+            mt = await self.store.min_episode_timestamp(conn)
+        return ne, nr, mt
+
+    async def fetch_cli_recent_summaries(self, limit: int = 5) -> list[str]:
+        async with self.store.session() as conn:
+            return await self.episodic.recent_summaries(conn, limit)
+
+    async def read_stored_attachment(self, storage_ref: str) -> bytes | None:
+        """Load bytes for a ``storage_ref`` produced by inbound attachment persistence (outbound / tools)."""
+        return await load_stored_attachment(self.attachments, storage_ref)
 
     async def _hydrate_entity_state(self, conn) -> None:
         cur = await conn.execute("SELECT key, value FROM entity_state")
@@ -433,6 +450,11 @@ class Entity:
             )
 
         self.dormant = False
+
+        try:
+            inp = await persist_incoming_attachments(self.attachments, inp)
+        except Exception as e:
+            log.warning("attachment_persist_batch_failed", module="entity", error=str(e))
 
         if inp.audio:
             aud0 = inp.audio[0]
@@ -690,6 +712,10 @@ class Entity:
             sig = min(1.0, 0.2 + (0.3 if meaningful else 0) + fam * 0.2)
             if sig >= thr and meaningful:
                 try:
+                    _refs = inp.metadata.get("attachment_storage_refs") or []
+                    _note = attachment_refs_episode_note(_refs)
+                    _base_budget = max(0, 4000 - len(_note))
+                    _raw = (inp.text[:_base_budget] + _note)[:4000]
                     ep = await self.episodic.create_from_interaction(
                         db,
                         self.client,
@@ -698,7 +724,7 @@ class Entity:
                         imprint=self.emotions.get_state().primary,
                         imprint_i=self.emotions.get_state().intensity,
                         significance=sig,
-                        raw_context=inp.text[:4000],
+                        raw_context=_raw,
                         self_reflection=(thinking or "")[:1500],
                         tags=["conversation", inp.platform],
                     )

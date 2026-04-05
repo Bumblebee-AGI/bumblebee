@@ -136,17 +136,20 @@ class CLIPlatform(Platform):
         self._tb_mood = self.entity.emotions.get_state().primary.value
         self._tb_drive = dominant_drive_toolbar(self.entity.drives.all_drives())
 
-    def _build_header_snapshot_sync(self) -> CLIHeaderSnapshot:
-        path = self.entity.store.db_path
-        n_ep = _sync_episode_count(path)
-        n_people = _sync_relationship_count(path)
-        first_ts = _sync_min_episode_timestamp(path)
+    async def _build_header_snapshot(self) -> CLIHeaderSnapshot:
         cfg = self.entity.config
+        st = self.entity.emotions.get_state()
+        if getattr(self.entity.store, "dialect", "sqlite") == "sqlite":
+            path = self.entity.store.db_path
+            n_ep = _sync_episode_count(path)
+            n_people = _sync_relationship_count(path)
+            first_ts = _sync_min_episode_timestamp(path)
+        else:
+            n_ep, n_people, first_ts = await self.entity.fetch_cli_header_counts()
         awake = compute_awake_summary(
             created_raw=cfg.raw.get("created"),
             first_episode_ts=first_ts,
         )
-        st = self.entity.emotions.get_state()
         return CLIHeaderSnapshot(
             app_version=self.app_version,
             entity_name=cfg.name,
@@ -160,19 +163,19 @@ class CLIPlatform(Platform):
             people_count=n_people,
         )
 
-    async def _build_header_snapshot(self) -> CLIHeaderSnapshot:
-        return self._build_header_snapshot_sync()
-
     async def begin_talk_session(self) -> None:
         if self._session_begun or not self.immersive:
             return
         self._session_begun = True
         self._session_t0 = time.time()
         self._mood_start_label = self.entity.emotions.get_state().primary.value
-        self._episodes_start = _sync_episode_count(self.entity.store.db_path)
+        if getattr(self.entity.store, "dialect", "sqlite") == "sqlite":
+            self._episodes_start = _sync_episode_count(self.entity.store.db_path)
+        else:
+            self._episodes_start = (await self.entity.fetch_cli_header_counts())[0]
 
         self._sync_toolbar_state()
-        snap = self._build_header_snapshot_sync()
+        snap = await self._build_header_snapshot()
         render_startup(self.console, snap)
         await asyncio.sleep(0.5)
 
@@ -286,12 +289,12 @@ class CLIPlatform(Platform):
         self._invalidate_app()
 
     async def _slash_status(self) -> None:
-        snap = self._build_header_snapshot_sync()
+        snap = await self._build_header_snapshot()
         self.console.print()
         render_startup(self.console, snap)
 
     async def _slash_memories(self) -> None:
-        summaries = _sync_recent_summaries(self.entity.store.db_path, 5)
+        summaries = await self.entity.fetch_cli_recent_summaries(5)
         self.console.print()
         render_memories_introspection(self.console, self.entity_name, summaries)
 
@@ -300,7 +303,10 @@ class CLIPlatform(Platform):
         render_feelings_introspection(self.console, self.entity_name, self.entity.emotions.get_state())
 
     async def _graceful_bye(self) -> None:
-        episodes_end = _sync_episode_count(self.entity.store.db_path)
+        if getattr(self.entity.store, "dialect", "sqlite") == "sqlite":
+            episodes_end = _sync_episode_count(self.entity.store.db_path)
+        else:
+            episodes_end = (await self.entity.fetch_cli_header_counts())[0]
         mood_end = self.entity.emotions.get_state().primary.value
         start_ep = (
             self._episodes_start if self._episodes_start is not None else episodes_end
@@ -326,7 +332,10 @@ class CLIPlatform(Platform):
         else:
             self._session_t0 = time.time()
             self._mood_start_label = self.entity.emotions.get_state().primary.value
-            self._episodes_start = _sync_episode_count(self.entity.store.db_path)
+            if getattr(self.entity.store, "dialect", "sqlite") == "sqlite":
+                self._episodes_start = _sync_episode_count(self.entity.store.db_path)
+            else:
+                self._episodes_start = (await self.entity.fetch_cli_header_counts())[0]
 
         def bottom_toolbar():
             return FormattedText(

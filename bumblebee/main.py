@@ -1,4 +1,4 @@
-"""CLI entry: create, run, talk, status, evolve, recall, export, import."""
+"""CLI entry: create, run, talk, status, evolve, recall, export, import, gateway."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from bumblebee.config import (
 )
 from bumblebee.entity import Entity
 from bumblebee.genesis import creator
+from bumblebee.health import check_inference
 from bumblebee.presence.daemon import PresenceDaemon
 from bumblebee.presence.platforms.cli import CLIPlatform
 from bumblebee.presence.platforms.discord_platform import DiscordPlatform, token_from_config
@@ -168,6 +169,40 @@ def _prepare_ollama_cli(entity_name: str, with_ollama: bool, pull_models: bool) 
         pull_required_models(ec, click.echo)
 
 
+def _gateway_script_path() -> Path:
+    candidates = [
+        Path.cwd() / "scripts" / "gateway.ps1",
+        Path(__file__).resolve().parent.parent / "scripts" / "gateway.ps1",
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    checked = ", ".join(str(p) for p in candidates)
+    raise click.ClickException(
+        f"Could not locate scripts/gateway.ps1. Checked: {checked}. Run from the repo root."
+    )
+
+
+def _run_gateway_script(action: str, extra_args: list[str] | None = None) -> None:
+    if os.name != "nt":
+        raise click.ClickException("Gateway helper commands are currently supported on Windows only.")
+    script = _gateway_script_path()
+    cmd = [
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        action,
+    ]
+    if extra_args:
+        cmd.extend(extra_args)
+    rc = subprocess.call(cmd)
+    if rc != 0:
+        raise click.ClickException(f"gateway {action} failed with exit code {rc}.")
+
+
 @click.group()
 def cli() -> None:
     # Runs before every subcommand; keep in sync with ``main()`` for entry points that call ``cli`` only.
@@ -178,6 +213,80 @@ def cli() -> None:
 def cmd_create() -> None:
     """Launch interactive entity wizard."""
     creator.run_wizard()
+
+
+@cli.group("gateway")
+def cmd_gateway() -> None:
+    """Manage local hybrid inference gateway stack (Windows)."""
+
+
+@cmd_gateway.command("on")
+@click.option("--tunnel-name", default="bumblebee-inference", show_default=True)
+@click.option("--cloudflared-config", default="", help="Path to cloudflared config.yml.")
+@click.option("--tunnel-url", default="", help="Optional tunnel URL override for probes.")
+@click.option("--gateway-host", default="127.0.0.1", show_default=True)
+@click.option("--gateway-port", default=8010, show_default=True, type=int)
+def cmd_gateway_on(
+    tunnel_name: str,
+    cloudflared_config: str,
+    tunnel_url: str,
+    gateway_host: str,
+    gateway_port: int,
+) -> None:
+    """Start/validate ollama + inference gateway + cloudflared tunnel."""
+    args = [
+        "-TunnelName",
+        tunnel_name,
+        "-GatewayHost",
+        gateway_host,
+        "-GatewayPort",
+        str(gateway_port),
+    ]
+    if cloudflared_config.strip():
+        args += ["-CloudflaredConfig", cloudflared_config.strip()]
+    if tunnel_url.strip():
+        args += ["-TunnelUrl", tunnel_url.strip()]
+    _run_gateway_script("on", args)
+
+
+@cmd_gateway.command("off")
+@click.option("--tunnel-name", default="bumblebee-inference", show_default=True)
+@click.option("--leave-ollama-running", is_flag=True)
+def cmd_gateway_off(tunnel_name: str, leave_ollama_running: bool) -> None:
+    """Stop cloudflared + gateway (+ ollama unless --leave-ollama-running)."""
+    args = ["-TunnelName", tunnel_name]
+    if leave_ollama_running:
+        args.append("-LeaveOllamaRunning")
+    _run_gateway_script("off", args)
+
+
+@cmd_gateway.command("status")
+@click.option("--tunnel-name", default="bumblebee-inference", show_default=True)
+@click.option("--cloudflared-config", default="", help="Path to cloudflared config.yml.")
+@click.option("--tunnel-url", default="", help="Optional tunnel URL override for probes.")
+@click.option("--gateway-host", default="127.0.0.1", show_default=True)
+@click.option("--gateway-port", default=8010, show_default=True, type=int)
+def cmd_gateway_status(
+    tunnel_name: str,
+    cloudflared_config: str,
+    tunnel_url: str,
+    gateway_host: str,
+    gateway_port: int,
+) -> None:
+    """Show gateway process + health status."""
+    args = [
+        "-TunnelName",
+        tunnel_name,
+        "-GatewayHost",
+        gateway_host,
+        "-GatewayPort",
+        str(gateway_port),
+    ]
+    if cloudflared_config.strip():
+        args += ["-CloudflaredConfig", cloudflared_config.strip()]
+    if tunnel_url.strip():
+        args += ["-TunnelUrl", tunnel_url.strip()]
+    _run_gateway_script("status", args)
 
 
 @cli.command("talk")
@@ -248,14 +357,14 @@ def cmd_run(entity_name: str, with_ollama: bool, pull_models: bool) -> None:
     """Start entity with daemon and configured platforms."""
     _prepare_ollama_cli(entity_name, with_ollama, pull_models)
     try:
-        asyncio.run(_run(entity_name))
+        asyncio.run(_run(entity_name, worker_mode=False))
     except KeyboardInterrupt:
         click.echo("\nStopped.", err=True)
     finally:
         shutdown_spawned_ollama()
 
 
-async def _run(entity_name: str) -> None:
+async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
     harness = load_harness_config()
     ec = load_entity_config(entity_name, harness)
     for w in validate_entity_env(ec):
@@ -267,6 +376,12 @@ async def _run(entity_name: str) -> None:
         ec.harness.logging.format,
     )
     ent = Entity(ec)
+    try:
+        inf = await check_inference(ec, ent.client)
+        if not inf.get("ok"):
+            click.echo(f"Warning: inference not healthy: {inf}", err=True)
+    except Exception as e:
+        click.echo(f"Warning: inference check failed: {e}", err=True)
 
     daemon = PresenceDaemon(ent)
 
@@ -319,7 +434,10 @@ async def _run(entity_name: str) -> None:
             platforms.append(telegram_p)
 
     cli_p = CLIPlatform(ent, app_version=_app_version(), immersive=False)
-    has_cli = any((p.get("type") or "").lower() == "cli" for p in ec.presence.platforms)
+    has_cli = (
+        any((p.get("type") or "").lower() == "cli" for p in ec.presence.platforms)
+        and not worker_mode
+    )
 
     async def proactive_fanout(message: str) -> None:
         sent = False
@@ -442,7 +560,8 @@ def cmd_status(entity_name: str) -> None:
         click.echo("Drives:")
         for d in ent.drives.all_drives():
             click.echo(f"  {d.name}: {d.level:.2f} (threshold {d.threshold})")
-        click.echo(f"DB: {ec.db_path()}")
+        du = ec.database_url()
+        click.echo(f"DB: {du if du else ec.db_path()}")
         click.echo(f"Dormant: {ent.dormant}")
         await ent.shutdown()
 
@@ -507,7 +626,7 @@ def cmd_recall(entity_name: str, query: str) -> None:
             async with ent.store.session() as db:
                 qe = await ent.client.embed(ec.harness.models.embedding, query)
                 if not qe:
-                    click.echo("Could not embed query (Ollama?).")
+                    click.echo("Could not embed query (inference backend unavailable?).")
                     return
                 pairs = await ent.store.search_episodes_by_embedding(db, qe, limit=8)
                 for eid, score in pairs:
@@ -519,6 +638,32 @@ def cmd_recall(entity_name: str, query: str) -> None:
                 pass
 
     asyncio.run(_recall())
+
+
+@cli.command("worker")
+@click.argument("entity_name")
+def cmd_worker(entity_name: str) -> None:
+    """Run platforms + daemon without CLI (use on Railway as bumblebee-worker)."""
+    try:
+        asyncio.run(_run(entity_name, worker_mode=True))
+    except KeyboardInterrupt:
+        click.echo("\nStopped.", err=True)
+
+
+@cli.command("api")
+@click.option("--host", default="0.0.0.0", show_default=True)
+@click.option("--port", default=8080, show_default=True, type=int)
+def cmd_api(host: str, port: int) -> None:
+    """HTTP health service (Railway bumblebee-api). Requires: pip install 'bumblebee[api]'"""
+    try:
+        import uvicorn
+    except ImportError as e:
+        raise click.ClickException(
+            "Missing uvicorn/fastapi. Install: pip install 'bumblebee[api]'"
+        ) from e
+    from bumblebee.apps.api import create_api_app
+
+    uvicorn.run(create_api_app(), host=host, port=port, log_level="info")
 
 
 @cli.command("wipe")

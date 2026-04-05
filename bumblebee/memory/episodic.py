@@ -6,16 +6,17 @@ import json
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
-from bumblebee.memory.store import MemoryStore, _pack_embedding, _unpack_embedding
+from bumblebee.memory.store import _pack_embedding, _unpack_embedding
+from bumblebee.storage.protocol import RelationalStore
 from bumblebee.models import EmotionCategory, Episode, ImprintRecord, new_id
 
 if TYPE_CHECKING:
     from bumblebee.config import EntityConfig
-    from bumblebee.utils.ollama_client import OllamaClient
+    from bumblebee.inference.protocol import InferenceProvider
 
 
 class EpisodicMemory:
-    def __init__(self, entity: EntityConfig, store: MemoryStore) -> None:
+    def __init__(self, entity: EntityConfig, store: RelationalStore) -> None:
         self.entity = entity
         self.store = store
 
@@ -175,7 +176,7 @@ class EpisodicMemory:
     async def create_from_interaction(
         self,
         conn,
-        client: OllamaClient,
+        client: InferenceProvider,
         *,
         summary: str,
         participants: list[str],

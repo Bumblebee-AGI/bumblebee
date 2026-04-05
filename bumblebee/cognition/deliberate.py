@@ -9,7 +9,8 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 from bumblebee.config import EntityConfig
 from bumblebee.cognition import gemma
 from bumblebee.models import Input
-from bumblebee.utils.ollama_client import ChatCompletionResult, OllamaClient, ToolCallSpec
+from bumblebee.inference.protocol import InferenceProvider
+from bumblebee.inference.types import ChatCompletionResult, ToolCallSpec
 
 
 @dataclass
@@ -28,7 +29,7 @@ class DeliberateStreamEvent:
 
 
 class DeliberateCognition:
-    def __init__(self, entity: EntityConfig, client: OllamaClient) -> None:
+    def __init__(self, entity: EntityConfig, client: InferenceProvider) -> None:
         self.entity = entity
         self.client = client
 

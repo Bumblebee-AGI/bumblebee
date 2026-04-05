@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any
 
 from bumblebee.models import Input
-from bumblebee.utils.ollama_client import ChatCompletionResult, OllamaClient
+from bumblebee.inference.protocol import InferenceProvider
+from bumblebee.inference.types import ChatCompletionResult
 
 
 def _guess_mime_from_path(path: str) -> str | None:
@@ -82,7 +83,7 @@ def clip_text_for_budget(text: str, max_chars: int) -> str:
 
 
 async def transcribe_audio_attachment(
-    client: OllamaClient,
+    client: InferenceProvider,
     model: str,
     *,
     base64_audio: str,

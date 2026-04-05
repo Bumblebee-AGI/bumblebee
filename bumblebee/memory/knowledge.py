@@ -12,7 +12,7 @@ from bumblebee.memory.store import cosine_sim
 
 if TYPE_CHECKING:
     from bumblebee.config import EntityConfig
-    from bumblebee.utils.ollama_client import OllamaClient
+    from bumblebee.inference.protocol import InferenceProvider
 
 log = structlog.get_logger("bumblebee.knowledge")
 
@@ -61,7 +61,7 @@ def _norm_key(title: str) -> str:
 class KnowledgeStore:
     """In-memory index of knowledge.md sections with embeddings (refreshed when mtime changes)."""
 
-    def __init__(self, entity: EntityConfig, client: OllamaClient) -> None:
+    def __init__(self, entity: EntityConfig, client: InferenceProvider) -> None:
         self.entity = entity
         self.client = client
         self._path = knowledge_file_path(entity)

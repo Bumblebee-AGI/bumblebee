@@ -8,11 +8,12 @@ from bumblebee.config import EntityConfig
 from bumblebee.cognition import gemma
 from bumblebee.cognition.router import ContextPackage
 from bumblebee.models import Input
-from bumblebee.utils.ollama_client import ChatCompletionResult, OllamaClient
+from bumblebee.inference.protocol import InferenceProvider
+from bumblebee.inference.types import ChatCompletionResult
 
 
 class ReflexCognition:
-    def __init__(self, entity: EntityConfig, client: OllamaClient) -> None:
+    def __init__(self, entity: EntityConfig, client: InferenceProvider) -> None:
         self.entity = entity
         self.client = client
 

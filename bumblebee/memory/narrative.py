@@ -7,16 +7,16 @@ import json
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
-from bumblebee.memory.store import MemoryStore
+from bumblebee.storage.protocol import RelationalStore
 from bumblebee.models import new_id
 
 if TYPE_CHECKING:
     from bumblebee.config import EntityConfig
-    from bumblebee.utils.ollama_client import OllamaClient
+    from bumblebee.inference.protocol import InferenceProvider
 
 
 class NarrativeMemory:
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(self, store: RelationalStore) -> None:
         self.store = store
 
     async def latest(self, conn) -> Optional[str]:
@@ -50,7 +50,7 @@ class NarrativeMemory:
 class NarrativeSynthesizer:
     """Calls the harness deliberate model to author first-person continuity of self."""
 
-    def __init__(self, entity: EntityConfig, store: MemoryStore) -> None:
+    def __init__(self, entity: EntityConfig, store: RelationalStore) -> None:
         self.entity = entity
         self.store = store
         self._mem = NarrativeMemory(store)
@@ -58,7 +58,7 @@ class NarrativeSynthesizer:
     async def synthesize(
         self,
         conn,
-        client: OllamaClient,
+        client: InferenceProvider,
         *,
         episodes_payload: list[dict[str, Any]],
         relationships_payload: list[dict[str, Any]],

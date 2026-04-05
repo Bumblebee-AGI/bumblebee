@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import os
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -182,6 +183,31 @@ class TelegramPlatform(Platform):
             await self.app.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except Exception as e:
             log.debug("send_typing_failed", error=str(e))
+
+    async def send_attachment_bytes(
+        self,
+        channel: str,
+        data: bytes,
+        *,
+        content_type: str | None = None,
+        filename: str = "attachment.bin",
+    ) -> None:
+        """Deliver bytes from blob storage as photo (image/*) or document."""
+        if not data:
+            return
+        chat_id = int(channel)
+        ct = (content_type or "").lower()
+        try:
+            if ct.startswith("image/"):
+                await self.app.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(data))
+            else:
+                await self.app.bot.send_document(
+                    chat_id=chat_id,
+                    document=io.BytesIO(data),
+                    filename=filename[:255],
+                )
+        except Exception as e:
+            log.warning("telegram_send_attachment_failed", error=str(e))
 
     async def send_message(self, channel: str, content: str) -> None:
         chat_id = int(channel)

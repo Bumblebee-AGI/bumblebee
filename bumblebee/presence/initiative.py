@@ -6,13 +6,13 @@ import structlog
 
 from bumblebee.config import EntityConfig
 from bumblebee.identity.drives import Drive
-from bumblebee.utils.ollama_client import OllamaClient
+from bumblebee.inference.protocol import InferenceProvider
 
 log = structlog.get_logger("bumblebee.presence.initiative")
 
 
 class InitiativeEngine:
-    def __init__(self, entity: EntityConfig, client: OllamaClient) -> None:
+    def __init__(self, entity: EntityConfig, client: InferenceProvider) -> None:
         self.entity = entity
         self.client = client
 

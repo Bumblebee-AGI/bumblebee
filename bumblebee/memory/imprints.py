@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from bumblebee.memory.store import MemoryStore, _pack_embedding
+from bumblebee.memory.store import _pack_embedding
+from bumblebee.storage.protocol import RelationalStore
 from bumblebee.models import EmotionCategory, ImprintRecord, new_id
 
 
@@ -24,7 +25,7 @@ def affinity_multiplier_for_recall(mood: EmotionCategory, imprint_emotion: str) 
 
 
 class ImprintStore:
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(self, store: RelationalStore) -> None:
         self.store = store
 
     async def add(

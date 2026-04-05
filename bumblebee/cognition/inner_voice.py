@@ -10,7 +10,7 @@ from typing import Any
 
 import structlog
 
-from bumblebee.memory.store import MemoryStore
+from bumblebee.storage.protocol import RelationalStore
 from bumblebee.models import new_id
 
 log = structlog.get_logger("bumblebee.cognition.inner_voice")
@@ -25,7 +25,7 @@ class InnerVoiceSlice:
 
 
 class InnerVoiceProcessor:
-    def __init__(self, store: MemoryStore, max_buffer: int = 12) -> None:
+    def __init__(self, store: RelationalStore, max_buffer: int = 12) -> None:
         self.store = store
         self._buffer: deque[str] = deque(maxlen=max_buffer)
 

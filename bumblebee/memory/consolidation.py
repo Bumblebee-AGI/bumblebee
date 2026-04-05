@@ -59,10 +59,24 @@ class ConsolidationJob:
                 log.warning("narrative_cycle_failed", module="memory", error=str(e))
 
     async def run_for_daemon(self, entity_facade) -> None:
-        """Decay via thread + optional narrative on a short-lived aiosqlite connection."""
+        """Decay via thread (SQLite) or in-session UPDATE (Postgres); optional narrative."""
         rate = self._cfg.harness.memory.memory_decay_rate
         delta = rate * 10
-        await asyncio.to_thread(apply_episode_decay_sync, entity_facade.store.db_path, delta)
+        store = entity_facade.store
+        if getattr(store, "dialect", "sqlite") == "postgres":
+            async with store.session() as conn:
+                await conn.execute(
+                    """
+                    UPDATE episodes SET significance = CASE
+                        WHEN significance - $1 < 0 THEN 0
+                        ELSE significance - $1
+                    END
+                    WHERE significance > 0
+                    """,
+                    (delta,),
+                )
+        else:
+            await asyncio.to_thread(apply_episode_decay_sync, store.db_path, delta)
         log.info("consolidation_tick", module="memory", decay_applied=rate)
 
         self._run_count += 1

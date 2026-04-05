@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 from rich.rule import Rule
@@ -28,6 +30,21 @@ STYLE_VALUE = ""
 STYLE_RULE = "dim"
 STYLE_ERROR = "#c45c5c"
 STYLE_WHISPER = "dim italic"
+
+
+def _sync_recent_summaries(db_path: str, limit: int = 5) -> list[str]:
+    p = Path(db_path).expanduser()
+    if not p.is_file():
+        return []
+    try:
+        with sqlite3.connect(str(p)) as conn:
+            cur = conn.execute(
+                "SELECT summary FROM episodes ORDER BY timestamp DESC LIMIT ?",
+                (limit,),
+            )
+            return [str(r[0]) for r in cur.fetchall() if r and r[0]]
+    except sqlite3.Error:
+        return []
 
 
 @dataclass
@@ -252,8 +269,13 @@ def render_side_panel(console: Console, entity: object) -> None:
         inner = (inner_obj.recent_summary() or "").strip()[:320]
     if not inner:
         inner = "…"
-    db_path = str(getattr(getattr(entity, "store", None), "db_path", "") or "")
-    mem_lines = _sync_recent_summaries(db_path, 4)
+    store = getattr(entity, "store", None)
+    dialect = getattr(store, "dialect", "sqlite") if store is not None else "sqlite"
+    db_path = str(getattr(store, "db_path", "") or "")
+    if dialect == "sqlite" and db_path:
+        mem_lines = _sync_recent_summaries(db_path, 4)
+    else:
+        mem_lines = []
     mem_preview = "\n".join(
         (f"• {m[:72]}…" if len(m) > 72 else f"• {m}") for m in mem_lines
     ) or "—"

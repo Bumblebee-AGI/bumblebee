@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import os
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -162,6 +163,30 @@ class DiscordPlatform(Platform):
         if self._runner_task and not self._runner_task.done():
             return
         self._runner_task = asyncio.create_task(self._run_client(), name="discord-runner")
+
+    async def send_attachment_bytes(
+        self,
+        channel: str,
+        data: bytes,
+        *,
+        content_type: str | None = None,
+        filename: str = "attachment.bin",
+    ) -> None:
+        """Deliver bytes from blob storage (or tools) as a Discord attachment."""
+        if not data:
+            return
+        await self._ready.wait()
+        try:
+            cid = int(channel)
+        except ValueError:
+            return
+        ch = self.client.get_channel(cid)
+        if ch is None or not isinstance(ch, discord.abc.Messageable):
+            return
+        try:
+            await ch.send(file=discord.File(io.BytesIO(data), filename=filename[:255]))
+        except Exception as e:
+            _discord_log.warning("discord_send_attachment_failed", error=str(e))
 
     async def send_message(self, channel: str, content: str) -> None:
         await self._ready.wait()

@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from bumblebee.config import EntityConfig
 from bumblebee.models import EmotionCategory, EmotionalState, Input
-from bumblebee.utils.ollama_client import OllamaClient
+from bumblebee.inference.protocol import InferenceProvider
 
 
 RouteKind = Literal["reflex", "deliberate"]
@@ -87,7 +87,7 @@ def _tiny_non_identity_reaction(t: str, low: str) -> bool:
 
 
 class CognitionRouter:
-    def __init__(self, entity: EntityConfig, client: OllamaClient) -> None:
+    def __init__(self, entity: EntityConfig, client: InferenceProvider) -> None:
         self.entity = entity
         self.client = client
 

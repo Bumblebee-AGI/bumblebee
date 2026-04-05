@@ -121,6 +121,38 @@ bumblebee talk canary --ollama
 bumblebee run canary --ollama --pull-models
 ```
 
+### Hybrid gateway controls (Windows)
+
+If you run the Bumblebee runtime on Railway and keep inference at home, use:
+
+```powershell
+bumblebee gateway status
+bumblebee gateway on
+bumblebee gateway off
+```
+
+Equivalent wrappers in the repo root:
+
+```powershell
+.\gateway-status.cmd
+.\gateway-on.cmd
+.\gateway-off.cmd
+```
+
+Advanced direct script form:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\gateway.ps1 status
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\gateway.ps1 on
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\gateway.ps1 off
+```
+
+Notes:
+
+- `on` starts/validates `ollama serve`, `python -m bumblebee.inference_gateway`, and `cloudflared tunnel run bumblebee-inference`.
+- `off` stops cloudflared + gateway + ollama (pass `-LeaveOllamaRunning` if you only want to stop tunnel/gateway).
+- Token lookup order: `INFERENCE_GATEWAY_TOKEN`, then `BUMBLEBEE_INFERENCE_GATEWAY_TOKEN`, then `.env` keys with those names.
+
 ## Telegram
 
 Run **`bumblebee run <entity>`** with Telegram enabled in the entity YAML (not `talk` — the daemon owns the bot connection).

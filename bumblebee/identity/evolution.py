@@ -13,7 +13,7 @@ import structlog
 from bumblebee.config import EntityConfig
 
 if TYPE_CHECKING:
-    from bumblebee.utils.ollama_client import OllamaClient
+    from bumblebee.inference.protocol import InferenceProvider
 
 log = structlog.get_logger("bumblebee.identity.evolution")
 
@@ -42,7 +42,7 @@ class EvolutionEngine:
         self.entity.personality.core_traits.update(traits)
         return changed
 
-    async def run_deep_cycle(self, conn, client: OllamaClient, entity_facade: Any) -> None:
+    async def run_deep_cycle(self, conn, client: InferenceProvider, entity_facade: Any) -> None:
         """Every ~100 interactions: analyze patterns, apply ±0.01 trait caps, persist."""
         episodes = await entity_facade.episodic.recent_for_evolution(conn, 100)
         if len(episodes) < 3:
