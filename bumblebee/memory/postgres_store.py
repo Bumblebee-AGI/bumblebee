@@ -7,9 +7,11 @@ from typing import Any, AsyncIterator, Optional
 
 import numpy as np
 
+from bumblebee.memory import automations_repo
 from bumblebee.memory.pg_translate import translate_sql
 from bumblebee.memory.store import _unpack_embedding, cosine_sim
 from bumblebee.models import EmotionCategory
+from bumblebee.presence.automations.models import Automation
 
 try:
     import asyncpg
@@ -109,6 +111,46 @@ CREATE TABLE IF NOT EXISTS reminders (
     created_at DOUBLE PRECISION NOT NULL,
     fired_at DOUBLE PRECISION
 );
+
+CREATE TABLE IF NOT EXISTS automations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    schedule_natural TEXT NOT NULL,
+    cron_expression TEXT NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'user',
+    created_by TEXT NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL,
+    deliver_to TEXT,
+    deliver_platform TEXT,
+    tools_hint TEXT DEFAULT '[]',
+    enabled INTEGER DEFAULT 1,
+    last_run DOUBLE PRECISION,
+    last_result_summary TEXT,
+    next_run DOUBLE PRECISION,
+    run_count INTEGER DEFAULT 0,
+    context TEXT DEFAULT '',
+    priority TEXT DEFAULT 'normal',
+    consecutive_failures INTEGER DEFAULT 0,
+    max_failures INTEGER DEFAULT 5,
+    self_destruct_condition TEXT,
+    tags TEXT DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS automation_runs (
+    id TEXT PRIMARY KEY,
+    automation_id TEXT NOT NULL,
+    started_at DOUBLE PRECISION NOT NULL,
+    completed_at DOUBLE PRECISION,
+    success INTEGER,
+    result_summary TEXT,
+    emotional_state_before TEXT,
+    emotional_state_after TEXT,
+    tools_used TEXT DEFAULT '[]',
+    delivered_to TEXT,
+    self_modified INTEGER DEFAULT 0,
+    modification_description TEXT
+);
 """
 
 _EXPERIENCE_TABLES = (
@@ -121,6 +163,8 @@ _EXPERIENCE_TABLES = (
     "entity_state",
     "evolution_log",
     "reminders",
+    "automation_runs",
+    "automations",
 )
 
 
@@ -274,3 +318,35 @@ class PostgresMemoryStore:
         if row and row[0] is not None:
             return float(row[0])
         return None
+
+    async def save_automation(self, auto: Automation) -> None:
+        async with self.session() as conn:
+            await automations_repo.save_automation(conn, auto)
+
+    async def get_automation(self, auto_id: str) -> Automation | None:
+        async with self.session() as conn:
+            return await automations_repo.get_automation(conn, auto_id)
+
+    async def list_automations(self, enabled_only: bool = True) -> list[Automation]:
+        async with self.session() as conn:
+            return await automations_repo.list_automations(conn, enabled_only=enabled_only)
+
+    async def update_automation(self, auto_id: str, **fields: object) -> None:
+        async with self.session() as conn:
+            await automations_repo.update_automation(conn, auto_id, **fields)
+
+    async def delete_automation(self, auto_id: str) -> None:
+        async with self.session() as conn:
+            await automations_repo.delete_automation(conn, auto_id)
+
+    async def save_automation_run(self, run: dict) -> None:
+        async with self.session() as conn:
+            await automations_repo.save_automation_run(conn, run)
+
+    async def get_automation_runs(self, auto_id: str, limit: int = 10) -> list[dict]:
+        async with self.session() as conn:
+            return await automations_repo.get_automation_runs(conn, auto_id, limit=limit)
+
+    async def count_automations(self) -> int:
+        async with self.session() as conn:
+            return await automations_repo.count_automations(conn)

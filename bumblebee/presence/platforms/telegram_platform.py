@@ -41,6 +41,24 @@ if TYPE_CHECKING:
 log = structlog.get_logger("bumblebee.presence.telegram")
 
 
+def _telegram_display_name(user: Any) -> str:
+    """Disambiguate members in groups: full name + @username when available."""
+    if user is None:
+        return "User"
+    first = (getattr(user, "first_name", None) or "").strip()
+    last = (getattr(user, "last_name", None) or "").strip()
+    full = f"{first} {last}".strip()
+    un = (getattr(user, "username", None) or "").strip()
+    parts: list[str] = []
+    if full:
+        parts.append(full)
+    if un:
+        parts.append(f"@{un}")
+    if parts:
+        return " · ".join(parts)
+    return str(getattr(user, "id", "") or "User")
+
+
 class TelegramPlatform(Platform):
     def __init__(
         self,
@@ -312,7 +330,7 @@ class TelegramPlatform(Platform):
         inp = Input(
             text=msg.text,
             person_id=str(u.id) if u else "unknown",
-            person_name=(u.first_name or u.username or str(u.id)) if u else "User",
+            person_name=_telegram_display_name(u),
             channel=str(msg.chat_id),
             platform="telegram",
             metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
@@ -337,7 +355,7 @@ class TelegramPlatform(Platform):
             inp = Input(
                 text=caption,
                 person_id=str(u.id) if u else "unknown",
-                person_name=(u.first_name or u.username or str(u.id)) if u else "User",
+                person_name=_telegram_display_name(u),
                 channel=str(msg.chat_id),
                 platform="telegram",
                 images=[{"base64": b64, "mime": "image/jpeg"}],
@@ -373,7 +391,7 @@ class TelegramPlatform(Platform):
             inp = Input(
                 text=cap,
                 person_id=str(u.id) if u else "unknown",
-                person_name=(u.first_name or u.username or str(u.id)) if u else "User",
+                person_name=_telegram_display_name(u),
                 channel=str(msg.chat_id),
                 platform="telegram",
                 audio=[{"base64": b64, "format": "ogg"}],
@@ -408,7 +426,7 @@ class TelegramPlatform(Platform):
             inp = Input(
                 text=cap,
                 person_id=str(u.id) if u else "unknown",
-                person_name=(u.first_name or u.username or str(u.id)) if u else "User",
+                person_name=_telegram_display_name(u),
                 channel=str(msg.chat_id),
                 platform="telegram",
                 images=[{"base64": b64, "mime": mime or "image/jpeg"}],
@@ -471,10 +489,10 @@ class TelegramPlatform(Platform):
         text = content[:4096]
         await self.app.bot.send_message(chat_id=chat_id, text=text)
 
-    async def send_audio(self, channel: str, path: str) -> None:
+    async def send_audio(self, channel: str, path: str) -> bool:
         p = Path(path)
         if not p.is_file():
-            return
+            return False
         chat_id = int(channel)
         try:
             with p.open("rb") as f:
@@ -483,8 +501,10 @@ class TelegramPlatform(Platform):
                     await self.app.bot.send_voice(chat_id=chat_id, voice=f)
                 else:
                     await self.app.bot.send_audio(chat_id=chat_id, audio=f)
+            return True
         except Exception as e:
             log.warning("telegram_send_audio_failed", error=str(e))
+            return False
 
     async def send_image(self, channel: str, path: str) -> None:
         p = Path(path)
@@ -551,12 +571,7 @@ class TelegramPlatform(Platform):
 
     def get_person_name(self, message: Any) -> str:
         if isinstance(message, Update):
-            u = message.effective_user
-            if not u:
-                return ""
-            if u.first_name:
-                return f"{u.first_name} {u.last_name or ''}".strip()
-            return u.username or str(u.id)
+            return _telegram_display_name(message.effective_user)
         return ""
 
 

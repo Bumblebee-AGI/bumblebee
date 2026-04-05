@@ -1,5 +1,5 @@
 param(
-    [int]$ContextLength = 8192,
+    [int]$ContextLength = 16384,
     [int]$MaxLoadedModels = 1,
     [string]$KeepAlive = "60s",
     [int]$NumParallel = 1,

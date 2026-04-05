@@ -1,4 +1,4 @@
-"""CLI entry: create, run, talk, status, evolve, recall, export, import, gateway."""
+"""CLI entry: setup, create, run, talk, status, evolve, recall, export, import, gateway (on/off/status/restart/setup)."""
 
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ from bumblebee.presence.platforms.discord_platform import DiscordPlatform, token
 from bumblebee.presence.platforms.telegram_platform import TelegramPlatform
 from bumblebee.utils.log import setup_logging
 from bumblebee.utils.ollama_bootstrap import bootstrap_stack, shutdown_spawned_ollama
+from bumblebee.utils.gateway_script import run_gateway_script as _run_gateway_script_subprocess
+from bumblebee.utils.repo_dotenv import load_repo_dotenv
 
 
 def _async(coro):
@@ -55,38 +57,8 @@ def _app_version() -> str:
         return "0.1.0"
 
 
-def _apply_dotenv_file(path: Path) -> None:
-    """Set os.environ keys from a single .env file.
-
-    Non-empty existing values are kept; missing or blank entries are filled from the file.
-    """
-    if not path.is_file():
-        return
-    for raw in path.read_text(encoding="utf-8-sig").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, val = line.partition("=")
-        key = key.strip().removeprefix("\ufeff")
-        val = val.strip().strip('"').strip("'")
-        if not key:
-            continue
-        # Fill when unset or empty so a stale Windows env entry can't block `.env`.
-        if (os.environ.get(key) or "").strip():
-            continue
-        os.environ[key] = val
-
-
 def _load_repo_dotenv() -> None:
-    """Load `.env` from cwd first, then package parent (repo root when running from source).
-
-    A normal (non-editable) install puts code under site-packages; ``parent.parent`` then
-    is not your project folder, so tokens in the repo ``.env`` are missed unless we also
-    read ``Path.cwd() / ".env"``.
-    """
-    _apply_dotenv_file(Path.cwd() / ".env")
-    pkg_root = Path(__file__).resolve().parent.parent
-    _apply_dotenv_file(pkg_root / ".env")
+    load_repo_dotenv(anchor=Path(__file__))
 
 
 async def _wait_until_stopped() -> None:
@@ -169,36 +141,8 @@ def _prepare_ollama_cli(entity_name: str, with_ollama: bool, pull_models: bool) 
         pull_required_models(ec, click.echo)
 
 
-def _gateway_script_path() -> Path:
-    candidates = [
-        Path.cwd() / "scripts" / "gateway.ps1",
-        Path(__file__).resolve().parent.parent / "scripts" / "gateway.ps1",
-    ]
-    for p in candidates:
-        if p.is_file():
-            return p
-    checked = ", ".join(str(p) for p in candidates)
-    raise click.ClickException(
-        f"Could not locate scripts/gateway.ps1. Checked: {checked}. Run from the repo root."
-    )
-
-
 def _run_gateway_script(action: str, extra_args: list[str] | None = None) -> None:
-    if os.name != "nt":
-        raise click.ClickException("Gateway helper commands are currently supported on Windows only.")
-    script = _gateway_script_path()
-    cmd = [
-        "powershell",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(script),
-        action,
-    ]
-    if extra_args:
-        cmd.extend(extra_args)
-    rc = subprocess.call(cmd)
+    rc = _run_gateway_script_subprocess(action, extra_args)
     if rc != 0:
         raise click.ClickException(f"gateway {action} failed with exit code {rc}.")
 
@@ -209,6 +153,36 @@ def cli() -> None:
     _load_repo_dotenv()
 
 
+@cli.command("setup")
+@click.option(
+    "--profile",
+    type=click.Choice(["ask", "hybrid", "local"], case_sensitive=False),
+    default="ask",
+    show_default=True,
+    help="hybrid = home Ollama + gateway + Cloudflare tunnel + Railway (default when asking); local = single machine.",
+)
+@click.option(
+    "--mode",
+    "legacy_mode",
+    type=click.Choice(["ask", "quick", "full"], case_sensitive=False),
+    default=None,
+    hidden=True,
+    help="Deprecated: use --profile. quick→local, full→hybrid.",
+)
+def cmd_setup(profile: str, legacy_mode: str | None) -> None:
+    """Interactive setup wizard (.env, gateway stack, Railway, entity)."""
+    from bumblebee.setup_wizard import run_setup_wizard
+
+    resolved = profile
+    if legacy_mode == "quick":
+        resolved = "local"
+    elif legacy_mode == "full":
+        resolved = "hybrid"
+    elif legacy_mode == "ask":
+        resolved = "ask"
+    run_setup_wizard(profile=resolved)
+
+
 @cli.command("create")
 def cmd_create() -> None:
     """Launch interactive entity wizard."""
@@ -217,7 +191,29 @@ def cmd_create() -> None:
 
 @cli.group("gateway")
 def cmd_gateway() -> None:
-    """Manage local hybrid inference gateway stack (Windows)."""
+    """Inference gateway + Cloudflare tunnel: setup wizard; on/off/status/restart (Windows script)."""
+
+
+@cmd_gateway.command("setup")
+@click.option("--tunnel-name", default="bumblebee-inference", show_default=True)
+@click.option("--cloudflared-config", default="", help="Path to cloudflared config.yml (default: ~/.cloudflared/config.yml).")
+@click.option("--gateway-host", default="127.0.0.1", show_default=True)
+@click.option("--gateway-port", default=8010, show_default=True, type=int)
+def cmd_gateway_setup(
+    tunnel_name: str,
+    cloudflared_config: str,
+    gateway_host: str,
+    gateway_port: int,
+) -> None:
+    """Interactive wizard: bearer token, tunnel config, .env, then optional gateway on (Windows)."""
+    from bumblebee.gateway_setup import run_gateway_setup_wizard
+
+    run_gateway_setup_wizard(
+        tunnel_name=tunnel_name,
+        cloudflared_config=cloudflared_config,
+        gateway_host=gateway_host,
+        gateway_port=gateway_port,
+    )
 
 
 @cmd_gateway.command("on")
@@ -287,6 +283,39 @@ def cmd_gateway_status(
     if tunnel_url.strip():
         args += ["-TunnelUrl", tunnel_url.strip()]
     _run_gateway_script("status", args)
+
+
+@cmd_gateway.command("restart")
+@click.option("--tunnel-name", default="bumblebee-inference", show_default=True)
+@click.option("--cloudflared-config", default="", help="Path to cloudflared config.yml.")
+@click.option("--tunnel-url", default="", help="Optional tunnel URL override for probes.")
+@click.option("--gateway-host", default="127.0.0.1", show_default=True)
+@click.option("--gateway-port", default=8010, show_default=True, type=int)
+@click.option("--leave-ollama-running", is_flag=True)
+def cmd_gateway_restart(
+    tunnel_name: str,
+    cloudflared_config: str,
+    tunnel_url: str,
+    gateway_host: str,
+    gateway_port: int,
+    leave_ollama_running: bool,
+) -> None:
+    """Stop then start the gateway stack (same as ``off`` then ``on``)."""
+    args = [
+        "-TunnelName",
+        tunnel_name,
+        "-GatewayHost",
+        gateway_host,
+        "-GatewayPort",
+        str(gateway_port),
+    ]
+    if cloudflared_config.strip():
+        args += ["-CloudflaredConfig", cloudflared_config.strip()]
+    if tunnel_url.strip():
+        args += ["-TunnelUrl", tunnel_url.strip()]
+    if leave_ollama_running:
+        args.append("-LeaveOllamaRunning")
+    _run_gateway_script("restart", args)
 
 
 @cli.command("talk")
@@ -634,6 +663,31 @@ def cmd_knowledge(entity_name: str) -> None:
     subprocess.run(parts, check=False)
 
 
+@cli.command("journal")
+@click.argument("entity_name")
+def cmd_journal(entity_name: str) -> None:
+    """Open the entity's journal.md in $EDITOR (append-only reflections from routines)."""
+    harness = load_harness_config()
+    ec = load_entity_config(entity_name, harness)
+    jpath = Path(ec.journal_path()).expanduser()
+    jpath.parent.mkdir(parents=True, exist_ok=True)
+    if not jpath.is_file():
+        jpath.write_text("# journal\n\n", encoding="utf-8", newline="\n")
+    editor = (os.environ.get("EDITOR") or "").strip()
+    if not editor:
+        if os.name == "nt":
+            subprocess.run(["notepad", str(jpath)], check=False)
+        else:
+            nano = shutil.which("nano") or "nano"
+            subprocess.run([nano, str(jpath)], check=False)
+        return
+    try:
+        parts = shlex.split(editor, posix=os.name != "nt") + [str(jpath)]
+    except ValueError as e:
+        raise click.ClickException(f"Could not parse EDITOR: {e}") from e
+    subprocess.run(parts, check=False)
+
+
 @cli.command("recall")
 @click.argument("entity_name")
 @click.argument("query")
@@ -666,6 +720,12 @@ def cmd_recall(entity_name: str, query: str) -> None:
 @click.argument("entity_name")
 def cmd_worker(entity_name: str) -> None:
     """Run platforms + daemon without CLI (use on Railway as bumblebee-worker)."""
+    if not (entity_name or "").strip():
+        raise click.ClickException(
+            "Missing entity name (got empty string). For Railway: set BUMBLEBEE_ENTITY "
+            "(e.g. canary) on the worker service. If this service should run the public "
+            "onboarding Telegram bot instead, set BUMBLEBEE_RAILWAY_ROLE=onboard — not worker."
+        )
     try:
         asyncio.run(_run(entity_name, worker_mode=True))
     except KeyboardInterrupt:

@@ -7,6 +7,7 @@ import copy
 import json
 import os
 import time
+from pathlib import Path
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
@@ -18,6 +19,7 @@ from bumblebee.cognition.inner_voice import InnerVoiceProcessor
 from bumblebee.cognition.reflex import ReflexCognition
 from bumblebee.cognition.router import CognitionRouter, ContextPackage
 from bumblebee.cognition import gemma, senses
+from bumblebee.cognition.history_compression import merge_rolling_summary
 from bumblebee.config import EntityConfig, resolve_firecrawl_settings, validate_ollama_models
 from bumblebee.inference import InferenceProvider, build_inference_provider
 from bumblebee.identity.drives import Drive, DriveSystem
@@ -28,10 +30,11 @@ from bumblebee.identity.voice import VoiceController
 from bumblebee.memory.beliefs import BeliefStore
 from bumblebee.memory.episodic import EpisodicMemory
 from bumblebee.memory.imprints import ImprintStore
+from bumblebee.memory.journal import Journal
 from bumblebee.memory.knowledge import KnowledgeStore
 from bumblebee.memory.narrative import NarrativeMemory, NarrativeSynthesizer
 from bumblebee.memory.relational import RelationalMemory
-from bumblebee.models import EmotionCategory, ImprintRecord, Input
+from bumblebee.models import EmotionCategory, ImprintRecord, Input, is_group_like_chat, speaker_label_for_model
 from bumblebee.presence.embodiment import Embodiment
 from bumblebee.presence.initiative import InitiativeEngine
 from bumblebee.presence.platforms.base import Platform
@@ -58,6 +61,9 @@ from bumblebee.presence.tools import (
     wikipedia as wikipedia_tools,
     youtube as youtube_tools,
 )
+from bumblebee.presence.tools import automations as automation_tools
+from bumblebee.presence.tools import discovery as discovery_tools
+from bumblebee.presence.tools import journal_tools
 from bumblebee.presence.tools.knowledge import register_knowledge_tool
 from bumblebee.presence.tools.mcp import MCPHub
 from bumblebee.presence.tools.registry import ToolRegistry, format_tool_activity
@@ -188,6 +194,7 @@ class Entity:
         self._mcp_hub = MCPHub()
         self._presence_tools_bootstrapped = False
         self._history: list[dict[str, Any]] = []
+        self._history_rolling_summary: str = ""
         self._last_user_message_at = time.time()
         self._interaction_count = 0
         self.dormant = False
@@ -196,6 +203,8 @@ class Entity:
         self._last_evolution_milestone: int = -1
         self._last_narrative_milestone: int = -1
         self._last_turn_completed_at: float | None = None
+        self.automation_engine: object | None = None
+        self.journal = Journal(Path(self.config.journal_path()))
         self._last_conversation: dict[str, str | float] = {
             "platform": "cli",
             "channel": "cli",
@@ -227,6 +236,29 @@ class Entity:
         if pf is None:
             raise RuntimeError(f"platform not connected: {platform}")
         await pf.send_message(str(target), str(message))
+
+    async def send_dm_to_user(self, platform: str, user_id: str, message: str) -> None:
+        """Send a private DM using the user's platform id (Telegram: chat_id == user id; Discord: user snowflake)."""
+        n = (platform or "").strip().lower()
+        uid = (user_id or "").strip()
+        msg = (message or "").strip()
+        if not uid:
+            raise RuntimeError("user_id is required")
+        if not msg:
+            raise RuntimeError("message is empty")
+        pf = self._platforms.get(n)
+        if pf is None:
+            raise RuntimeError(f"platform not connected: {platform}")
+        if n == "telegram":
+            await pf.send_message(uid, msg)
+            return
+        if n == "discord":
+            dm = getattr(pf, "send_dm_to_user", None)
+            if not callable(dm):
+                raise RuntimeError("discord platform does not support send_dm_to_user")
+            await dm(uid, msg)
+            return
+        raise RuntimeError(f"send_dm_to_user is only supported for telegram and discord, not {platform!r}")
 
     def _remember_person_route(self, inp: Input) -> None:
         chat_type = str((inp.metadata or {}).get("chat_type") or "").strip().lower()
@@ -390,6 +422,8 @@ class Entity:
         self.tools.register_decorated(write_file)
         self.tools.register_decorated(append_file)
         self.tools.register_decorated(time_tools.get_current_time)
+        self.tools.register_decorated(discovery_tools.search_tools)
+        self.tools.register_decorated(discovery_tools.describe_tool)
         if self._tool_enabled("youtube", True):
             self.tools.register_decorated(youtube_tools.get_youtube_transcript)
             self.tools.register_decorated(youtube_tools.search_youtube)
@@ -406,6 +440,9 @@ class Entity:
             self.tools.register_decorated(pdf_tools.read_pdf)
         if self._tool_enabled("voice", True):
             self.tools.register_decorated(voice_tools.speak)
+            self.tools.register_decorated(voice_tools.get_tts_voice)
+            self.tools.register_decorated(voice_tools.list_tts_voices)
+            self.tools.register_decorated(voice_tools.set_tts_voice)
         if self._tool_enabled("reminders", True):
             self.tools.register_decorated(reminders_tools.set_reminder)
             self.tools.register_decorated(reminders_tools.list_reminders)
@@ -413,6 +450,17 @@ class Entity:
         if self._tool_enabled("messaging", True):
             self.tools.register_decorated(messaging_tools.send_message_to)
             self.tools.register_decorated(messaging_tools.list_known_contacts)
+            self.tools.register_decorated(messaging_tools.send_dm)
+        if self._tool_enabled("automations", True):
+            self.tools.register_decorated(automation_tools.create_automation)
+            self.tools.register_decorated(automation_tools.list_automations)
+            self.tools.register_decorated(automation_tools.edit_automation)
+            self.tools.register_decorated(automation_tools.toggle_automation)
+            self.tools.register_decorated(automation_tools.delete_automation)
+            self.tools.register_decorated(automation_tools.run_automation_now)
+        if self._tool_enabled("journal", True):
+            self.tools.register_decorated(journal_tools.read_journal)
+            self.tools.register_decorated(journal_tools.write_journal)
         if self._tool_enabled("system", True):
             self.tools.register_decorated(system_info_tools.get_system_info)
         if self._tool_enabled("shell", True):
@@ -446,6 +494,10 @@ class Entity:
         if max_turns is None:
             max_turns = max(2, int(self.config.cognition.knowledge_recent_turns or 10))
         lines: list[str] = []
+        hc = self.config.cognition.history_compression
+        rs = (self._history_rolling_summary or "").strip()
+        if hc.enabled and rs:
+            lines.append(f"[earlier thread summary]\n{rs[:2500]}")
         for m in self._history[-max_turns:]:
             role = str(m.get("role", ""))
             c = m.get("content", "")
@@ -455,16 +507,64 @@ class Entity:
         lines.append(f"user: {self._history_user_turn_text(inp)[:2000]}")
         return "\n".join(lines)
 
+    def _messages_for_model(self, user_msg: dict[str, Any]) -> list[dict[str, Any]]:
+        """Rolling chat + optional compressed prefix (same thread, not a new session)."""
+        hc = self.config.cognition.history_compression
+        s = (self._history_rolling_summary or "").strip()
+        if not s or not hc.enabled:
+            return self._history + [user_msg]
+        cap = min(int(hc.summary_max_chars), 8000)
+        body = s[:cap]
+        prefix = (
+            "[Earlier conversation summary — same ongoing chat; continue naturally; "
+            "do not reset with a generic greeting unless it genuinely fits]\n\n" + body
+        )
+        return [{"role": "user", "content": prefix}] + self._history + [user_msg]
+
+    async def _trim_history_with_compression(self) -> None:
+        keep = max(8, int(self.config.cognition.rolling_history_max_messages or 40))
+        if len(self._history) <= keep:
+            return
+        dropped = self._history[:-keep]
+        self._history = self._history[-keep:]
+        hc = self.config.cognition.history_compression
+        if not hc.enabled or not dropped:
+            return
+        model = self.config.cognition.deliberate_model or self.config.harness.models.deliberate
+        self._history_rolling_summary = await merge_rolling_summary(
+            self.client,
+            model,
+            entity_name=self.config.name,
+            prior_summary=self._history_rolling_summary,
+            dropped_messages=dropped,
+            per_msg_cap=hc.format_per_message_chars,
+            max_merge_input_chars=hc.max_merge_input_chars,
+            merge_max_tokens=hc.merge_max_tokens,
+            summary_max_chars=hc.summary_max_chars,
+        )
+
     def _history_user_turn_text(self, inp: Input) -> str:
         lim = max(600, int(self.config.cognition.history_message_char_limit or 4000))
+        label = speaker_label_for_model(inp)
+
+        def clip_body(body: str) -> str:
+            if not label:
+                return body[:lim] if body else "…"
+            room = max(64, lim - len(label))
+            if len(body) <= room:
+                return label + body
+            return label + body[: max(1, room - 1)] + "…"
+
         t = (inp.text or "").strip()
         if inp.images:
             extra = "[User attached an image]"
-            return f"{t}\n{extra}".strip()[:lim] if t else extra
+            core = f"{t}\n{extra}".strip() if t else extra
+            return clip_body(core)
         if inp.audio:
             extra = "[User sent a voice message]"
-            return f"{t}\n{extra}".strip()[:lim] if t else extra
-        return t[:lim] if t else "…"
+            core = f"{t}\n{extra}".strip() if t else extra
+            return clip_body(core)
+        return clip_body(t) if t else (label + "…") if label else "…"
 
     async def _tool_exec(
         self,
@@ -498,11 +598,12 @@ class Entity:
             "No stage directions: do not describe pauses, actions, or parenthetical asides—only words you say."
         )
         try:
+            fb_user = speaker_label_for_model(inp) + (inp.text or "")[:4000]
             res = await self.client.chat_completion(
                 self.config.cognition.reflex_model,
                 [
                     {"role": "system", "content": sys_},
-                    {"role": "user", "content": inp.text[:4000]},
+                    {"role": "user", "content": fb_user},
                 ],
                 temperature=min(0.9, self.config.harness.cognition.temperature),
                 max_tokens=min(384, self.config.harness.cognition.reflex_max_tokens + 128),
@@ -594,7 +695,7 @@ class Entity:
         return await self._continue_cutoff_reply(
             model=model,
             sys_prompt=sys_prompt,
-            recent_messages=self._history + [user_msg],
+            recent_messages=self._messages_for_model(user_msg),
             partial_assistant=reply_text,
             max_tokens=min(int(mt), 1536),
             sys_cap=sys_cap,
@@ -636,6 +737,12 @@ class Entity:
         record_user_message: bool = True,
         meaningful_override: bool | None = None,
         reply_platform: Platform | None = None,
+        preserve_conversation_route: bool = False,
+        routine_history: bool = True,
+        skip_relational_upsert: bool = False,
+        skip_drive_interaction: bool = False,
+        skip_episode: bool = False,
+        tool_names_log: list[str] | None = None,
     ) -> tuple[str, bool]:
         structlog.contextvars.bind_contextvars(
             entity_name=self.config.name,
@@ -645,15 +752,16 @@ class Entity:
         self.current_platform = reply_platform
         prev_completed_turn_at = self._last_turn_completed_at
         prev_interlocutor_name = str(self._last_conversation.get("person_name") or "").strip()
-        self._last_user_message_at = time.time()
-        self._last_conversation = {
-            "platform": inp.platform,
-            "channel": inp.channel,
-            "person_id": inp.person_id,
-            "person_name": inp.person_name,
-            "at": time.time(),
-        }
-        self._remember_person_route(inp)
+        if not preserve_conversation_route:
+            self._last_user_message_at = time.time()
+            self._last_conversation = {
+                "platform": inp.platform,
+                "channel": inp.channel,
+                "person_id": inp.person_id,
+                "person_name": inp.person_name,
+                "at": time.time(),
+            }
+            self._remember_person_route(inp)
         try:
             await self._ensure_presence_tools()
         except Exception as e:
@@ -781,6 +889,14 @@ class Entity:
                 entity_created_at=parse_entity_created_timestamp(self.config.raw.get("created")),
             )
 
+            if is_group_like_chat(inp):
+                sys_prompt += (
+                    "\n\n[Chat context: group channel — several people may post here. "
+                    "User lines are prefixed with [display name · id …] (and #channel on Discord) "
+                    "so you can tell speakers apart. Reply to the author of the latest message unless "
+                    "they are clearly addressing everyone or someone else by name.]"
+                )
+
             if route == "deliberate":
                 sys_prompt = sys_prompt + self.tools.system_tool_instruction_block()
                 cur = next(
@@ -796,6 +912,7 @@ class Entity:
             user_content: str | list = senses.input_to_message_content(
                 inp,
                 self.config.harness.cognition.image_token_budget,
+                speaker_prefix=speaker_label_for_model(inp),
             )
             user_msg = {"role": "user", "content": user_content}
 
@@ -809,7 +926,7 @@ class Entity:
                     res, mood_sig = await self.reflex.respond_stream(
                         inp,
                         sys_prompt,
-                        self._history + [user_msg],
+                        self._messages_for_model(user_msg),
                         ctx,
                         stream,
                     )
@@ -817,7 +934,7 @@ class Entity:
                     res, mood_sig = await self.reflex.respond(
                         inp,
                         sys_prompt,
-                        self._history + [user_msg],
+                        self._messages_for_model(user_msg),
                         ctx,
                     )
                 reply_text = (res.content or "").strip()
@@ -840,6 +957,8 @@ class Entity:
                 tool_state: dict[str, Any] = {}
 
                 async def _tool_with_activity(spec: ToolCallSpec) -> str:
+                    if tool_names_log is not None:
+                        tool_names_log.append(spec.name)
                     if self.config.presence.tool_activity and self.current_platform is not None:
                         desc = format_tool_activity(spec.name, dict(spec.arguments))
                         if desc:
@@ -857,7 +976,7 @@ class Entity:
                 async for ev in self.deliberate.iter_responses(
                     inp,
                     sys_prompt,
-                    self._history + [user_msg],
+                    self._messages_for_model(user_msg),
                     tools=self.tools.openai_tools(),
                     tool_executor=_tool_with_activity,
                 ):
@@ -889,6 +1008,10 @@ class Entity:
                 log.info("reply_fallback_triggered", module="entity", route=route)
                 reply_text = await self._fallback_plain_reply(inp)
             reply_text = self.voice_ctl.sanitize_reply(reply_text)
+            if _reply_too_thin(reply_text):
+                # Sanitization can strip leaked markup/actions and leave empty output.
+                log.info("reply_post_sanitize_fallback", module="entity", route=route)
+                reply_text = self.voice_ctl.sanitize_reply(await self._fallback_plain_reply(inp))
 
             if route == "deliberate":
                 slice_ = self.inner_voice.process(thinking, reply_text)
@@ -920,29 +1043,33 @@ class Entity:
                     {"relationship_warmth": rw},
                 )
 
-            if record_user_message:
-                self._history.append(
-                    {"role": "user", "content": self._history_user_turn_text(inp)},
-                )
-            if route == "deliberate":
-                self._history.extend(deliberate_history_extra)
-            # Visible reply text (sanitized). Tool rounds above carry raw assistant + tool payloads.
-            self._history.append({"role": "assistant", "content": reply_text[:8000]})
-            keep = max(8, int(self.config.cognition.rolling_history_max_messages or 40))
-            if len(self._history) > keep:
-                self._history = self._history[-keep:]
+            if routine_history:
+                if record_user_message:
+                    self._history.append(
+                        {"role": "user", "content": self._history_user_turn_text(inp)},
+                    )
+                if route == "deliberate":
+                    self._history.extend(deliberate_history_extra)
+                self._history.append({"role": "assistant", "content": reply_text[:8000]})
+                await self._trim_history_with_compression()
 
-            self._interaction_count += 1
-            if meaningful_override is not None:
-                meaningful = meaningful_override
+            if not skip_drive_interaction:
+                self._interaction_count += 1
+                if meaningful_override is not None:
+                    meaningful = meaningful_override
+                else:
+                    meaningful = len(inp.text) > 40 or route == "deliberate"
+                self.drives.on_interaction(meaningful)
             else:
-                meaningful = len(inp.text) > 40 or route == "deliberate"
-            self.drives.on_interaction(meaningful)
+                if meaningful_override is not None:
+                    meaningful = meaningful_override
+                else:
+                    meaningful = len(inp.text) > 40 or route == "deliberate"
 
             thr = self.config.harness.memory.episode_significance_threshold
             fam = rel_existing.familiarity if rel_existing else 0.0
             sig = min(1.0, 0.2 + (0.3 if meaningful else 0) + fam * 0.2)
-            if sig >= thr and meaningful:
+            if not skip_episode and sig >= thr and meaningful:
                 try:
                     _refs = inp.metadata.get("attachment_storage_refs") or []
                     _note = attachment_refs_episode_note(_refs)
@@ -971,12 +1098,13 @@ class Entity:
                 except Exception as e:
                     log.warning("episode_save_failed", error=str(e))
 
-            await self.relational.upsert_interaction(
-                db,
-                inp.person_id,
-                inp.person_name,
-                warmth_delta=0.02 if meaningful else 0.0,
-            )
+            if not skip_relational_upsert:
+                await self.relational.upsert_interaction(
+                    db,
+                    inp.person_id,
+                    inp.person_name,
+                    warmth_delta=0.02 if meaningful else 0.0,
+                )
 
             self._last_turn_completed_at = time.time()
             needs_platform_route = route == "reflex" and inp.platform in ("discord", "telegram")
@@ -1056,6 +1184,7 @@ class Entity:
     def clear_conversation_history(self) -> None:
         """Clear rolling chat turns (in-memory); does not delete SQLite memory."""
         self._history.clear()
+        self._history_rolling_summary = ""
 
     async def wipe_experiential_state(self) -> None:
         """Clear chat turns, all SQLite memory tables, inner-voice buffer; restore YAML traits; reset mood/drives."""

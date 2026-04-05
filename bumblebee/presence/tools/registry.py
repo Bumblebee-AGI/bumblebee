@@ -60,6 +60,12 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return "📑 reading pdf..."
     if tool_name == "speak":
         return "🗣️ recording a voice message..."
+    if tool_name == "get_tts_voice":
+        return "🗣️ checking current voice..."
+    if tool_name == "list_tts_voices":
+        return "🗣️ browsing available voices..."
+    if tool_name == "set_tts_voice":
+        return "🗣️ switching voice..."
     if tool_name == "set_reminder":
         return "⏰ setting a reminder..."
     if tool_name == "list_reminders":
@@ -69,6 +75,10 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "send_message_to":
         platform = str(args.get("platform", "somewhere") or "somewhere")
         return f"💬 sending a message on {platform}..."
+    if tool_name == "send_dm":
+        if args.get("list_targets"):
+            return "💬 listing DM targets..."
+        return "💬 sending a direct message..."
     if tool_name == "get_system_info":
         return "💻 checking system stats..."
     if tool_name == "run_command":
@@ -114,6 +124,29 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
             action, "editing"
         )
         return f"{emoji} {verb} knowledge: {section}..."
+    if tool_name == "search_tools":
+        q = str(args.get("query", "") or "").strip()
+        return f'🧰 searching tools for "{q}"...' if q else "🧰 listing available tools..."
+    if tool_name == "describe_tool":
+        n = str(args.get("tool_name", "") or "").strip()
+        return f"🧰 inspecting tool {n}..." if n else "🧰 inspecting tool..."
+    if tool_name == "create_automation":
+        return f'⏰ setting up routine: {args.get("name", "something")}...'
+    if tool_name == "list_automations":
+        return None
+    if tool_name == "edit_automation":
+        return "✏️ updating routine..."
+    if tool_name == "toggle_automation":
+        enabled = args.get("enabled", True)
+        return f'{"✅" if enabled else "⏸️"} {"enabling" if enabled else "pausing"} routine...'
+    if tool_name == "delete_automation":
+        return "🗑️ removing routine..."
+    if tool_name == "run_automation_now":
+        return "▶️ running routine now..."
+    if tool_name == "write_journal":
+        return "📓 writing in journal..."
+    if tool_name == "read_journal":
+        return None
     if tool_name.startswith("mcp_"):
         parts = tool_name.split("_", 2)
         server = (parts[1] if len(parts) >= 2 else "mcp").lower()
@@ -225,6 +258,53 @@ class ToolRegistry:
             [(t.name, t.description) for t in self._tools.values()],
             key=lambda row: row[0],
         )
+
+    def tool_discovery_detail(self, name: str) -> dict[str, Any] | None:
+        """OpenAI-style function payload (name, description, parameters) or ``None``."""
+        t = self._tools.get(name)
+        if t is None:
+            return None
+        wrapped = t.openai_tool()
+        fn = wrapped.get("function")
+        return dict(fn) if isinstance(fn, dict) else None
+
+    def tool_discovery_summaries(self) -> list[dict[str, Any]]:
+        """Compact rows for search/listing (name, description, parameter names)."""
+        rows: list[dict[str, Any]] = []
+        for t in sorted(self._tools.values(), key=lambda x: x.name):
+            props = t.schema.get("properties") if isinstance(t.schema, dict) else None
+            keys = list(props.keys()) if isinstance(props, dict) else []
+            req = t.schema.get("required") if isinstance(t.schema, dict) else None
+            rows.append(
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": keys,
+                    "required": list(req) if isinstance(req, list) else [],
+                }
+            )
+        return rows
+
+    def resolve_tool_name(self, raw: str) -> str | None:
+        """Exact or case-insensitive match to a registered tool name."""
+        s = (raw or "").strip()
+        if not s:
+            return None
+        if s in self._tools:
+            return s
+        low = s.casefold()
+        for name in self._tools:
+            if name.casefold() == low:
+                return name
+        return None
+
+    def suggest_tool_names(self, substring: str, limit: int = 8) -> list[str]:
+        """Registered names containing substring (case-insensitive)."""
+        sub = (substring or "").strip().casefold()
+        if not sub:
+            return []
+        lim = max(1, min(int(limit or 8), 32))
+        return [n for n in sorted(self._tools.keys()) if sub in n.casefold()][:lim]
 
     def gemma_tool_declarations(self) -> str:
         return gemma.format_tool_declarations_block(self.openai_tools())

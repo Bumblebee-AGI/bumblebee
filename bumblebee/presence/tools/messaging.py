@@ -136,3 +136,175 @@ async def list_known_contacts(platform: str = "") -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _dm_targets(entity: object) -> list[dict[str, object]]:
+    """Distinct Telegram/Discord users from known routes with ids suitable for send_dm."""
+    lister = getattr(entity, "list_known_person_routes", None)
+    if not callable(lister):
+        return []
+    try:
+        rows = lister("")
+    except Exception:
+        rows = []
+    seen: set[tuple[str, str]] = set()
+    out: list[dict[str, object]] = []
+    for r in rows:
+        pf = str(r.get("platform") or "").strip().lower()
+        if pf not in ("telegram", "discord"):
+            continue
+        pid = str(r.get("person_id") or "").strip()
+        if not pid:
+            continue
+        key = (pf, pid)
+        if key in seen:
+            continue
+        seen.add(key)
+        note = (
+            "Telegram: use user_id as the DM chat_id (user must have started the bot)."
+            if pf == "telegram"
+            else "Discord: user_id is the account snowflake; user must share a server with the bot."
+        )
+        out.append(
+            {
+                "user_id": pid,
+                "display_name": str(r.get("person_name") or ""),
+                "platform": pf,
+                "last_seen_chat_type": str(r.get("chat_type") or ""),
+                "last_interaction_at": float(r.get("at") or 0.0),
+                "note": note,
+            }
+        )
+    out.sort(key=lambda x: float(x.get("last_interaction_at") or 0.0), reverse=True)
+    return out
+
+
+@tool(
+    name="send_dm",
+    description=(
+        "Send a private direct message by user id, or list_dm_targets first. "
+        "Use list_targets=true to fetch user_id values from people this entity has seen on Telegram/Discord. "
+        "On Telegram, user_id is the numeric Telegram user id (same as private chat_id). "
+        "On Discord, user_id is the member snowflake. "
+        "First send attempt returns needs_confirmation; call again with confirm=true to deliver."
+    ),
+)
+async def send_dm(
+    message: str = "",
+    user_id: str = "",
+    platform: str = "",
+    target_person: str = "",
+    confirm: bool = False,
+    list_targets: bool = False,
+) -> str:
+    ctx = require_tool_runtime()
+    entity = ctx.entity
+    inp = ctx.inp
+
+    if list_targets:
+        targets = _dm_targets(entity)
+        return json.dumps(
+            {
+                "ok": True,
+                "targets": targets,
+                "count": len(targets),
+                "hint": "Pick user_id + platform from this list, then call send_dm with message, user_id, platform, confirm=true.",
+            },
+            ensure_ascii=False,
+        )
+
+    msg = (message or "").strip()
+    if not msg:
+        return json.dumps({"error": "message is required (or set list_targets=true to list ids)"})
+
+    pf = (platform or "").strip().lower()
+    if pf == "auto":
+        pf = ""
+    if not pf and inp is not None:
+        pf = str(inp.platform or "").strip().lower()
+    if pf not in ("telegram", "discord"):
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "platform must be telegram or discord (or omit to use current chat platform)",
+                "targets": _dm_targets(entity),
+            },
+            ensure_ascii=False,
+        )
+
+    uid = (user_id or "").strip()
+    person = (target_person or "").strip()
+    if not uid and not person:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "Provide user_id or target_person, or list_targets=true.",
+                "targets": _dm_targets(entity),
+            },
+            ensure_ascii=False,
+        )
+
+    resolved_name = ""
+    if not uid and person:
+        resolver = getattr(entity, "resolve_person_route", None)
+        if not callable(resolver):
+            return json.dumps({"error": "entity route resolver unavailable"})
+        route = resolver(person, platform=pf, prefer_private=True)
+        if not isinstance(route, dict):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": f"unknown target_person: {person}",
+                    "targets": _dm_targets(entity),
+                },
+                ensure_ascii=False,
+            )
+        uid = str(route.get("person_id") or "").strip()
+        resolved_name = str(route.get("person_name") or "")
+        rpf = str(route.get("platform") or "").strip().lower()
+        if rpf and rpf != pf:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": f"resolved contact is on {rpf}, not {pf}",
+                    "resolved": route,
+                },
+                ensure_ascii=False,
+            )
+        if not uid:
+            return json.dumps({"ok": False, "error": "resolved route has no person_id"})
+
+    sender = getattr(entity, "send_dm_to_user", None)
+    if not callable(sender):
+        return json.dumps({"error": "entity does not support send_dm_to_user"})
+
+    if not confirm:
+        return json.dumps(
+            {
+                "ok": False,
+                "needs_confirmation": True,
+                "platform": pf,
+                "user_id": uid,
+                "resolved_name": resolved_name,
+                "message_preview": msg[:300],
+                "instruction": "Call send_dm again with the same message, user_id, platform, and confirm=true.",
+            },
+            ensure_ascii=False,
+        )
+
+    try:
+        await sender(pf, uid, msg)
+        return json.dumps(
+            {
+                "ok": True,
+                "platform": pf,
+                "user_id": uid,
+                "resolved_name": resolved_name,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return json.dumps(
+            {"ok": False, "error": str(e), "platform": pf, "user_id": uid},
+            ensure_ascii=False,
+        )

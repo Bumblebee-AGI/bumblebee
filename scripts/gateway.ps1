@@ -1,6 +1,6 @@
 param(
     [Parameter(Position = 0)]
-    [ValidateSet("on", "off", "status")]
+    [ValidateSet("on", "off", "status", "restart")]
     [string]$Action = "status",
     [string]$TunnelName = "bumblebee-inference",
     [string]$CloudflaredConfig = "",
@@ -328,5 +328,34 @@ switch ($Action) {
         } else {
             Write-Host "token source:        present"
         }
+    }
+    "restart" {
+        $scriptPath = Join-Path $ScriptRoot "gateway.ps1"
+        Write-Step "gateway restart: stopping stack"
+        $offSplat = @{
+            Action            = "off"
+            TunnelName        = $TunnelName
+            CloudflaredConfig = $CloudflaredConfig
+            TunnelUrl         = $TunnelUrl
+            GatewayHost       = $GatewayHost
+            GatewayPort       = $GatewayPort
+        }
+        if ($LeaveOllamaRunning) {
+            $offSplat["LeaveOllamaRunning"] = $true
+        }
+        & $scriptPath @offSplat
+        Start-Sleep -Seconds 2
+        Write-Step "gateway restart: starting stack"
+        $onSplat = @{
+            Action            = "on"
+            TunnelName        = $TunnelName
+            CloudflaredConfig = $CloudflaredConfig
+            TunnelUrl         = $TunnelUrl
+            GatewayHost       = $GatewayHost
+            GatewayPort       = $GatewayPort
+        }
+        & $scriptPath @onSplat
+        Write-Host ""
+        Write-Host "Gateway stack RESTART complete."
     }
 }

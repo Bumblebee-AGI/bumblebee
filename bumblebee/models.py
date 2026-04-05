@@ -97,6 +97,28 @@ class Input:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def is_group_like_chat(inp: Input) -> bool:
+    """True when multiple humans can post in the same channel (prefix speaker in model context)."""
+    ct = str(inp.metadata.get("chat_type") or "").lower()
+    if inp.platform == "telegram" and ct in ("group", "supergroup"):
+        return True
+    if inp.platform == "discord" and ct == "guild":
+        return True
+    return False
+
+
+def speaker_label_for_model(inp: Input) -> str:
+    """Prefix for user-visible lines in group-like chats so the model can tell speakers apart."""
+    if not is_group_like_chat(inp):
+        return ""
+    name = (inp.person_name or "someone").strip()
+    pid = (inp.person_id or "?").strip()
+    ch = str(inp.metadata.get("channel_name") or "").strip()
+    if inp.platform == "discord" and ch:
+        return f"[{name} · id {pid} · #{ch}] "
+    return f"[{name} · id {pid}] "
+
+
 @dataclass
 class ChatMessage:
     role: str

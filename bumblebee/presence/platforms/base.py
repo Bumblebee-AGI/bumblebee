@@ -51,9 +51,9 @@ class Platform(ABC):
         """Send binary outbound (e.g. bytes loaded from ``Entity.read_stored_attachment``). CLI: no-op."""
         return None
 
-    async def send_audio(self, channel: str, path: str) -> None:
-        """Send an audio/voice file from disk (platform-specific best effort)."""
-        return None
+    async def send_audio(self, channel: str, path: str) -> bool:
+        """Send an audio/voice file from disk. Return ``True`` on successful delivery."""
+        return False
 
     async def send_image(self, channel: str, path: str) -> None:
         """Send an image file from disk (platform-specific best effort)."""

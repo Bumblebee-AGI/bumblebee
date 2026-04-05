@@ -3,14 +3,91 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
+
+import structlog
 
 from bumblebee.config import EntityConfig
 from bumblebee.cognition import gemma
 from bumblebee.models import Input
 from bumblebee.inference.protocol import InferenceProvider
 from bumblebee.inference.types import ChatCompletionResult, ToolCallSpec
+
+log = structlog.get_logger("bumblebee.cognition.deliberate")
+
+# After tool results, if the model answers with text only but clearly still intends another tool
+# (or hit max_tokens before emitting tool calls), inject a user nudge and continue the loop.
+MAX_TOOL_CONTINUATION_ROUNDS = 2
+
+_TOOL_CONTINUATION_USER = (
+    "Continue in this same turn: if you still need to call a tool to finish what you started "
+    "(retry after an error, install a missing dependency, run a shell command, etc.), "
+    "invoke the tool now. Do not only say you will do it later. "
+    "If you are fully done with what the user asked, reply briefly with plain text only."
+)
+
+
+def _finish_reason_hits_limit(finish_reason: str | None) -> bool:
+    if not finish_reason:
+        return False
+    fr = finish_reason.lower().replace("_", "").replace("-", "")
+    return fr in ("length", "maxtokens", "maxlength")
+
+
+_INTENDS_FURTHER_TOOL = re.compile(
+    r"\b("
+    r"lemme\b|hang on|hold on|one sec|give me a sec|real quick|try to\b|trying to\b|"
+    r"gonna |going to |need to |i'?ll |i will |"
+    r"install|pip install|pip3 install|run_command|run command|"
+    r"fix that|sort that|sort this|be right back|brb|"
+    r"let me (try|install|run|check|see|grab|get|do)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _tool_content_suggests_retry(content: str) -> bool:
+    raw = (content or "").strip()
+    if not raw:
+        return False
+    lt = raw.lower()
+    if "not installed" in lt or ("missing" in lt and "package" in lt):
+        return True
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return '"error"' in raw
+    if isinstance(obj, dict):
+        if obj.get("error"):
+            return True
+        if obj.get("ok") is False:
+            return True
+    return False
+
+
+def should_inject_tool_continuation(msgs: list[dict[str, Any]], res: ChatCompletionResult) -> bool:
+    """
+    True when the model returned no tool calls but context suggests another tool round is needed
+    (failed tool, truncation, or explicit intent to run something).
+    """
+    if res.tool_calls:
+        return False
+    tool_msgs = [m for m in msgs if m.get("role") == "tool"]
+    if not tool_msgs:
+        return False
+    last_tool = str(tool_msgs[-1].get("content") or "")
+    tool_suggests_retry = _tool_content_suggests_retry(last_tool)
+    visible = (res.content or "").strip()
+    if not visible and _finish_reason_hits_limit(res.finish_reason):
+        return True
+    if not visible:
+        return False
+    assistant_intends = bool(_INTENDS_FURTHER_TOOL.search(visible))
+    if _finish_reason_hits_limit(res.finish_reason):
+        return True
+    return tool_suggests_retry or assistant_intends
 
 
 @dataclass
@@ -83,6 +160,7 @@ class DeliberateCognition:
         msgs = self._build_messages(system_prompt, messages)
         thinking_acc: list[str] = []
         last: ChatCompletionResult | None = None
+        continuation_remaining = MAX_TOOL_CONTINUATION_ROUNDS
 
         for _ in range(8):
             res = await self.client.chat_completion(
@@ -98,6 +176,29 @@ class DeliberateCognition:
                 thinking_acc.append(res.thinking)
 
             if not tool_executor or not res.tool_calls:
+                if (
+                    tool_executor
+                    and tools
+                    and continuation_remaining > 0
+                    and should_inject_tool_continuation(msgs, res)
+                ):
+                    continuation_remaining -= 1
+                    asst = self._assistant_content_for_message(res)
+                    asst_msg: dict[str, Any] = {"role": "assistant", "content": asst}
+                    cont_user = {"role": "user", "content": _TOOL_CONTINUATION_USER}
+                    msgs = msgs + [asst_msg, cont_user]
+                    log.info(
+                        "deliberate_tool_continuation",
+                        remaining_after=continuation_remaining,
+                        finish_reason=res.finish_reason,
+                    )
+                    yield DeliberateStreamEvent(
+                        kind="intermediate",
+                        display_text=(res.content or "").strip(),
+                        history_entries=[asst_msg, cont_user],
+                    )
+                    continue
+
                 merged = "\n\n".join(thinking_acc) if thinking_acc else None
                 yield DeliberateStreamEvent(
                     kind="final",
@@ -142,7 +243,9 @@ class DeliberateCognition:
             follow_user = {
                 "role": "user",
                 "content": (
-                    "Continue: integrate tool results into your reply for the person you're talking to."
+                    "Continue: integrate tool results for the person you're talking to. "
+                    "If a tool failed or returned an error you can fix with another tool "
+                    "(install a dependency, retry, etc.), call that tool now — do not only promise to do it later."
                 ),
             }
             msgs = msgs + [assistant_msg] + tool_msgs + [follow_user]

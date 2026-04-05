@@ -26,10 +26,16 @@ def _image_detail_for_budget(image_token_budget: int) -> str:
     return "high"
 
 
-def input_to_message_content(inp: Input, image_token_budget: int = 280) -> str | list[dict[str, Any]]:
+def input_to_message_content(
+    inp: Input,
+    image_token_budget: int = 280,
+    *,
+    speaker_prefix: str = "",
+) -> str | list[dict[str, Any]]:
     """Build OpenAI-style content: text plus optional image_url / input_audio parts."""
     detail = _image_detail_for_budget(image_token_budget)
-    parts: list[dict[str, Any]] = [{"type": "text", "text": inp.text}]
+    text0 = f"{speaker_prefix}{inp.text}" if speaker_prefix else inp.text
+    parts: list[dict[str, Any]] = [{"type": "text", "text": text0}]
 
     for img in inp.images[:3]:
         b64 = img.get("base64")
@@ -72,7 +78,7 @@ def input_to_message_content(inp: Input, image_token_budget: int = 280) -> str |
         )
 
     if len(parts) == 1:
-        return inp.text
+        return text0
     return parts
 
 

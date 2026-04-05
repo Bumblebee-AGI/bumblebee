@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+# US Eastern (EST/EDT) when no explicit zone is set on common cloud hosts.
+_DEFAULT_CLOUD_WALL_ZONE = "America/New_York"
+
+
+def _running_on_cloud_default_wall_zone() -> bool:
+    if (os.environ.get("RAILWAY_ENVIRONMENT") or "").strip():
+        return True
+    dm = (os.environ.get("BUMBLEBEE_DEPLOYMENT_MODE") or "").strip().lower()
+    return dm == "hybrid_railway"
 
 
 @dataclass
@@ -35,9 +47,32 @@ def parse_entity_created_timestamp(raw: object) -> float | None:
         return None
 
 
+def display_timezone() -> ZoneInfo | None:
+    """Resolve IANA zone: ``BUMBLEBEE_TIMEZONE``, else valid ``TZ``, else US Eastern on cloud, else ``None``."""
+    for key in ("BUMBLEBEE_TIMEZONE", "TZ"):
+        raw = (os.environ.get(key) or "").strip()
+        if not raw or raw.startswith(":"):
+            continue
+        try:
+            return ZoneInfo(raw)
+        except Exception:
+            continue
+    if _running_on_cloud_default_wall_zone():
+        return ZoneInfo(_DEFAULT_CLOUD_WALL_ZONE)
+    return None
+
+
+def wall_now_for_display() -> datetime:
+    """Wall clock for prompts and tools: configured or cloud-default zone, else naive host local."""
+    z = display_timezone()
+    if z is not None:
+        return datetime.now(timezone.utc).astimezone(z)
+    return datetime.now()
+
+
 def format_local_now_casual_lower() -> str:
-    """e.g. right now it's friday, april 4, 2026, 4:30 pm."""
-    now = datetime.now()
+    """e.g. right now it's friday, april 4, 2026, 4:30 pm (edt)."""
+    now = wall_now_for_display()
     day = now.strftime("%A").lower()
     month = now.strftime("%B").lower()
     d = now.day
@@ -45,7 +80,23 @@ def format_local_now_casual_lower() -> str:
     h12 = now.hour % 12 or 12
     mi = now.strftime("%M")
     ampm = now.strftime("%p").lower()
-    return f"right now it's {day}, {month} {d}, {y}, {h12}:{mi} {ampm}."
+    tz_bit = ""
+    if now.tzinfo is not None:
+        abbr = (now.strftime("%Z") or "").strip().lower()
+        if abbr:
+            tz_bit = f" ({abbr})"
+    return f"right now it's {day}, {month} {d}, {y}, {h12}:{mi} {ampm}{tz_bit}."
+
+
+def format_wall_clock_tool_line() -> str:
+    """Single line for ``get_current_time`` (optionally with zone abbreviation)."""
+    now = wall_now_for_display()
+    line = now.strftime("%A, %B %d, %Y at %I:%M %p")
+    if now.tzinfo is not None:
+        abbr = (now.strftime("%Z") or "").strip()
+        if abbr:
+            line = f"{line} ({abbr})"
+    return line
 
 
 def time_since_last_interaction(last_interaction: float, *, now: float | None = None) -> str:

@@ -3,13 +3,14 @@ import json
 import pytest
 
 from bumblebee.models import Input
-from bumblebee.presence.tools.messaging import list_known_contacts, send_message_to
+from bumblebee.presence.tools.messaging import list_known_contacts, send_dm, send_message_to
 from bumblebee.presence.tools.runtime import ToolRuntimeContext, reset_tool_runtime, set_tool_runtime
 
 
 class _DummyEntity:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str, str]] = []
+        self.dms: list[tuple[str, str, str]] = []
         self.routes = [
             {
                 "person_name": "Bob",
@@ -31,6 +32,9 @@ class _DummyEntity:
 
     async def send_message_to_platform(self, platform: str, target: str, message: str) -> None:
         self.sent.append((platform, target, message))
+
+    async def send_dm_to_user(self, platform: str, user_id: str, message: str) -> None:
+        self.dms.append((platform, user_id, message))
 
     def list_known_person_routes(self, platform: str = "") -> list[dict[str, str | float]]:
         pf = (platform or "").strip().lower()
@@ -109,6 +113,60 @@ async def test_list_known_contacts_returns_routes() -> None:
         data = json.loads(out)
         assert len(data["contacts"]) == 2
         assert all(c["platform"] == "telegram" for c in data["contacts"])
+    finally:
+        reset_tool_runtime(tok)
+
+
+@pytest.mark.asyncio
+async def test_send_dm_list_targets_dedupes_user() -> None:
+    entity = _DummyEntity()
+    tok = _set_ctx(entity)
+    try:
+        out = await send_dm(list_targets=True)
+        data = json.loads(out)
+        assert data["ok"] is True
+        assert data["count"] == 1
+        assert data["targets"][0]["user_id"] == "222"
+        assert data["targets"][0]["platform"] == "telegram"
+    finally:
+        reset_tool_runtime(tok)
+
+
+@pytest.mark.asyncio
+async def test_send_dm_requires_confirmation() -> None:
+    entity = _DummyEntity()
+    tok = _set_ctx(entity)
+    try:
+        out = await send_dm(message="secret", user_id="222", platform="telegram")
+        data = json.loads(out)
+        assert data["needs_confirmation"] is True
+        assert entity.dms == []
+    finally:
+        reset_tool_runtime(tok)
+
+
+@pytest.mark.asyncio
+async def test_send_dm_confirm_delivers() -> None:
+    entity = _DummyEntity()
+    tok = _set_ctx(entity)
+    try:
+        out = await send_dm(message="hi dm", user_id="222", platform="telegram", confirm=True)
+        data = json.loads(out)
+        assert data["ok"] is True
+        assert entity.dms == [("telegram", "222", "hi dm")]
+    finally:
+        reset_tool_runtime(tok)
+
+
+@pytest.mark.asyncio
+async def test_send_dm_target_person_confirm() -> None:
+    entity = _DummyEntity()
+    tok = _set_ctx(entity)
+    try:
+        out = await send_dm(message="yo", target_person="Bob", platform="telegram", confirm=True)
+        data = json.loads(out)
+        assert data["ok"] is True
+        assert entity.dms == [("telegram", "222", "yo")]
     finally:
         reset_tool_runtime(tok)
 

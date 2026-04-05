@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from bumblebee.presence.tools.registry import tool
+from bumblebee.utils.clock import format_wall_clock_tool_line
 
 
 @tool(
     name="get_current_time",
     description=(
-        "Get the current date and time. Use this if you need to know exactly what time it is right now."
+        "Get the current date and time in the display timezone (BUMBLEBEE_TIMEZONE / TZ, "
+        "or US Eastern on Railway / hybrid_railway). Use when you need the exact wall time."
     ),
 )
 async def get_current_time() -> str:
-    now = datetime.now()
-    return now.strftime("%A, %B %d, %Y at %I:%M %p")
+    return format_wall_clock_tool_line()

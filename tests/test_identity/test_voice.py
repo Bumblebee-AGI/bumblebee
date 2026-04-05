@@ -16,3 +16,8 @@ def test_strip_whole_line_parenthetical():
 def test_strip_lone_asterisk_action_line():
     raw = "*shrugs*\n\nwhatever"
     assert strip_stage_directions(raw) == "whatever"
+
+
+def test_strip_media_html_tags():
+    raw = '<audio src="/tmp/bb_voice_1.mp3"></audio>\n\nstill here'
+    assert strip_stage_directions(raw) == "still here"

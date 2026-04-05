@@ -1,7 +1,7 @@
 # Bumblebee
 
 <p align="center">
-  <img src="bumblebee.png" alt="Bumblebee — stylized bee illustration" width="520">
+  <img src="assets/branding/bumblebee.png" alt="Bumblebee — stylized bee illustration" width="520">
 </p>
 
 <p align="center">
@@ -18,7 +18,7 @@ Bumblebee is not an agentic task runner. It does not complete tasks on your beha
 
 No API keys, subscriptions, or cloud inference are required for the default stack: everything runs locally on your machine (your GPU).
 
-**Quick links:** [Requirements](#requirements) · [Install & usage](#install) · [Telegram](#telegram) · [Platforms](#platforms) · [Tools](#tools) · [Knowledge](#knowledge-system) · [CLI reference](#cli-reference) · [Architecture](#architecture)
+**Quick links:** [Requirements](#requirements) · [Install & usage](#install) · [Setup wizard](#setup-wizard) · [Telegram](#telegram) · [Platforms](#platforms) · [Tools](#tools) · [Knowledge](#knowledge-system) · [CLI reference](#cli-reference) · [Architecture](#architecture)
 
 ---
 
@@ -63,6 +63,15 @@ uv sync
 ```
 
 Harness defaults live only in `configs/default.yaml` (not the repo root). Entity definitions go in `configs/entities/<name>.yaml` (see `canary` and `example`). **`models.reflex`** and **`models.deliberate`** default to **`gemma4:26b`** (reflex uses a smaller max token budget but the same weights). **`models.embedding`** is **`nomic-embed-text`** for vector recall (not a chat model).
+
+## Setup wizard
+
+For a guided first-time path, run **`bumblebee setup`**. The default recommendation is **hybrid**: Ollama + the Bumblebee inference gateway + Cloudflare Tunnel on your home PC, and the entity **worker** (and optional API) on **Railway** with Postgres. The wizard can merge **`.env`**, optionally run **`npm run ollama:reset`**, **`bumblebee gateway on`** (Windows), and **`railway`** variable/deploy commands when those tools are installed and you confirm each step.
+
+- **Docs:** [docs/operations/setup-wizard.md](docs/operations/setup-wizard.md)
+- **Entity personality / YAML only:** `bumblebee create` (the wizard can call this after env + Railway prep).
+
+Use **`bumblebee setup --profile local`** for a single-machine stack without the Railway block.
 
 ## Usage
 
@@ -129,14 +138,18 @@ If you run the Bumblebee runtime on Railway and keep inference at home, use:
 bumblebee gateway status
 bumblebee gateway on
 bumblebee gateway off
+bumblebee gateway restart
 ```
 
-Equivalent wrappers in the repo root:
+`gateway restart` runs `off` then `on` (2s pause between). Use `--leave-ollama-running` on restart if you only want to bounce cloudflared + the Python gateway.
+
+Equivalent wrappers (double-click or run from repo root):
 
 ```powershell
-.\gateway-status.cmd
-.\gateway-on.cmd
-.\gateway-off.cmd
+.\scripts\windows\gateway-status.cmd
+.\scripts\windows\gateway-on.cmd
+.\scripts\windows\gateway-off.cmd
+.\scripts\windows\gateway-restart.cmd
 ```
 
 NPM shortcuts in this repo (`package.json`):
@@ -163,7 +176,7 @@ What `ollama:reset` does:
 - Stops the gateway stack (`bumblebee gateway off`)
 - Kills leftover `ollama.exe` runner processes
 - Shows pre-start GPU/process checks
-- Persists safe defaults in **User** env (`OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_KEEP_ALIVE=60s`, `OLLAMA_CONTEXT_LENGTH=8192`, `OLLAMA_NUM_PARALLEL=1`)
+- Persists safe defaults in **User** env (`OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_KEEP_ALIVE=60s`, `OLLAMA_CONTEXT_LENGTH=16384`, `OLLAMA_NUM_PARALLEL=1`; override with `.\scripts\ollama-reset.ps1 -ContextLength 32768`)
 - Restarts gateway (`on` + `status`)
 - Warms `gemma4:26b` once and prints post-start checks (`ollama ps` + GPU memory summary)
 
@@ -185,6 +198,12 @@ Notes:
 ## Telegram
 
 Run **`bumblebee run <entity>`** with Telegram enabled in the entity YAML (not `talk` — the daemon owns the bot connection).
+
+### Public onboarding bot (ecosystem)
+
+There is **one** Telegram bot whose job is to onboard **anyone** into the project—setup steps, links, and context. It is **not** an LLM: fixed text, links, and inline buttons only—**no Ollama, no GPU, no local AI**, and no Bumblebee inference stack. **You use it by opening that bot and sending `/start`.** You do **not** run the onboarding process or set `BUMBLEBEE_ONBOARD_TOKEN` unless you are the maintainer deploying that public bot (e.g. on Railway: `python -m onboarding`). The app is the top-level **`onboarding/`** package—not a `bumblebee` subcommand; see [docs/deployment/railway-services.md](docs/deployment/railway-services.md).
+
+### Your entity on Telegram
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the **token**.
 2. Provide the token (name must match `token_env` in YAML). **Project-local (recommended):** copy `.env.example` to **`.env`** in the repo root and set `TELEGRAM_TOKEN=...` there — it is gitignored and loaded automatically when you run `bumblebee` (not user-level Windows env). Or export it in the shell as usual.
@@ -209,7 +228,7 @@ presence:
 
 **What you get**
 
-- **`/start`** — Rich onboarding with quick-start actions and best practices.
+- **`/start`** — Rich intro for **your entity** (quick-start actions and best practices), not the separate public ecosystem onboarding bot above.
 - **`/help`** — Practical usage guide with examples.
 - **`/commands [page] [filter]`** — Paginated (and filterable) command catalog.
 - **`/status`**, **`/memories [count]`**, **`/feelings`** — Internal-state introspection in Telegram HTML.
@@ -343,15 +362,75 @@ presence:
 
 Tools are how the entity interacts with the world — not “services for the user,” but **senses and reach**. When `presence.tool_activity` is on, tool use can surface in chat with short status lines.
 
-### Built-in tools
+### Native tools (in-repo)
+
+These are implemented under `bumblebee/presence/tools/` and registered by the entity. **Toggles** live in `configs/default.yaml` under `tools:` (harness) and can be overridden per entity YAML. Unless noted, tools run on the **deliberate** path only.
+
+#### Always registered (no `tools.*.enabled` gate)
 
 | Tool | Description |
 |---|---|
 | `search_web` | Web search (DuckDuckGo by default; optional Firecrawl when configured). |
 | `fetch_url` | Fetch and extract text from a URL. |
-| `read_file` | Read allowed local files (read-focused; bounded by harness policy). |
+| `read_file` | Read allowed paths (harness policy). |
+| `list_directory` | List allowed directories. |
+| `search_files` | Search files by pattern under allowed roots. |
+| `write_file` | Write/create allowed files. |
+| `append_file` | Append to allowed files. |
 | `get_current_time` | Current local date and time. |
-| `update_knowledge` | Curate `knowledge.md` sections (deliberate path; respects locked headings). |
+| `search_tools` | Search registered tools by keyword (runtime discovery). |
+| `describe_tool` | Full name, description, and JSON Schema for one tool. |
+| `update_knowledge` | Add/update/remove sections in `knowledge.md` (respects locked headings). |
+
+#### Optional — default **on** in `configs/default.yaml`
+
+| Tool | `tools.*` key | Description |
+|---|---|---|
+| `get_youtube_transcript` | `youtube` | Transcript for a YouTube URL or id. |
+| `search_youtube` | `youtube` | Search YouTube. |
+| `read_reddit` | `reddit` | Browse a subreddit. |
+| `read_reddit_post` | `reddit` | Read a Reddit post thread. |
+| `read_wikipedia` | `wikipedia` | Wikipedia summary / fetch. |
+| `get_weather` | `weather` | Weather for a location. |
+| `get_news` | `news` | News headlines/topics. |
+| `read_pdf` | `pdf` | Extract text from a PDF path. |
+| `speak` | `voice` | TTS voice message to the active chat (Edge-TTS). |
+| `get_tts_voice` | `voice` | Current TTS voice id. |
+| `list_tts_voices` | `voice` | List Edge-TTS voices (filterable). |
+| `set_tts_voice` | `voice` | Set TTS voice for this process. |
+| `set_reminder` | `reminders` | Schedule a reminder (DB + scheduler). |
+| `list_reminders` | `reminders` | List reminders. |
+| `cancel_reminder` | `reminders` | Cancel a reminder. |
+| `send_message_to` | `messaging` | Message a platform target or resolved person (`confirm` flow). |
+| `list_known_contacts` | `messaging` | Known people/routes from prior interactions. |
+| `send_dm` | `messaging` | DM on Telegram/Discord; `list_targets=true` lists seen user ids, or pass `user_id` / `target_person` (confirm flow). |
+| `get_system_info` | `system` | Host/system snapshot. |
+| `run_command` | `shell` | Run a shell command (deny rules + timeout). |
+| `run_background` | `shell` | Start a background shell job. |
+| `check_process` | `shell` | Inspect a tracked background job. |
+| `kill_process` | `shell` | Stop a background job. |
+| `execute_python` | `code` | Run Python in a sandboxed helper. |
+| `execute_javascript` | `code` | Run JavaScript in a sandboxed helper. |
+
+#### Optional — default **off** in `configs/default.yaml`
+
+| Tool | `tools.*` key | Description |
+|---|---|---|
+| `browser_navigate` | `browser` | Open a URL in the automated browser. |
+| `browser_screenshot` | `browser` | Screenshot current page. |
+| `browser_click` | `browser` | Click an element. |
+| `browser_type` | `browser` | Type into the page. |
+| `generate_image` | `imagegen` | Text-to-image (Fal or local A1111-compatible API). |
+
+**Voice (Edge-TTS):**
+
+```bash
+pip install bumblebee[voice]
+```
+
+**Imagegen:** set `tools.imagegen.enabled: true` and either Fal (`FAL_API_KEY`, `pip install bumblebee[imagegen]`) or `backend: local` + `local_url` for a local SD WebUI-compatible endpoint.
+
+The **live** tool list depends on harness and entity YAML (disabled categories are omitted) and on loaded MCP servers. To see what this process actually registered, use `search_tools` / `describe_tool`, or `/tools` on CLI/Telegram where supported.
 
 ### MCP integration
 
@@ -429,7 +508,9 @@ Entity YAML can override chat models under `cognition` (for example `reflex_mode
 ## CLI reference
 
 ```bash
+bumblebee setup [--profile ask|hybrid|local]   # .env + home gateway stack + Railway + entity
 bumblebee create                      # genesis wizard — new entity
+bumblebee gateway on|off|status|restart  # Windows: Ollama + inference gateway + cloudflared (scripts/gateway.ps1)
 bumblebee talk <entity>               # CLI conversation (no daemon)
 bumblebee run <entity>                # daemon + configured platforms
 bumblebee status <entity>             # emotional state, drives, stats

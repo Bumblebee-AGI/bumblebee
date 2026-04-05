@@ -157,6 +157,8 @@ def default_tools_config() -> dict[str, Any]:
         "pdf": {"enabled": True},
         "reminders": {"enabled": True},
         "messaging": {"enabled": True},
+        "automations": {"enabled": True},
+        "journal": {"enabled": True},
         "wikipedia": {"enabled": True},
         "weather": {"enabled": True},
         "news": {"enabled": True},
@@ -206,6 +208,18 @@ class EntityDrives:
 
 
 @dataclass
+class HistoryCompressionSettings:
+    """When rolling chat history exceeds ``rolling_history_max_messages``, oldest turns are dropped.
+    If ``enabled``, those turns are merged into an in-memory summary prepended to model context."""
+
+    enabled: bool = True
+    summary_max_chars: int = 4500
+    max_merge_input_chars: int = 12000
+    merge_max_tokens: int = 900
+    format_per_message_chars: int = 2200
+
+
+@dataclass
 class EntityCognition:
     reflex_model: str = ""
     deliberate_model: str = ""
@@ -220,6 +234,29 @@ class EntityCognition:
     temperature: float = 0.75
     max_context_tokens: int = 32768
     thinking_budget: int = 4096
+    history_compression: HistoryCompressionSettings = field(default_factory=HistoryCompressionSettings)
+
+
+@dataclass
+class AutomationsEmergenceSettings:
+    enabled: bool = True
+    analysis_interval: int = 7200
+    max_suggestions: int = 3
+
+
+@dataclass
+class AutomationsJournalSettings:
+    enabled: bool = True
+    max_entries: int = 1000
+
+
+@dataclass
+class EntityAutomationsSettings:
+    enabled: bool = True
+    max_automations: int = 50
+    max_failures: int = 5
+    emergence: AutomationsEmergenceSettings = field(default_factory=AutomationsEmergenceSettings)
+    journal: AutomationsJournalSettings = field(default_factory=AutomationsJournalSettings)
 
 
 @dataclass
@@ -237,6 +274,7 @@ class EntityConfig:
     drives: EntityDrives
     cognition: EntityCognition
     presence: EntityPresence
+    automations: EntityAutomationsSettings = field(default_factory=EntityAutomationsSettings)
     raw: dict[str, Any] = field(default_factory=dict)
 
     def db_path(self) -> str:
@@ -257,6 +295,9 @@ class EntityConfig:
 
     def log_path(self) -> str:
         return _expand(self.harness.logging.file, self.name)
+
+    def journal_path(self) -> str:
+        return _expand("~/.bumblebee/entities/{entity_name}/journal.md", self.name)
 
 
 def _merge_dict(base: dict, override: dict) -> dict:
@@ -392,6 +433,21 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
         initiative_cooldown=int(dr.get("initiative_cooldown", 1800)),
     )
     cog = data.get("cognition") or {}
+    hc_raw = cog.get("history_compression")
+    if isinstance(hc_raw, dict):
+        history_compression = HistoryCompressionSettings(
+            enabled=bool(hc_raw.get("enabled", True)),
+            summary_max_chars=max(500, int(hc_raw.get("summary_max_chars", 4500) or 4500)),
+            max_merge_input_chars=max(
+                2000, int(hc_raw.get("max_merge_input_chars", 12000) or 12000)
+            ),
+            merge_max_tokens=max(200, int(hc_raw.get("merge_max_tokens", 900) or 900)),
+            format_per_message_chars=max(
+                400, int(hc_raw.get("format_per_message_chars", 2200) or 2200)
+            ),
+        )
+    else:
+        history_compression = HistoryCompressionSettings()
     ec = EntityCognition(
         reflex_model=str(cog.get("reflex_model") or harness.models.reflex),
         deliberate_model=str(cog.get("deliberate_model") or harness.models.deliberate),
@@ -414,12 +470,30 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
             cog.get("max_context_tokens", harness.cognition.max_context_tokens)
         ),
         thinking_budget=int(cog.get("thinking_budget", harness.cognition.thinking_budget)),
+        history_compression=history_compression,
     )
     pr = data.get("presence") or {}
     presence = EntityPresence(
         platforms=list(pr.get("platforms") or [{"type": "cli"}]),
         daemon=dict(pr.get("daemon") or {}),
         tool_activity=bool(pr.get("tool_activity", True)),
+    )
+    au = data.get("automations") or {}
+    em = au.get("emergence") or {}
+    jr = au.get("journal") or {}
+    automations = EntityAutomationsSettings(
+        enabled=bool(au.get("enabled", True)),
+        max_automations=max(1, int(au.get("max_automations", 50) or 50)),
+        max_failures=max(1, int(au.get("max_failures", 5) or 5)),
+        emergence=AutomationsEmergenceSettings(
+            enabled=bool(em.get("enabled", True)),
+            analysis_interval=max(60, int(em.get("analysis_interval", 7200) or 7200)),
+            max_suggestions=max(1, min(10, int(em.get("max_suggestions", 3) or 3))),
+        ),
+        journal=AutomationsJournalSettings(
+            enabled=bool(jr.get("enabled", True)),
+            max_entries=max(10, int(jr.get("max_entries", 1000) or 1000)),
+        ),
     )
     return EntityConfig(
         name=name,
@@ -428,6 +502,7 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
         drives=drives,
         cognition=ec,
         presence=presence,
+        automations=automations,
         raw=data,
     )
 

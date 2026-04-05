@@ -92,6 +92,8 @@ class CognitionRouter:
         self.client = client
 
     def heuristic_route(self, inp: Input, emotional: EmotionalState) -> RouteKind:
+        if inp.platform == "automation":
+            return "deliberate"
         t = inp.text.strip()
         low = t.lower()
         if len(t) < 4:
@@ -161,6 +163,9 @@ class CognitionRouter:
         emotional: EmotionalState,
         context: ContextPackage,
     ) -> tuple[RouteKind, ContextPackage]:
+        if inp.platform == "automation":
+            context.reflex_hint = "deliberate"
+            return "deliberate", context
         if self.entity.cognition.always_deliberate:
             context.reflex_hint = "deliberate"
             return "deliberate", context

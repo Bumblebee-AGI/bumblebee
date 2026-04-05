@@ -213,18 +213,37 @@ class DiscordPlatform(Platform):
                     await c.send(plain)
                     return
 
-    async def send_audio(self, channel: str, path: str) -> None:
+    async def send_dm_to_user(self, user_id: str, content: str) -> None:
+        """Open or reuse a DM channel and send (user snowflake id)."""
+        await self._ready.wait()
+        plain = (content or "").strip()[:2000]
+        if not plain:
+            return
+        try:
+            uid = int((user_id or "").strip())
+        except ValueError as e:
+            raise RuntimeError("invalid Discord user id") from e
+        try:
+            user = await self.client.fetch_user(uid)
+        except Exception as e:
+            raise RuntimeError(f"could not resolve Discord user: {e}") from e
+        dm = await user.create_dm()
+        await dm.send(plain)
+
+    async def send_audio(self, channel: str, path: str) -> bool:
         p = Path(path)
         if not p.is_file():
-            return
+            return False
         await self._ready.wait()
         try:
             cid = int(channel)
             ch = self.client.get_channel(cid)
             if ch is not None and isinstance(ch, discord.abc.Messageable):
                 await ch.send(file=discord.File(str(p), filename=p.name[:255]))
+                return True
         except Exception as e:
             _discord_log.warning("discord_send_audio_failed", error=str(e))
+        return False
 
     async def send_image(self, channel: str, path: str) -> None:
         p = Path(path)

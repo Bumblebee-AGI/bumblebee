@@ -16,6 +16,14 @@ _LEADING_PAREN_BLOCK = re.compile(
 )
 _LINE_ONLY_PAREN = re.compile(r"^\s*\([^)]{0,500}\)\s*$")
 _LINE_ONLY_ASTERISK_ACTION = re.compile(r"^\s*\*[^*]{1,200}\*\s*$")
+_MEDIA_TAG_BLOCK = re.compile(
+    r"<\s*(audio|video)\b[^>]*>.*?<\s*/\s*\1\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_MEDIA_TAG_SINGLE = re.compile(
+    r"<\s*(audio|video|source)\b[^>]*\/?\s*>",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -33,6 +41,9 @@ def strip_stage_directions(text: str) -> str:
     t = (text or "").strip()
     if not t:
         return t
+    # Strip media HTML tags if they leak from tool-context synthesis.
+    t = _MEDIA_TAG_BLOCK.sub(" ", t)
+    t = _MEDIA_TAG_SINGLE.sub(" ", t)
     while True:
         m = _LEADING_PAREN_BLOCK.match(t)
         if not m:

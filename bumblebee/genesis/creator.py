@@ -26,7 +26,7 @@ def _load_template(name: str) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def run_wizard() -> None:
+def run_wizard() -> str:
     harness = load_harness_config()
     click.echo("Bumblebee — create a new entity\n")
     name = click.prompt("Name", type=str).strip()
@@ -103,3 +103,4 @@ def run_wizard() -> None:
     dump_entity(base, out)
     click.echo(f"Wrote {out}")
     click.echo(f"Try: bumblebee talk {name}")
+    return name

@@ -80,14 +80,17 @@ cognition:
   deliberate_model: "gemma4:26b"
   always_deliberate: true
   fast_deliberate_mode: true
-  deliberate_max_tokens: 768
-  system_prompt_char_limit: 7000
-  rolling_history_max_messages: 18
-  knowledge_recent_turns: 6
-  history_message_char_limit: 1500
+  # Larger reply budget now that history/context are wider.
+  deliberate_max_tokens: 1024
+  system_prompt_char_limit: 11000
+  rolling_history_max_messages: 32
+  knowledge_recent_turns: 10
+  history_message_char_limit: 2800
   thinking_mode: false
   temperature: 0.75
-  max_context_tokens: 8192
+  # Target context window (status + operator intent). Ollama still needs a matching
+  # OLLAMA_CONTEXT_LENGTH (or Modelfile num_ctx) — see npm run ollama:reset defaults.
+  max_context_tokens: 16384
   thinking_budget: 2048
 
 presence:
@@ -101,3 +104,15 @@ presence:
   daemon:
     heartbeat_interval: 120
     memory_consolidation: 7200
+
+automations:
+  enabled: true
+  max_automations: 50
+  max_failures: 5
+  emergence:
+    enabled: true
+    analysis_interval: 7200
+    max_suggestions: 3
+  journal:
+    enabled: true
+    max_entries: 1000

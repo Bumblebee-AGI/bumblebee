@@ -9,6 +9,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bumblebee.config import EntityConfig
 from bumblebee.memory.consolidation import ConsolidationJob
+from bumblebee.models import Input
+from bumblebee.presence.automations.engine import AutomationEngine
 from bumblebee.presence.initiative import InitiativeEngine
 
 log = structlog.get_logger("bumblebee.presence.daemon")
@@ -22,6 +24,7 @@ class PresenceDaemon:
         self._consolidation = ConsolidationJob(self.cfg)
         self._initiative = InitiativeEngine(self.cfg, entity_facade.client)
         self._last_consolidation: float = time.time()
+        self._last_emergence: float = 0.0
 
     def _daemon_dict(self) -> dict:
         return dict(self.cfg.presence.daemon or {})
@@ -38,6 +41,7 @@ class PresenceDaemon:
         if self._scheduler and self._scheduler.running:
             return
         self._scheduler = AsyncIOScheduler()
+        self.entity.automation_engine = AutomationEngine(self.entity, self._scheduler)
         hb = max(5, self._heartbeat_seconds())
         cons = max(30, self._consolidation_seconds())
         self._scheduler.add_job(
@@ -55,6 +59,11 @@ class PresenceDaemon:
             replace_existing=True,
         )
         self._scheduler.start()
+        if self.cfg.automations.enabled:
+            try:
+                await self.entity.automation_engine.startup()
+            except Exception as e:
+                log.warning("automation_engine_startup_failed", module="presence", error=str(e))
         log.info(
             "daemon_scheduler_started",
             module="presence",
@@ -64,6 +73,13 @@ class PresenceDaemon:
         )
 
     async def stop(self) -> None:
+        eng = getattr(self.entity, "automation_engine", None)
+        if eng is not None:
+            try:
+                await eng.shutdown()
+            except Exception as e:
+                log.warning("automation_engine_shutdown_failed", module="presence", error=str(e))
+            self.entity.automation_engine = None
         if self._scheduler:
             try:
                 self._scheduler.shutdown(wait=False)
@@ -106,6 +122,7 @@ class PresenceDaemon:
                 await self.entity.refresh_mcp_servers()
             except Exception as e:
                 log.warning("mcp_heartbeat_refresh_failed", module="presence", error=str(e))
+            # Routine schedules are owned by APScheduler (automation_engine), not this tick.
         except Exception as e:
             log.exception("daemon_heartbeat_error", module="presence", error=str(e))
 
@@ -118,5 +135,56 @@ class PresenceDaemon:
         try:
             await self._consolidation.run_for_daemon(self.entity)
             self._last_consolidation = time.time()
+            await self._maybe_automation_emergence()
         except Exception as e:
             log.exception("daemon_consolidation_error", module="presence", error=str(e))
+
+    async def _maybe_automation_emergence(self) -> None:
+        cfg = self.cfg.automations
+        if not cfg.enabled or not cfg.emergence.enabled:
+            return
+        eng = getattr(self.entity, "automation_engine", None)
+        if eng is None:
+            return
+        now = time.time()
+        if now - self._last_emergence < float(cfg.emergence.analysis_interval):
+            return
+        self._last_emergence = now
+        try:
+            sug = await eng.suggest_automations()
+        except Exception as e:
+            log.warning("automation_emergence_failed", module="presence", error=str(e))
+            return
+        if not sug:
+            return
+        lines = "\n".join(f"{i + 1}. {s['title']} — {s['why']}" for i, s in enumerate(sug))
+        body = (
+            "Based on your recent experiences and current drives, here are some routines "
+            "you might want to create:\n\n"
+            f"{lines}\n\n"
+            "Do you want to create any of these? Call create_automation for each one you want, "
+            "or ignore this if none feel right."
+        )
+        inp = Input(
+            text=body,
+            person_id="harness_emergence",
+            person_name="Harness",
+            channel="emergence",
+            platform="automation",
+            metadata={"emergence": True},
+        )
+        try:
+            await self.entity.perceive(
+                inp,
+                stream=None,
+                record_user_message=False,
+                meaningful_override=False,
+                reply_platform=None,
+                preserve_conversation_route=True,
+                routine_history=False,
+                skip_relational_upsert=True,
+                skip_drive_interaction=True,
+                skip_episode=True,
+            )
+        except Exception as e:
+            log.warning("automation_emergence_perceive_failed", module="presence", error=str(e))
