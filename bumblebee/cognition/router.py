@@ -161,6 +161,9 @@ class CognitionRouter:
         emotional: EmotionalState,
         context: ContextPackage,
     ) -> tuple[RouteKind, ContextPackage]:
+        if self.entity.cognition.always_deliberate:
+            context.reflex_hint = "deliberate"
+            return "deliberate", context
         kind = self.heuristic_route(inp, emotional)
         t = inp.text.strip()
         low = t.lower()

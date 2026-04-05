@@ -215,6 +215,19 @@ class PersonalityEngine:
                 entity_created_at=entity_created_at,
             )
 
+        if self.entity.cognition.fast_deliberate_mode:
+            text = self._with_identity_lock(
+                self._minimal_fallback(emotional_state, inner, rel, mem, nar, ks)
+            )
+            self._cache_key = key
+            self._cached_prompt_body = text
+            return self._prepend_time_context(
+                text,
+                last_completed_turn_at=last_completed_turn_at,
+                last_interlocutor_name=last_interlocutor_name,
+                entity_created_at=entity_created_at,
+            )
+
         if not client:
             text = self._with_identity_lock(
                 self._minimal_fallback(emotional_state, inner, rel, mem, nar, ks)

@@ -1,9 +1,12 @@
-"""Plain-text / HTML copy for Telegram (onboarding, slash commands, introspection)."""
+"""HTML copy helpers for Telegram onboarding, commands, and introspection."""
 
 from __future__ import annotations
 
 import html
 import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
 from bumblebee.presence.platforms.cli_render import (
     CLIHeaderSnapshot,
     _fmt_duration,
@@ -11,9 +14,20 @@ from bumblebee.presence.platforms.cli_render import (
     dominant_drive_line,
 )
 
+if TYPE_CHECKING:
+    from bumblebee.entity import Entity
+
+
+@dataclass(frozen=True)
+class TelegramCommandSpec:
+    name: str
+    summary: str
+    usage: str
+    category: str
+
 
 def split_telegram_chunks(text: str, limit: int = 4096) -> list[str]:
-    """Split for Telegram message size; prefer paragraph then word boundaries."""
+    """Split under Telegram's message limit; prefer paragraph then word boundaries."""
     text = text.strip() if text else ""
     if not text:
         return [""]
@@ -39,63 +53,169 @@ def split_telegram_chunks(text: str, limit: int = 4096) -> list[str]:
     return chunks
 
 
-def format_start_html(entity_name: str, app_version: str) -> str:
+COMMAND_REGISTRY: list[TelegramCommandSpec] = [
+    TelegramCommandSpec(
+        name="start",
+        summary="Onboarding, quick wins, and next steps",
+        usage="/start",
+        category="Getting started",
+    ),
+    TelegramCommandSpec(
+        name="help",
+        summary="Short guide with practical examples",
+        usage="/help",
+        category="Getting started",
+    ),
+    TelegramCommandSpec(
+        name="commands",
+        summary="Browse all slash commands (paged or filtered)",
+        usage="/commands [page] [filter]",
+        category="Getting started",
+    ),
+    TelegramCommandSpec(
+        name="status",
+        summary="Current mood, memory, model, and tool snapshot",
+        usage="/status",
+        category="Introspection",
+    ),
+    TelegramCommandSpec(
+        name="feelings",
+        summary="Detailed emotional read",
+        usage="/feelings",
+        category="Introspection",
+    ),
+    TelegramCommandSpec(
+        name="memories",
+        summary="Recent episodic memory summaries",
+        usage="/memories [count]",
+        category="Introspection",
+    ),
+    TelegramCommandSpec(
+        name="me",
+        summary="How I currently model our relationship",
+        usage="/me",
+        category="Introspection",
+    ),
+    TelegramCommandSpec(
+        name="models",
+        summary="Inference and runtime model configuration",
+        usage="/models",
+        category="Runtime",
+    ),
+    TelegramCommandSpec(
+        name="ping",
+        summary="Quick liveness check",
+        usage="/ping",
+        category="Runtime",
+    ),
+    TelegramCommandSpec(
+        name="reset",
+        summary="Clear rolling chat turns (keeps SQLite memory)",
+        usage="/reset",
+        category="Session",
+    ),
+]
+
+
+def command_menu_items() -> list[tuple[str, str]]:
+    """(name, description) list suitable for Telegram setMyCommands."""
+    return [(c.name, c.summary[:256]) for c in COMMAND_REGISTRY]
+
+
+def format_start_html(entity_name: str, app_version: str, *, first_name: str | None = None) -> str:
     en = html.escape(entity_name)
+    who = html.escape((first_name or "there").strip() or "there")
     return (
         f"◈ <b>{en}</b> · bumblebee v{html.escape(app_version)}\n\n"
-        "I'm not a task bot — I'm a persistent presence. "
-        "Talk like you would to someone who remembers.\n\n"
-        "<i>Tip:</i> tap the <b>/</b> menu for commands, or try "
-        "<code>/commands</code> to browse everything."
+        f"Hey, {who}. I'm not a task bot; I'm a persistent presence that keeps context and memory over time.\n\n"
+        "<b>Best ways to use me</b>\n"
+        "• Talk naturally, like a real ongoing conversation.\n"
+        "• Send photos (with an optional caption) and I can inspect them.\n"
+        "• Use slash commands for introspection and controls.\n\n"
+        "<b>Try these now</b>\n"
+        "• <code>/status</code> for a live internal snapshot\n"
+        "• <code>/memories 3</code> for recent memory traces\n"
+        "• <code>/me</code> for how I currently know you\n\n"
+        "Tap the <b>/</b> menu anytime, or use <code>/commands</code> to browse everything."
     )
 
 
 def format_help_html(entity_name: str) -> str:
     en = html.escape(entity_name)
     return (
-        f"<b>{en}</b> understands natural messages, photos (vision), and slash commands.\n\n"
-        "<b>Core</b>\n"
-        "/start — this welcome\n"
-        "/help — short guide\n"
-        "/commands [page] — full command list (paginated)\n"
-        "/status — mood, stack, memory snapshot\n"
-        "/memories — recent episode summaries\n"
-        "/feelings — how I'm doing inside\n"
-        "/reset — clear <i>conversation</i> turns only (SQLite memories unchanged).\n"
-        "Full wipe (episodes, people, beliefs, etc.): run "
-        "<code>bumblebee wipe &lt;entity&gt; --yes</code> on the host.\n\n"
-        "Send a photo with an optional caption; I'll look with the model's eyes."
+        f"<b>{en}</b> works best when messages have context and intent.\n\n"
+        "<b>Natural chat examples</b>\n"
+        "• \"Give me a 15-minute plan to learn X\"\n"
+        "• \"I sent a screenshot — what stands out?\"\n"
+        "• \"Summarize what we decided earlier today\"\n\n"
+        "<b>Useful commands</b>\n"
+        "• <code>/status</code>, <code>/feelings</code>, <code>/memories [count]</code>\n"
+        "• <code>/me</code> to inspect relationship state\n"
+        "• <code>/models</code> and <code>/ping</code> for runtime checks\n"
+        "• <code>/reset</code> to clear rolling chat turns only\n\n"
+        "<b>Important</b>\n"
+        "• <code>/reset</code> does <i>not</i> wipe SQLite memories.\n"
+        "• Full wipe (episodes, beliefs, relationships, etc.) is host-side:\n"
+        "<code>bumblebee wipe &lt;entity&gt; --yes</code>."
     )
 
 
-# (command, one-line description) for paginated /commands
-COMMAND_REGISTRY: list[tuple[str, str]] = [
-    ("start", "Welcome, identity, and how to use the menu"),
-    ("help", "What I accept: text, photos, commands"),
-    ("commands", "This list — add a page number to flip"),
-    ("status", "Mood, drives, models, memory counts"),
-    ("memories", "Last few things I've written into episodic memory"),
-    ("feelings", "Introspective read on emotional state"),
-    ("reset", "Clear rolling chat context (keeps SQLite memory)"),
-]
-
-
-def format_commands_page(page: int, *, per_page: int = 5) -> tuple[str, int, int]:
+def format_commands_page(
+    page: int,
+    *,
+    per_page: int = 5,
+    query: str | None = None,
+) -> tuple[str, int, int]:
     """
     page: 0-based index.
+    query: optional case-insensitive filter over command, summary, usage, category.
     Returns (html_body, page_index, total_pages).
     """
-    total = max(1, (len(COMMAND_REGISTRY) + per_page - 1) // per_page)
+    q = (query or "").strip().lower()
+    rows = COMMAND_REGISTRY
+    if q:
+        rows = [
+            c
+            for c in COMMAND_REGISTRY
+            if q in c.name.lower()
+            or q in c.summary.lower()
+            or q in c.usage.lower()
+            or q in c.category.lower()
+        ]
+    if not rows:
+        return (
+            f"<b>Commands</b>\n\nNo matches for <code>{html.escape(query or '')}</code>.\n"
+            "Try <code>/commands</code> for the full list.",
+            0,
+            1,
+        )
+
+    total = max(1, (len(rows) + per_page - 1) // per_page)
     page = max(0, min(page, total - 1))
     start = page * per_page
-    rows = COMMAND_REGISTRY[start : start + per_page]
-    lines = ["<b>Commands</b> — page {}/{}".format(page + 1, total), ""]
-    for cmd, desc in rows:
-        lines.append(f"/{html.escape(cmd)} — {html.escape(desc)}")
-    lines.append("")
-    lines.append("<i>Send</i> <code>/commands {}</code> <i>for next page.</i>".format(
-        page + 2 if page + 1 < total else 1
-    ))
+    page_rows = rows[start : start + per_page]
+
+    title = "<b>Commands</b> — page {}/{}".format(page + 1, total)
+    if q:
+        title += f" · filter <code>{html.escape(query or '')}</code>"
+    lines = [title, ""]
+    for c in page_rows:
+        lines.append(f"<b>/{html.escape(c.name)}</b> — {html.escape(c.summary)}")
+        lines.append(f"<i>usage:</i> <code>{html.escape(c.usage)}</code>")
+        lines.append("")
+    if q:
+        lines.append(
+            "<i>Next page:</i> <code>/commands {} {}</code>".format(
+                page + 2 if page + 1 < total else 1,
+                html.escape(query or ""),
+            )
+        )
+    else:
+        lines.append(
+            "<i>Next page:</i> <code>/commands {}</code>".format(
+                page + 2 if page + 1 < total else 1
+            )
+        )
     return "\n".join(lines), page, total
 
 
@@ -124,7 +244,7 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
     )
     en = html.escape(snap.entity_name)
     return (
-        f"◈ <b>{en}</b>\n"
+        f"◈ <b>{en}</b> · v{html.escape(app_version)}\n"
         f"mood · {html.escape(snap.mood_label)} · {html.escape(snap.drive_line)}\n"
         f"memory · {snap.episode_count} episodes · knows {snap.people_count} people\n"
         f"model · {html.escape(snap.reflex_model)} · context · {snap.max_context_tokens // 1000}k\n"
@@ -135,14 +255,14 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
 def format_memories_html(entity_name: str, summaries: list[str]) -> str:
     en = html.escape(entity_name)
     if not summaries:
-        return f"<i>{en}</i> reaches for recent memories… the shelf is still sparse."
+        return f"<i>{en}</i> reaches for recent memories; the shelf is still sparse."
     lines = [f"<i>{en}</i> leafs through recent memories…", ""]
     for i, s in enumerate(summaries, 1):
         lines.append(f"{i}. {html.escape(s[:500])}")
     return "\n".join(lines)
 
 
-def format_feelings_html(entity_name: str, state) -> str:
+def format_feelings_html(entity_name: str, state: Any) -> str:
     en = html.escape(entity_name)
     primary = html.escape(state.primary.value)
     pi = f"{state.intensity:.1f}"
@@ -157,16 +277,75 @@ def format_feelings_html(entity_name: str, state) -> str:
     return " ".join(parts)
 
 
+def format_me_html(entity_name: str, relationship: Any | None) -> str:
+    en = html.escape(entity_name)
+    if relationship is None:
+        return (
+            f"<i>{en}</i> does not have a relationship profile for you yet.\n\n"
+            "Talk a little more and then check again with <code>/me</code>."
+        )
+    first_met_ago = _fmt_duration(max(0.0, time.time() - float(relationship.first_met)))
+    last_seen_ago = _fmt_duration(max(0.0, time.time() - float(relationship.last_interaction)))
+    return (
+        "<b>How I hold you in memory</b>\n"
+        f"name · {html.escape(str(relationship.name) or 'unknown')}\n"
+        f"dynamic · {html.escape(str(relationship.dynamic) or 'forming')}\n"
+        f"familiarity · {relationship.familiarity:.2f}\n"
+        f"warmth · {relationship.warmth:.2f}\n"
+        f"trust · {relationship.trust:.2f}\n"
+        f"interactions · {relationship.interaction_count}\n"
+        f"first met · {html.escape(first_met_ago)} ago\n"
+        f"last interaction · {html.escape(last_seen_ago)} ago"
+    )
+
+
+def format_models_html(entity: "Entity") -> str:
+    cfg = entity.config
+    think = "on" if cfg.cognition.thinking_mode else "off"
+    return (
+        "<b>Runtime models</b>\n"
+        f"reflex · <code>{html.escape(cfg.cognition.reflex_model)}</code>\n"
+        f"deliberate · <code>{html.escape(cfg.cognition.deliberate_model)}</code>\n"
+        f"embedding · <code>{html.escape(cfg.harness.models.embedding)}</code>\n"
+        f"thinking mode · {html.escape(think)}\n"
+        f"context window · {cfg.cognition.max_context_tokens // 1000}k tokens\n"
+        f"tools registered · {len(entity.tools.openai_tools())}"
+    )
+
+
+def format_ping_html(app_version: str) -> str:
+    return (
+        f"pong · bumblebee v{html.escape(app_version)}\n"
+        f"server_time_unix · <code>{int(time.time())}</code>"
+    )
+
+
+def format_reset_html(entity_name: str) -> str:
+    en = html.escape(entity_name)
+    return (
+        f"{en} cleared rolling chat turns for this runtime.\n\n"
+        "Persistent SQLite memories are untouched."
+    )
+
+
+def format_unknown_command(command_text: str) -> str:
+    cmd = html.escape(command_text.strip() or "that command")
+    return (
+        f"I do not recognize <code>{cmd}</code>.\n\n"
+        "Use <code>/commands</code> to browse everything, or <code>/help</code> for quick guidance."
+    )
+
+
 def format_media_unavailable(kind: str) -> str:
     k = html.escape(kind)
     return (
-        f"I can’t take in <b>{k}</b> yet — send text or a <b>photo</b> "
-        "(caption optional). Voice and video notes are on the roadmap."
+        f"I cannot process <b>{k}</b> in this channel yet.\n"
+        "Try plain text or a <b>photo</b> (caption optional)."
     )
 
 
 def format_access_denied() -> str:
     return (
-        "◈ This instance is locked to approved people. "
-        "If you should have access, ask whoever runs the harness to add your Telegram user id."
+        "◈ This instance is locked to approved people.\n"
+        "If you should have access, ask the operator to add your Telegram user id."
     )

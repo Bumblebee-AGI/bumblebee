@@ -80,3 +80,47 @@ firecrawl:
   base_url: "https://api.firecrawl.dev/v1"
   prefer_for_fetch: true
   prefer_for_search: true
+
+tools:
+  shell:
+    enabled: true
+    deny: ["rm -rf /", "sudo rm", "shutdown", "reboot", "format", "mkfs", "dd if="]
+    timeout: 30
+  browser:
+    enabled: false
+  code:
+    enabled: true
+    timeout: 30
+  imagegen:
+    enabled: false
+    backend: "fal" # fal | local
+    fal_api_key_env: "FAL_API_KEY"
+    local_url: "" # e.g. http://127.0.0.1:7860/sdapi/v1/txt2img
+  voice:
+    enabled: true
+    voice_id: "en-US-GuyNeural"
+  youtube:
+    enabled: true
+  reddit:
+    enabled: true
+  pdf:
+    enabled: true
+  reminders:
+    enabled: true
+  messaging:
+    enabled: true
+  wikipedia:
+    enabled: true
+  weather:
+    enabled: true
+  news:
+    enabled: true
+  system:
+    enabled: true
+  execution:
+    base_url: "" # Optional remote hands endpoint
+    token_env: "BUMBLEBEE_EXECUTION_RPC_TOKEN"
+    timeout: 45
+    allow_local: false
+    workspace_dir: ""
+    rpc_path: "/rpc"

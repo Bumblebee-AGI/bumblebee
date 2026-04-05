@@ -96,6 +96,19 @@ CREATE TABLE IF NOT EXISTS evolution_log (
     changes_json TEXT,
     reasoning TEXT
 );
+
+CREATE TABLE IF NOT EXISTS reminders (
+    id TEXT PRIMARY KEY,
+    message TEXT NOT NULL,
+    due_at DOUBLE PRECISION NOT NULL,
+    target_person TEXT,
+    platform TEXT,
+    channel TEXT,
+    person_id TEXT,
+    status TEXT NOT NULL,
+    created_at DOUBLE PRECISION NOT NULL,
+    fired_at DOUBLE PRECISION
+);
 """
 
 _EXPERIENCE_TABLES = (
@@ -107,6 +120,7 @@ _EXPERIENCE_TABLES = (
     "inner_voice",
     "entity_state",
     "evolution_log",
+    "reminders",
 )
 
 

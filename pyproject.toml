@@ -17,6 +17,8 @@ dependencies = [
     "aiosqlite>=0.20",
     "numpy>=1.26",
     "click>=8.1",
+    "psutil>=5.9",
+    "dateparser>=1.2",
     "discord-py>=2.3",
     "python-telegram-bot>=21.0",
 ]
@@ -32,6 +34,28 @@ gateway = [
 ]
 railway = [
     "asyncpg>=0.29",
+]
+voice = [
+    "edge-tts>=6.1",
+]
+pdf = [
+    "pymupdf>=1.23",
+]
+youtube = [
+    "youtube-transcript-api>=0.6",
+]
+browser = [
+    "playwright>=1.40",
+]
+imagegen = [
+    "fal-client>=0.4",
+]
+full = [
+    "edge-tts>=6.1",
+    "pymupdf>=1.23",
+    "youtube-transcript-api>=0.6",
+    "playwright>=1.40",
+    "fal-client>=0.4",
 ]
 dev = [
     "pytest>=8.0",

@@ -42,6 +42,70 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return f"📄 checking {filename}..."
     if tool_name == "get_current_time":
         return "🕐 checking the time..."
+    if tool_name == "get_youtube_transcript":
+        return "▶️ pulling transcript..."
+    if tool_name == "search_youtube":
+        return f'📺 searching youtube for "{args.get("query", "something")}"...'
+    if tool_name in ("read_reddit", "read_reddit_post"):
+        sub = str(args.get("subreddit", "") or "").strip()
+        return f"🔶 browsing r/{sub}..." if sub else "🔶 reading reddit..."
+    if tool_name == "read_wikipedia":
+        return f'📚 reading about {args.get("topic", "something")}...'
+    if tool_name == "get_weather":
+        return f'🌤️ checking weather in {args.get("location", "somewhere")}...'
+    if tool_name == "get_news":
+        topic = str(args.get("topic", "") or "").strip()
+        return f"📰 checking news about {topic}..." if topic else "📰 checking the news..."
+    if tool_name == "read_pdf":
+        return "📑 reading pdf..."
+    if tool_name == "speak":
+        return "🗣️ recording a voice message..."
+    if tool_name == "set_reminder":
+        return "⏰ setting a reminder..."
+    if tool_name == "list_reminders":
+        return None
+    if tool_name == "cancel_reminder":
+        return "❌ canceling reminder..."
+    if tool_name == "send_message_to":
+        platform = str(args.get("platform", "somewhere") or "somewhere")
+        return f"💬 sending a message on {platform}..."
+    if tool_name == "get_system_info":
+        return "💻 checking system stats..."
+    if tool_name == "run_command":
+        cmd = str(args.get("command", "something") or "something")
+        short = cmd[:40] + "..." if len(cmd) > 40 else cmd
+        return f"⚡ running: {short}"
+    if tool_name == "run_background":
+        return "🔄 starting background process..."
+    if tool_name == "check_process":
+        return "📊 checking process..."
+    if tool_name == "kill_process":
+        return "🛑 stopping process..."
+    if tool_name == "list_directory":
+        return "📁 looking around..."
+    if tool_name == "search_files":
+        return f'🔎 searching for {args.get("pattern", "files")}...'
+    if tool_name == "write_file":
+        name = Path(str(args.get("path", "file") or "file")).name
+        return f"✏️ writing {name}..."
+    if tool_name == "append_file":
+        name = Path(str(args.get("path", "file") or "file")).name
+        return f"📎 appending to {name}..."
+    if tool_name == "execute_python":
+        return "🐍 running python..."
+    if tool_name == "execute_javascript":
+        return "📜 running javascript..."
+    if tool_name == "browser_navigate":
+        domain = extract_domain(str(args.get("url", "") or ""))
+        return f"🌐 opening {domain}..." if domain else "🌐 opening page..."
+    if tool_name == "browser_screenshot":
+        return "📸 taking a screenshot..."
+    if tool_name == "browser_click":
+        return "👆 clicking..."
+    if tool_name == "browser_type":
+        return "⌨️ typing..."
+    if tool_name == "generate_image":
+        return "🎨 creating an image..."
     if tool_name == "update_knowledge":
         action = str(args.get("action", "") or "").lower()
         section = str(args.get("section", "") or "something")

@@ -136,6 +136,43 @@ class FirecrawlSettings:
     prefer_for_search: bool = True
 
 
+def default_tools_config() -> dict[str, Any]:
+    return {
+        "shell": {
+            "enabled": True,
+            "deny": ["rm -rf /", "sudo rm", "shutdown", "reboot", "format", "mkfs", "dd if="],
+            "timeout": 30,
+        },
+        "browser": {"enabled": False},
+        "code": {"enabled": True, "timeout": 30},
+        "imagegen": {
+            "enabled": False,
+            "backend": "fal",
+            "fal_api_key_env": "FAL_API_KEY",
+            "local_url": "",
+        },
+        "voice": {"enabled": True, "voice_id": "en-US-GuyNeural"},
+        "youtube": {"enabled": True},
+        "reddit": {"enabled": True},
+        "pdf": {"enabled": True},
+        "reminders": {"enabled": True},
+        "messaging": {"enabled": True},
+        "wikipedia": {"enabled": True},
+        "weather": {"enabled": True},
+        "news": {"enabled": True},
+        "system": {"enabled": True},
+        # Shared dangerous-tool execution settings (RPC or container-local fallback when safe).
+        "execution": {
+            "base_url": "",
+            "token_env": "BUMBLEBEE_EXECUTION_RPC_TOKEN",
+            "timeout": 45,
+            "allow_local": False,
+            "workspace_dir": "",
+            "rpc_path": "/rpc",
+        },
+    }
+
+
 @dataclass
 class HarnessConfig:
     deployment: DeploymentSettings = field(default_factory=DeploymentSettings)
@@ -149,6 +186,7 @@ class HarnessConfig:
     logging: LoggingSettings = field(default_factory=LoggingSettings)
     firecrawl: FirecrawlSettings = field(default_factory=FirecrawlSettings)
     attachments: AttachmentStorageSettings = field(default_factory=AttachmentStorageSettings)
+    tools: dict[str, Any] = field(default_factory=default_tools_config)
 
 
 @dataclass
@@ -171,6 +209,13 @@ class EntityDrives:
 class EntityCognition:
     reflex_model: str = ""
     deliberate_model: str = ""
+    always_deliberate: bool = False
+    fast_deliberate_mode: bool = False
+    deliberate_max_tokens: int = 0  # 0 => use harness.cognition.deliberate_max_tokens
+    system_prompt_char_limit: int = 12000
+    rolling_history_max_messages: int = 40
+    knowledge_recent_turns: int = 10
+    history_message_char_limit: int = 4000
     thinking_mode: bool = True
     temperature: float = 0.75
     max_context_tokens: int = 32768
@@ -231,6 +276,7 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
             fc_raw[bkey] = bool(fc_raw[bkey])
     att_raw = {**AttachmentStorageSettings().__dict__, **(d.get("attachments") or {})}
     mem_raw = {**MemoryHarnessSettings().__dict__, **(d.get("memory") or {})}
+    tools_raw = _merge_dict(default_tools_config(), d.get("tools") or {})
     return HarnessConfig(
         deployment=DeploymentSettings(
             **{**DeploymentSettings().__dict__, **(d.get("deployment") or {})}
@@ -251,6 +297,7 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
         logging=LoggingSettings(**{**LoggingSettings().__dict__, **(d.get("logging") or {})}),
         firecrawl=FirecrawlSettings(**fc_raw),
         attachments=AttachmentStorageSettings(**att_raw),
+        tools=tools_raw if isinstance(tools_raw, dict) else default_tools_config(),
     )
 
 
@@ -348,6 +395,19 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
     ec = EntityCognition(
         reflex_model=str(cog.get("reflex_model") or harness.models.reflex),
         deliberate_model=str(cog.get("deliberate_model") or harness.models.deliberate),
+        always_deliberate=bool(cog.get("always_deliberate", False)),
+        fast_deliberate_mode=bool(cog.get("fast_deliberate_mode", False)),
+        deliberate_max_tokens=max(0, int(cog.get("deliberate_max_tokens", 0) or 0)),
+        system_prompt_char_limit=max(
+            2000, int(cog.get("system_prompt_char_limit", 12000) or 12000)
+        ),
+        rolling_history_max_messages=max(
+            8, int(cog.get("rolling_history_max_messages", 40) or 40)
+        ),
+        knowledge_recent_turns=max(2, int(cog.get("knowledge_recent_turns", 10) or 10)),
+        history_message_char_limit=max(
+            600, int(cog.get("history_message_char_limit", 4000) or 4000)
+        ),
         thinking_mode=bool(cog.get("thinking_mode", harness.cognition.thinking_mode)),
         temperature=float(cog.get("temperature", harness.cognition.temperature)),
         max_context_tokens=int(

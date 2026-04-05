@@ -413,6 +413,14 @@ class CLIPlatform(Platform):
     async def disconnect(self) -> None:
         self._connected = False
 
+    async def send_audio(self, channel: str, path: str) -> None:
+        # CLI has no media transport; intentionally no-op.
+        return None
+
+    async def send_image(self, channel: str, path: str) -> None:
+        # CLI has no media transport; intentionally no-op.
+        return None
+
     def get_person_id(self, message: Any) -> str:
         return "cli_user"
 

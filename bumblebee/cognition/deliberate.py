@@ -38,7 +38,8 @@ class DeliberateCognition:
         system_prompt: str,
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        msgs: list[dict[str, Any]] = [{"role": "system", "content": system_prompt[:12000]}]
+        cap = max(2000, int(self.entity.cognition.system_prompt_char_limit or 12000))
+        msgs: list[dict[str, Any]] = [{"role": "system", "content": system_prompt[:cap]}]
         for m in messages:
             role = m.get("role", "user")
             content = m.get("content", "")
@@ -74,6 +75,8 @@ class DeliberateCognition:
     ) -> AsyncIterator[DeliberateStreamEvent]:
         """Multi-round tool loop; yields intermediate user-visible text before tools run."""
         h = self.entity.harness.cognition
+        max_toks = int(self.entity.cognition.deliberate_max_tokens or h.deliberate_max_tokens)
+        max_toks = max(128, max_toks)
         msgs = self._build_messages(system_prompt, messages)
         thinking_acc: list[str] = []
         last: ChatCompletionResult | None = None
@@ -84,7 +87,7 @@ class DeliberateCognition:
                 msgs,
                 tools=tools,
                 temperature=h.temperature,
-                max_tokens=h.deliberate_max_tokens,
+                max_tokens=max_toks,
                 think=h.thinking_mode,
             )
             last = res

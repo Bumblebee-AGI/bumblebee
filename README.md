@@ -167,6 +167,11 @@ presence:
     - type: "cli"
     - type: "telegram"
       token_env: "TELEGRAM_TOKEN"
+      # Optional: let Telegram process multiple updates in parallel (1-256, default 64)
+      # concurrent_updates: 64
+      # Optional: long-poll tuning for lower ingress latency (seconds)
+      # poll_timeout: 5.0
+      # poll_interval: 0.0
       # Optional: restrict DMs to these numeric user ids (omit for open DMs)
       # allowed_user_ids: [123456789]
 ```
@@ -175,10 +180,12 @@ presence:
 
 **What you get**
 
-- **`/start`** — Onboarding-style welcome: who this is (entitative harness, not a task bot), ◈ branding, pointer to the `/` command menu.
-- **`/help`** — What the bot accepts (text, photos, commands).
-- **`/commands [page]`** — Paginated catalog so you can discover commands without memorizing them.
-- **`/status`**, **`/memories`**, **`/feelings`** — Same “inner life” introspection as the CLI slash commands, formatted for Telegram (HTML).
+- **`/start`** — Rich onboarding with quick-start actions and best practices.
+- **`/help`** — Practical usage guide with examples.
+- **`/commands [page] [filter]`** — Paginated (and filterable) command catalog.
+- **`/status`**, **`/memories [count]`**, **`/feelings`** — Internal-state introspection in Telegram HTML.
+- **`/me`** — Relationship snapshot: familiarity, warmth, trust, and interaction counts.
+- **`/models`** and **`/ping`** — Runtime model configuration + liveness checks.
 - **`/reset`** — Clears **in-memory conversation turns** only; SQLite episodic memory is unchanged.
 - **Photos & image documents** — Downloaded and passed into the model as vision (caption optional).
 - **Voice / video notes / non-image files** — Polite, specific “not yet” replies instead of silence.

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import io
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import discord
@@ -204,6 +205,32 @@ class DiscordPlatform(Platform):
                 if c.name.lower() == channel.lower():
                     await c.send(plain)
                     return
+
+    async def send_audio(self, channel: str, path: str) -> None:
+        p = Path(path)
+        if not p.is_file():
+            return
+        await self._ready.wait()
+        try:
+            cid = int(channel)
+            ch = self.client.get_channel(cid)
+            if ch is not None and isinstance(ch, discord.abc.Messageable):
+                await ch.send(file=discord.File(str(p), filename=p.name[:255]))
+        except Exception as e:
+            _discord_log.warning("discord_send_audio_failed", error=str(e))
+
+    async def send_image(self, channel: str, path: str) -> None:
+        p = Path(path)
+        if not p.is_file():
+            return
+        await self._ready.wait()
+        try:
+            cid = int(channel)
+            ch = self.client.get_channel(cid)
+            if ch is not None and isinstance(ch, discord.abc.Messageable):
+                await ch.send(file=discord.File(str(p), filename=p.name[:255]))
+        except Exception as e:
+            _discord_log.warning("discord_send_image_failed", error=str(e))
 
     async def send_tool_activity(self, description: str) -> None:
         if not description.strip() or not self.last_channel_id:

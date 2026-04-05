@@ -14,6 +14,12 @@ $ErrorActionPreference = "Stop"
 
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptRoot
+# Ensure this script sees the latest user/machine PATH entries (new installs in old shells).
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+if ($userPath -or $machinePath) {
+    $env:Path = "$userPath;$machinePath;$env:Path"
+}
 if (-not $CloudflaredConfig) {
     $userProfile = [Environment]::GetFolderPath("UserProfile")
     $CloudflaredConfig = Join-Path $userProfile ".cloudflared\config.yml"
@@ -21,6 +27,29 @@ if (-not $CloudflaredConfig) {
 
 function Write-Step([string]$Message) {
     Write-Host "==> $Message"
+}
+
+function Get-CloudflaredExecutable() {
+    $cmd = Get-Command cloudflared -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source -and (Test-Path $cmd.Source)) {
+        return $cmd.Source
+    }
+    $linkPath = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links\cloudflared.exe"
+    if (Test-Path $linkPath) {
+        return $linkPath
+    }
+    $pkgRoot = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages"
+    if (Test-Path $pkgRoot) {
+        $dirs = Get-ChildItem -Path $pkgRoot -Directory -Filter "Cloudflare.cloudflared_*" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending
+        foreach ($d in $dirs) {
+            $exe = Join-Path $d.FullName "cloudflared.exe"
+            if (Test-Path $exe) {
+                return $exe
+            }
+        }
+    }
+    throw "cloudflared executable not found. Reinstall with: winget install --id Cloudflare.cloudflared -e"
 }
 
 function Read-DotEnvValue([string]$Key) {
@@ -224,7 +253,8 @@ switch ($Action) {
             Write-Host "tunnel: already healthy ($effectiveTunnelUrl)"
         } else {
             Write-Step "starting cloudflared tunnel"
-            Start-Process -FilePath "cloudflared" -ArgumentList @(
+            $cloudflaredExe = Get-CloudflaredExecutable
+            Start-Process -FilePath $cloudflaredExe -ArgumentList @(
                 "--config",
                 $CloudflaredConfig,
                 "tunnel",

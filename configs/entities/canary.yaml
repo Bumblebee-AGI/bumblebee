@@ -78,9 +78,16 @@ drives:
 cognition:
   reflex_model: "gemma4:26b"
   deliberate_model: "gemma4:26b"
+  always_deliberate: true
+  fast_deliberate_mode: true
+  deliberate_max_tokens: 768
+  system_prompt_char_limit: 7000
+  rolling_history_max_messages: 18
+  knowledge_recent_turns: 6
+  history_message_char_limit: 1500
   thinking_mode: false
   temperature: 0.75
-  max_context_tokens: 32768
+  max_context_tokens: 16384
   thinking_budget: 2048
 
 presence:
@@ -88,6 +95,9 @@ presence:
   platforms:
     - type: "telegram"
       token_env: "TELEGRAM_TOKEN"
+      concurrent_updates: 64
+      poll_timeout: 2.0
+      poll_interval: 0.0
   daemon:
     heartbeat_interval: 120
     memory_consolidation: 7200

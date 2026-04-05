@@ -35,10 +35,37 @@ from bumblebee.models import EmotionCategory, ImprintRecord, Input
 from bumblebee.presence.embodiment import Embodiment
 from bumblebee.presence.initiative import InitiativeEngine
 from bumblebee.presence.platforms.base import Platform
-from bumblebee.presence.tools.filesystem import read_file
+from bumblebee.presence.tools.filesystem import (
+    append_file,
+    list_directory,
+    read_file,
+    search_files,
+    write_file,
+)
+from bumblebee.presence.tools import (
+    browser as browser_tools,
+    code as code_tools,
+    imagegen as imagegen_tools,
+    messaging as messaging_tools,
+    news as news_tools,
+    pdf as pdf_tools,
+    reddit as reddit_tools,
+    reminders as reminders_tools,
+    shell as shell_tools,
+    system_info as system_info_tools,
+    voice as voice_tools,
+    weather as weather_tools,
+    wikipedia as wikipedia_tools,
+    youtube as youtube_tools,
+)
 from bumblebee.presence.tools.knowledge import register_knowledge_tool
 from bumblebee.presence.tools.mcp import MCPHub
 from bumblebee.presence.tools.registry import ToolRegistry, format_tool_activity
+from bumblebee.presence.tools.runtime import (
+    ToolRuntimeContext,
+    reset_tool_runtime,
+    set_tool_runtime,
+)
 from bumblebee.presence.tools import time_tools
 from bumblebee.presence.tools import web as web_tools
 from bumblebee.utils.clock import parse_entity_created_timestamp
@@ -182,9 +209,51 @@ class Entity:
         )
         self._yaml_curiosity_topics = list(config.drives.curiosity_topics)
         self.current_platform: Platform | None = None
+        self._platforms: dict[str, Platform] = {}
+        self._person_routes: dict[str, dict[str, str | float]] = {}
 
     def register_proactive_sink(self, fn: Callable[[str], Awaitable[None]]) -> None:
         self._proactive_sends.append(fn)
+
+    def register_platform(self, name: str, platform: Platform) -> None:
+        n = (name or "").strip().lower()
+        if not n:
+            return
+        self._platforms[n] = platform
+
+    async def send_message_to_platform(self, platform: str, target: str, message: str) -> None:
+        n = (platform or "").strip().lower()
+        pf = self._platforms.get(n)
+        if pf is None:
+            raise RuntimeError(f"platform not connected: {platform}")
+        await pf.send_message(str(target), str(message))
+
+    def _remember_person_route(self, inp: Input) -> None:
+        route = {
+            "platform": inp.platform,
+            "channel": inp.channel,
+            "person_id": inp.person_id,
+            "person_name": inp.person_name,
+            "at": time.time(),
+        }
+        pid = (inp.person_id or "").strip()
+        pname = (inp.person_name or "").strip().casefold()
+        if pid:
+            self._person_routes[pid] = route
+        if pname:
+            self._person_routes[f"name:{pname}"] = route
+
+    def resolve_person_route(self, target_person: str) -> dict[str, str | float] | None:
+        t = (target_person or "").strip()
+        if not t:
+            return None
+        by_id = self._person_routes.get(t)
+        if by_id:
+            return by_id
+        by_name = self._person_routes.get(f"name:{t.casefold()}")
+        if by_name:
+            return by_name
+        return None
 
     async def fetch_cli_header_counts(self) -> tuple[int, int, float | None]:
         async with self.store.session() as conn:
@@ -223,11 +292,77 @@ class Entity:
         await self._hydrate_entity_state(conn)
         self._state_hydrated = True
 
+    @staticmethod
+    def _merge_tool_cfg(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+        out = {**base}
+        for k, v in over.items():
+            if isinstance(v, dict) and isinstance(out.get(k), dict):
+                out[k] = Entity._merge_tool_cfg(out[k], v)
+            else:
+                out[k] = v
+        return out
+
+    def _effective_tools_cfg(self) -> dict[str, Any]:
+        base = self.config.harness.tools if isinstance(self.config.harness.tools, dict) else {}
+        over = self.config.raw.get("tools") if isinstance(self.config.raw, dict) else {}
+        if not isinstance(over, dict):
+            over = {}
+        return self._merge_tool_cfg(base, over)
+
+    def _tool_enabled(self, key: str, default: bool) -> bool:
+        cfg = self._effective_tools_cfg().get(key)
+        if isinstance(cfg, dict) and "enabled" in cfg:
+            return bool(cfg.get("enabled"))
+        return default
+
     def _register_tools(self) -> None:
         self.tools.register_decorated(web_tools.search_web)
         self.tools.register_decorated(web_tools.fetch_url)
         self.tools.register_decorated(read_file)
+        self.tools.register_decorated(list_directory)
+        self.tools.register_decorated(search_files)
+        self.tools.register_decorated(write_file)
+        self.tools.register_decorated(append_file)
         self.tools.register_decorated(time_tools.get_current_time)
+        if self._tool_enabled("youtube", True):
+            self.tools.register_decorated(youtube_tools.get_youtube_transcript)
+            self.tools.register_decorated(youtube_tools.search_youtube)
+        if self._tool_enabled("reddit", True):
+            self.tools.register_decorated(reddit_tools.read_reddit)
+            self.tools.register_decorated(reddit_tools.read_reddit_post)
+        if self._tool_enabled("wikipedia", True):
+            self.tools.register_decorated(wikipedia_tools.read_wikipedia)
+        if self._tool_enabled("weather", True):
+            self.tools.register_decorated(weather_tools.get_weather)
+        if self._tool_enabled("news", True):
+            self.tools.register_decorated(news_tools.get_news)
+        if self._tool_enabled("pdf", True):
+            self.tools.register_decorated(pdf_tools.read_pdf)
+        if self._tool_enabled("voice", True):
+            self.tools.register_decorated(voice_tools.speak)
+        if self._tool_enabled("reminders", True):
+            self.tools.register_decorated(reminders_tools.set_reminder)
+            self.tools.register_decorated(reminders_tools.list_reminders)
+            self.tools.register_decorated(reminders_tools.cancel_reminder)
+        if self._tool_enabled("messaging", True):
+            self.tools.register_decorated(messaging_tools.send_message_to)
+        if self._tool_enabled("system", True):
+            self.tools.register_decorated(system_info_tools.get_system_info)
+        if self._tool_enabled("shell", True):
+            self.tools.register_decorated(shell_tools.run_command)
+            self.tools.register_decorated(shell_tools.run_background)
+            self.tools.register_decorated(shell_tools.check_process)
+            self.tools.register_decorated(shell_tools.kill_process)
+        if self._tool_enabled("code", True):
+            self.tools.register_decorated(code_tools.execute_python)
+            self.tools.register_decorated(code_tools.execute_javascript)
+        if self._tool_enabled("browser", False):
+            self.tools.register_decorated(browser_tools.browser_navigate)
+            self.tools.register_decorated(browser_tools.browser_screenshot)
+            self.tools.register_decorated(browser_tools.browser_click)
+            self.tools.register_decorated(browser_tools.browser_type)
+        if self._tool_enabled("imagegen", False):
+            self.tools.register_decorated(imagegen_tools.generate_image)
         register_knowledge_tool(self.tools, self.config, self.knowledge)
 
     async def refresh_mcp_servers(self) -> None:
@@ -239,8 +374,10 @@ class Entity:
         await self.refresh_mcp_servers()
         self._presence_tools_bootstrapped = True
 
-    def _recent_conversation_for_knowledge(self, inp: Input, max_turns: int = 10) -> str:
+    def _recent_conversation_for_knowledge(self, inp: Input, max_turns: int | None = None) -> str:
         """Last few chat turns plus the current user message — for knowledge retrieval."""
+        if max_turns is None:
+            max_turns = max(2, int(self.config.cognition.knowledge_recent_turns or 10))
         lines: list[str] = []
         for m in self._history[-max_turns:]:
             role = str(m.get("role", ""))
@@ -251,19 +388,36 @@ class Entity:
         lines.append(f"user: {self._history_user_turn_text(inp)[:2000]}")
         return "\n".join(lines)
 
-    @staticmethod
-    def _history_user_turn_text(inp: Input) -> str:
+    def _history_user_turn_text(self, inp: Input) -> str:
+        lim = max(600, int(self.config.cognition.history_message_char_limit or 4000))
         t = (inp.text or "").strip()
         if inp.images:
             extra = "[User attached an image]"
-            return f"{t}\n{extra}".strip()[:4000] if t else extra
+            return f"{t}\n{extra}".strip()[:lim] if t else extra
         if inp.audio:
             extra = "[User sent a voice message]"
-            return f"{t}\n{extra}".strip()[:4000] if t else extra
-        return t[:4000] if t else "…"
+            return f"{t}\n{extra}".strip()[:lim] if t else extra
+        return t[:lim] if t else "…"
 
-    async def _tool_exec(self, spec: ToolCallSpec) -> str:
-        out = await self.tools.execute(spec)
+    async def _tool_exec(
+        self,
+        spec: ToolCallSpec,
+        *,
+        inp: Input | None = None,
+        state: dict[str, Any] | None = None,
+    ) -> str:
+        tok = set_tool_runtime(
+            ToolRuntimeContext(
+                entity=self,
+                inp=inp,
+                platform=self.current_platform,
+                state=state if state is not None else {},
+            )
+        )
+        try:
+            out = await self.tools.execute(spec)
+        finally:
+            reset_tool_runtime(tok)
         if spec.name in ("search_web", "fetch_url"):
             self.drives.satisfy("curiosity", 0.22)
         return out
@@ -361,8 +515,15 @@ class Entity:
             if is_deliberate
             else self.config.cognition.reflex_model
         )
-        sys_cap = 12000 if is_deliberate else 6000
-        mt = self.config.harness.cognition.deliberate_max_tokens if is_deliberate else self.config.harness.cognition.reflex_max_tokens
+        sys_cap = (
+            max(2000, int(self.config.cognition.system_prompt_char_limit or 12000))
+            if is_deliberate
+            else 6000
+        )
+        if is_deliberate:
+            mt = int(self.config.cognition.deliberate_max_tokens or self.config.harness.cognition.deliberate_max_tokens)
+        else:
+            mt = self.config.harness.cognition.reflex_max_tokens
         return await self._continue_cutoff_reply(
             model=model,
             sys_prompt=sys_prompt,
@@ -425,6 +586,7 @@ class Entity:
             "person_name": inp.person_name,
             "at": time.time(),
         }
+        self._remember_person_route(inp)
         try:
             await self._ensure_presence_tools()
         except Exception as e:
@@ -608,6 +770,8 @@ class Entity:
                         {"relationship_warmth": rw},
                     )
             else:
+                tool_state: dict[str, Any] = {}
+
                 async def _tool_with_activity(spec: ToolCallSpec) -> str:
                     if self.config.presence.tool_activity and self.current_platform is not None:
                         desc = format_tool_activity(spec.name, dict(spec.arguments))
@@ -620,7 +784,7 @@ class Entity:
                                     module="entity",
                                     error=str(e),
                                 )
-                    return await self._tool_exec(spec)
+                    return await self._tool_exec(spec, inp=inp, state=tool_state)
 
                 final_res: ChatCompletionResult | None = None
                 async for ev in self.deliberate.iter_responses(
@@ -697,8 +861,9 @@ class Entity:
                 self._history.extend(deliberate_history_extra)
             # Visible reply text (sanitized). Tool rounds above carry raw assistant + tool payloads.
             self._history.append({"role": "assistant", "content": reply_text[:8000]})
-            if len(self._history) > 40:
-                self._history = self._history[-40:]
+            keep = max(8, int(self.config.cognition.rolling_history_max_messages or 40))
+            if len(self._history) > keep:
+                self._history = self._history[-keep:]
 
             self._interaction_count += 1
             if meaningful_override is not None:

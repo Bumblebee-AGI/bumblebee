@@ -1,0 +1,7 @@
+{
+  "name": "bumblebee-ops",
+  "private": true,
+  "scripts": {
+    "deploy:canary": "railway up -s bumblebee-worker && railway up -s bumblebee-api"
+  }
+}

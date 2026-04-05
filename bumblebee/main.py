@@ -325,6 +325,7 @@ async def _talk(entity_name: str) -> None:
     ent = Entity(ec)
     cli_p = CLIPlatform(ent, app_version=_app_version(), immersive=True)
     await cli_p.connect()
+    ent.register_platform("cli", cli_p)
 
     async def on_inp(inp):
         reply, _ = await ent.perceive(inp, stream=cli_p.stream_delta, reply_platform=cli_p)
@@ -411,6 +412,7 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
                 proactive_channel_id=proactive_cid,
             )
             platforms.append(discord_p)
+            ent.register_platform("discord", discord_p)
         elif t == "telegram":
             tok = token_from_config(pl.get("token_env", "TELEGRAM_TOKEN"))
             if not tok:
@@ -424,16 +426,36 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
             allow_chats: set[int] | None = None
             if isinstance(raw_chats, list) and len(raw_chats) > 0:
                 allow_chats = {int(x) for x in raw_chats}
+            raw_cu = pl.get("concurrent_updates", 64)
+            try:
+                tg_concurrent_updates = max(1, min(256, int(raw_cu)))
+            except (TypeError, ValueError):
+                tg_concurrent_updates = 64
+            raw_pt = pl.get("poll_timeout", 5.0)
+            try:
+                tg_poll_timeout = max(1.0, min(30.0, float(raw_pt)))
+            except (TypeError, ValueError):
+                tg_poll_timeout = 5.0
+            raw_pi = pl.get("poll_interval", 0.0)
+            try:
+                tg_poll_interval = max(0.0, min(2.0, float(raw_pi)))
+            except (TypeError, ValueError):
+                tg_poll_interval = 0.0
             telegram_p = TelegramPlatform(
                 tok,
                 entity=ent,
                 app_version=_app_version(),
                 allowed_user_ids=allow_users,
                 allowed_chat_ids=allow_chats,
+                concurrent_updates=tg_concurrent_updates,
+                poll_timeout=tg_poll_timeout,
+                poll_interval=tg_poll_interval,
             )
             platforms.append(telegram_p)
+            ent.register_platform("telegram", telegram_p)
 
     cli_p = CLIPlatform(ent, app_version=_app_version(), immersive=False)
+    ent.register_platform("cli", cli_p)
     has_cli = (
         any((p.get("type") or "").lower() == "cli" for p in ec.presence.platforms)
         and not worker_mode
