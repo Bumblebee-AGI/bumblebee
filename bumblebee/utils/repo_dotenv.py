@@ -31,7 +31,7 @@ def load_repo_dotenv(*, anchor: Path) -> None:
     """Load ``.env`` from cwd, then repo root.
 
     ``anchor`` must be ``Path(__file__)`` of a module one level inside a top-level
-    package at the repo root (e.g. ``bumblebee/main.py`` or ``onboarding/bot.py``).
+    package at the repo root (e.g. ``bumblebee/main.py``).
     """
     _apply_dotenv_file(Path.cwd() / ".env")
     repo_root = anchor.resolve().parent.parent

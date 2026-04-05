@@ -207,12 +207,6 @@ Notes:
 
 Run **`bumblebee run <entity>`** with Telegram enabled in the entity YAML (not `talk` — the daemon owns the bot connection).
 
-### Public onboarding bot (ecosystem)
-
-There is **one** Telegram bot whose job is to onboard **anyone** into the project—setup steps, links, and context. It is **not** an LLM: fixed text, links, and inline buttons only—**no Ollama, no GPU, no local AI**, and no Bumblebee inference stack. **You use it by opening that bot and sending `/start`.** The welcome flow uses the repo **`assets/branding/bumblebee.png`**, pins the main menu message after `/start`, and does not replace the welcome image on repeat `/start`. **`/community`** opens the community hub without tearing down that media.
-
-You do **not** run the onboarding process or set **`BUMBLEBEE_ONBOARD_TOKEN`** unless you are the maintainer deploying that public bot (e.g. on Railway: `python -m onboarding` or the **`onboarding-bot`** console script after install). The app is the top-level **`onboarding/`** package—not a `bumblebee` subcommand; see [docs/deployment/railway-services.md](docs/deployment/railway-services.md).
-
 ### Your entity on Telegram
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the **token**.
@@ -238,7 +232,7 @@ presence:
 
 **What you get**
 
-- **`/start`** — Rich intro for **your entity** (quick-start actions and best practices), not the separate public ecosystem onboarding bot above.
+- **`/start`** — Rich intro for **your entity** (quick-start actions and best practices).
 - **`/help`** — Practical usage guide with examples.
 - **`/commands [page] [filter]`** — Paginated (and filterable) command catalog.
 - **`/status`**, **`/memories [count]`**, **`/feelings`** — Internal-state introspection in Telegram HTML.

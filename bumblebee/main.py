@@ -723,8 +723,7 @@ def cmd_worker(entity_name: str) -> None:
     if not (entity_name or "").strip():
         raise click.ClickException(
             "Missing entity name (got empty string). For Railway: set BUMBLEBEE_ENTITY "
-            "(e.g. canary) on the worker service. If this service should run the public "
-            "onboarding Telegram bot instead, set BUMBLEBEE_RAILWAY_ROLE=onboard — not worker."
+            "(e.g. canary) on the worker service."
         )
     try:
         asyncio.run(_run(entity_name, worker_mode=True))
