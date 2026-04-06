@@ -130,28 +130,32 @@ class TelegramPlatform(Platform):
         self._register_handlers()
 
     def _register_handlers(self) -> None:
-        # Run before default group so /whoami and /privacy work even when access is restricted.
-        self.app.add_handler(CommandHandler("whoami", self._on_whoami), group=-1)
-        self.app.add_handler(CommandHandler("private", self._on_private), group=-1)
-        self.app.add_handler(CommandHandler("privacy", self._on_privacy), group=-1)
-        self.app.add_handler(CommandHandler("start", self._on_start_command))
-        self.app.add_handler(CommandHandler("about", self._on_start_command))
-        self.app.add_handler(CommandHandler("help", self._on_help_command))
-        self.app.add_handler(CommandHandler("commands", self._on_commands_command))
-        self.app.add_handler(CommandHandler("status", self._on_status_command))
-        self.app.add_handler(CommandHandler("memories", self._on_memories_command))
-        self.app.add_handler(CommandHandler("feelings", self._on_feelings_command))
-        self.app.add_handler(CommandHandler("me", self._on_me_command))
-        self.app.add_handler(CommandHandler("models", self._on_models_command))
-        self.app.add_handler(CommandHandler("tools", self._on_tools_command))
-        self.app.add_handler(CommandHandler("routines", self._on_routines_command))
-        self.app.add_handler(CommandHandler("ping", self._on_ping_command))
-        self.app.add_handler(CommandHandler("reset", self._on_reset_command))
-        self.app.add_handler(MessageHandler(filters.PHOTO, self._on_photo))
-        self.app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._on_voice))
-        self.app.add_handler(MessageHandler(filters.Document.ALL, self._on_doc_image))
-        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text))
-        self.app.add_handler(MessageHandler(filters.COMMAND, self._on_unknown_command))
+        # Single handler group: PTB runs at most one handler per update here. If /privacy lived in
+        # group -1 while MessageHandler(filters.COMMAND) sat in group 0, both could fire — duplicate
+        # replies and false "unknown command". Keep every handler in the same group (-1) and order
+        # specific CommandHandlers before the COMMAND catch-all.
+        _g = -1
+        self.app.add_handler(CommandHandler("whoami", self._on_whoami), group=_g)
+        self.app.add_handler(CommandHandler("private", self._on_private), group=_g)
+        self.app.add_handler(CommandHandler("privacy", self._on_privacy), group=_g)
+        self.app.add_handler(CommandHandler("start", self._on_start_command), group=_g)
+        self.app.add_handler(CommandHandler("about", self._on_start_command), group=_g)
+        self.app.add_handler(CommandHandler("help", self._on_help_command), group=_g)
+        self.app.add_handler(CommandHandler("commands", self._on_commands_command), group=_g)
+        self.app.add_handler(CommandHandler("status", self._on_status_command), group=_g)
+        self.app.add_handler(CommandHandler("memories", self._on_memories_command), group=_g)
+        self.app.add_handler(CommandHandler("feelings", self._on_feelings_command), group=_g)
+        self.app.add_handler(CommandHandler("me", self._on_me_command), group=_g)
+        self.app.add_handler(CommandHandler("models", self._on_models_command), group=_g)
+        self.app.add_handler(CommandHandler("tools", self._on_tools_command), group=_g)
+        self.app.add_handler(CommandHandler("routines", self._on_routines_command), group=_g)
+        self.app.add_handler(CommandHandler("ping", self._on_ping_command), group=_g)
+        self.app.add_handler(CommandHandler("reset", self._on_reset_command), group=_g)
+        self.app.add_handler(MessageHandler(filters.PHOTO, self._on_photo), group=_g)
+        self.app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._on_voice), group=_g)
+        self.app.add_handler(MessageHandler(filters.Document.ALL, self._on_doc_image), group=_g)
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text), group=_g)
+        self.app.add_handler(MessageHandler(filters.COMMAND, self._on_unknown_command), group=_g)
 
     def _operators_configured(self) -> bool:
         return bool(self._operator_user_ids)
@@ -526,7 +530,8 @@ class TelegramPlatform(Platform):
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
-        txt = (update.effective_message.text if update.effective_message else "").strip()
+        msg = update.effective_message
+        txt = (msg.text if msg else "").strip()
         await self._reply_html(update, format_unknown_command(txt or "/unknown"))
 
     async def _on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -152,6 +152,13 @@ def command_menu_items() -> list[tuple[str, str]]:
     return [(c.name, c.summary[:256]) for c in COMMAND_REGISTRY]
 
 
+def telegram_registered_slash_command_names() -> frozenset[str]:
+    """Command names for /name and /name@Bot (must match CommandHandler registrations)."""
+    names = {c.name for c in COMMAND_REGISTRY}
+    names.add("about")  # alias of /start, not duplicated in COMMAND_REGISTRY
+    return frozenset(names)
+
+
 def format_start_html(entity_name: str, app_version: str, *, first_name: str | None = None) -> str:
     en = html.escape(entity_name)
     who = html.escape((first_name or "there").strip() or "there")

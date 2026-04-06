@@ -2,6 +2,7 @@ from bumblebee.presence.automations.models import Automation, AutomationOrigin
 from bumblebee.presence.platforms.telegram_format import (
     _relative_time,
     command_menu_items,
+    telegram_registered_slash_command_names,
     format_commands_page,
     format_routines_html,
     format_start_html,
@@ -51,6 +52,16 @@ def test_command_menu_items_are_short():
     assert any(name == "tools" for name, _ in items)
     assert any(name == "routines" for name, _ in items)
     assert all(len(desc) <= 256 for _, desc in items)
+
+
+def test_telegram_registered_slash_names_include_aliases():
+    names = telegram_registered_slash_command_names()
+    assert "about" in names
+    assert "privacy" in names
+    assert "private" in names
+    assert "whoami" in names
+    for name, _ in command_menu_items():
+        assert name in names
 
 
 def test_routines_html_lists_automations():
