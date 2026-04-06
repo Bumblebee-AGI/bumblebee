@@ -187,7 +187,7 @@ class DeliberateCognition:
         tools: list[dict[str, Any]] | None = None,
         tool_executor: Callable[[ToolCallSpec], Awaitable[str]] | None = None,
     ) -> AsyncIterator[DeliberateStreamEvent]:
-        """Multi-round tool loop; yields intermediate user-visible text before tools run."""
+        """Multi-round tool loop; appends tool rounds to history; user-visible text only on final (or continuation nudges)."""
         h = self.entity.harness.cognition
         max_toks = int(self.entity.cognition.deliberate_max_tokens or h.deliberate_max_tokens)
         max_toks = max(128, max_toks)
@@ -288,7 +288,7 @@ class DeliberateCognition:
 
             yield DeliberateStreamEvent(
                 kind="intermediate",
-                display_text=(res.content or "").strip(),
+                display_text="",
                 history_entries=[assistant_msg] + tool_msgs + [follow_user],
             )
 

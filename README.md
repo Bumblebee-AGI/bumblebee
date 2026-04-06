@@ -226,7 +226,11 @@ presence:
       # poll_interval: 0.0
       # Optional: restrict DMs to these numeric user ids (omit for open DMs)
       # allowed_user_ids: [123456789]
+      # Operators: Telegram user ids allowed to run /privacy (lock, open, allow, deny)
+      # operator_user_ids: [123456789]
 ```
+
+**Privacy from Telegram (operators):** set **`operator_user_ids`** to a non-empty list of numeric Telegram user ids (use **`/whoami`** in chat to read yours). Operators can use **`/private on`** (or **`/privacy lock`**) so only those operators can use the bot until they **`/privacy allow`** with a numeric id for guests, or **`/private off`** / **`/privacy open`** to go public again. The allowlist is stored in the entity database (`entity_state`) and survives restarts. While the DB lock is on, static **`allowed_user_ids`** in YAML is ignored; after **`/private off`**, YAML allowlists apply again if set.
 
 4. **Optional — inline mode:** In BotFather run `/setinline` for the bot and pick a placeholder. Then in any chat you can type `@YourBot …` and get quick “about” cards (same identity story as `/start`).
 
@@ -238,6 +242,9 @@ presence:
 - **`/status`**, **`/memories [count]`**, **`/feelings`** — Internal-state introspection in Telegram HTML.
 - **`/me`** — Relationship snapshot: familiarity, warmth, trust, and interaction counts.
 - **`/models`** and **`/ping`** — Runtime model configuration + liveness checks.
+- **`/whoami`** — Shows your Telegram user id (for **`operator_user_ids`** / **`/privacy allow`**).
+- **`/private on`** / **`/private off`** — Operators: quick private mode (same as **`/privacy lock`** / **`/privacy open`**).
+- **`/privacy`** — Operators: status, lock, open, **`/privacy allow`** / **`/privacy deny`**. See YAML **`operator_user_ids`**.
 - **`/reset`** — Clears **in-memory conversation turns** only; SQLite episodic memory is unchanged.
 - **Photos & image documents** — Downloaded and passed into the model as vision (caption optional).
 - **Voice / video notes / non-image files** — Polite, specific “not yet” replies instead of silence.

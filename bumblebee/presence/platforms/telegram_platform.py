@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import io
 import os
 from pathlib import Path
@@ -28,12 +29,28 @@ from bumblebee.presence.platforms.telegram_format import (
     format_memories_html,
     format_models_html,
     format_ping_html,
+    format_private_usage_html,
+    format_privacy_allow_deny_usage_html,
+    format_privacy_cannot_deny_last_html,
+    format_privacy_help_html,
+    format_privacy_invalid_id_html,
+    format_privacy_locked_html,
+    format_privacy_no_operators_html,
+    format_privacy_opened_html,
+    format_privacy_operator_required_html,
+    format_privacy_status_html,
     format_reset_html,
     format_routines_html,
     format_start_html,
     format_tools_html,
     format_unknown_command,
+    format_whoami_html,
     split_telegram_chunks,
+)
+from bumblebee.presence.platforms.telegram_privacy import (
+    load_telegram_privacy_from_db,
+    save_telegram_privacy_enforced,
+    save_telegram_privacy_open,
 )
 
 if TYPE_CHECKING:
@@ -69,6 +86,7 @@ class TelegramPlatform(Platform):
         app_version: str = "0.1.0",
         allowed_user_ids: set[int] | None = None,
         allowed_chat_ids: set[int] | None = None,
+        operator_user_ids: set[int] | None = None,
         concurrent_updates: int = 64,
         poll_timeout: float = 5.0,
         poll_interval: float = 0.0,
@@ -76,8 +94,12 @@ class TelegramPlatform(Platform):
         self.token = token
         self._entity = entity
         self._app_version = app_version
-        self._allowed_user_ids = allowed_user_ids
-        self._allowed_chat_ids = allowed_chat_ids
+        self._yaml_user_allow = allowed_user_ids
+        self._yaml_chat_allow = allowed_chat_ids
+        self._operator_user_ids = operator_user_ids
+        self._db_enforced = False
+        self._db_user_allow: set[int] = set()
+        self._db_chat_allow: set[int] = set()
         try:
             cu = int(concurrent_updates)
         except (TypeError, ValueError):
@@ -108,6 +130,10 @@ class TelegramPlatform(Platform):
         self._register_handlers()
 
     def _register_handlers(self) -> None:
+        # Run before default group so /whoami and /privacy work even when access is restricted.
+        self.app.add_handler(CommandHandler("whoami", self._on_whoami), group=-1)
+        self.app.add_handler(CommandHandler("private", self._on_private), group=-1)
+        self.app.add_handler(CommandHandler("privacy", self._on_privacy), group=-1)
         self.app.add_handler(CommandHandler("start", self._on_start_command))
         self.app.add_handler(CommandHandler("about", self._on_start_command))
         self.app.add_handler(CommandHandler("help", self._on_help_command))
@@ -127,15 +153,41 @@ class TelegramPlatform(Platform):
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._on_text))
         self.app.add_handler(MessageHandler(filters.COMMAND, self._on_unknown_command))
 
+    def _operators_configured(self) -> bool:
+        return bool(self._operator_user_ids)
+
+    def _is_operator(self, user_id: int | None) -> bool:
+        if user_id is None or not self._operator_user_ids:
+            return False
+        return user_id in self._operator_user_ids
+
+    async def _refresh_privacy_from_db(self) -> None:
+        try:
+            async with self._entity.store.session() as conn:
+                enf, users, chats = await load_telegram_privacy_from_db(conn)
+            self._db_enforced = enf
+            self._db_user_allow = users
+            self._db_chat_allow = chats
+        except Exception as e:
+            log.warning("telegram_privacy_load_failed", error=str(e))
+
     def _allowed(self, update: Update) -> bool:
         chat = update.effective_chat
         user = update.effective_user
         if chat is None:
             return False
-        if self._allowed_chat_ids is not None and chat.id not in self._allowed_chat_ids:
+        if self._db_enforced:
+            if not self._db_user_allow:
+                return False
+            if user is None or user.id not in self._db_user_allow:
+                return False
+            if self._db_chat_allow and chat.id not in self._db_chat_allow:
+                return False
+            return True
+        if self._yaml_chat_allow is not None and chat.id not in self._yaml_chat_allow:
             return False
-        if self._allowed_user_ids is not None:
-            if user is None or user.id not in self._allowed_user_ids:
+        if self._yaml_user_allow is not None:
+            if user is None or user.id not in self._yaml_user_allow:
                 return False
         return True
 
@@ -229,6 +281,150 @@ class TelegramPlatform(Platform):
             return max(1, min(10, int(raw)))
         except ValueError:
             return default
+
+    async def _on_whoami(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        _ = context
+        u = update.effective_user
+        if u is None or update.effective_chat is None:
+            return
+        name = _telegram_display_name(u)
+        un = (getattr(u, "username", None) or "").strip() or None
+        await self._reply_html(
+            update,
+            format_whoami_html(user_id=int(u.id), full_name=name, username=un),
+        )
+
+    async def _privacy_apply_lock(self, update: Update) -> None:
+        if not self._operator_user_ids:
+            await self._reply_html(update, format_privacy_no_operators_html())
+            return
+        try:
+            async with self._entity.store.session() as conn:
+                await save_telegram_privacy_enforced(
+                    conn,
+                    user_ids=set(self._operator_user_ids),
+                    chat_ids=set(),
+                )
+            await self._refresh_privacy_from_db()
+            await self._reply_html(
+                update,
+                format_privacy_locked_html(len(self._db_user_allow)),
+            )
+        except Exception as e:
+            log.warning("telegram_privacy_lock_failed", error=str(e))
+            await self._reply_html(update, f"Could not lock: {html.escape(str(e)[:200])}")
+
+    async def _privacy_apply_open(self, update: Update) -> None:
+        try:
+            async with self._entity.store.session() as conn:
+                await save_telegram_privacy_open(conn)
+            await self._refresh_privacy_from_db()
+            await self._reply_html(update, format_privacy_opened_html())
+        except Exception as e:
+            log.warning("telegram_privacy_open_failed", error=str(e))
+            await self._reply_html(update, f"Could not open: {html.escape(str(e)[:200])}")
+
+    async def _on_private(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = [str(a).strip().lower() for a in (context.args or []) if str(a).strip()]
+        u = update.effective_user
+        if u is None or update.effective_chat is None:
+            return
+        uid = int(u.id)
+        word = args[0] if args else ""
+        if word not in ("on", "off"):
+            await self._reply_html(update, format_private_usage_html())
+            return
+        if not self._operators_configured():
+            await self._reply_html(update, format_privacy_no_operators_html())
+            return
+        if not self._is_operator(uid):
+            await self._reply_html(update, format_privacy_operator_required_html())
+            return
+        if word == "on":
+            await self._privacy_apply_lock(update)
+        else:
+            await self._privacy_apply_open(update)
+
+    async def _on_privacy(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        args = [a.strip() for a in (context.args or []) if str(a).strip()]
+        sub = (args[0] or "status").lower() if args else "status"
+        if sub in ("help", "?"):
+            await self._reply_html(update, format_privacy_help_html())
+            return
+
+        u = update.effective_user
+        if u is None or update.effective_chat is None:
+            return
+        uid = int(u.id)
+
+        yaml_u = self._yaml_user_allow is not None
+        ops_ok = self._operators_configured()
+
+        if sub == "status":
+            await self._reply_html(
+                update,
+                format_privacy_status_html(
+                    enforced=self._db_enforced,
+                    allowed_ids=sorted(self._db_user_allow),
+                    yaml_restricted=yaml_u,
+                    operators_configured=ops_ok,
+                ),
+            )
+            return
+
+        if not ops_ok:
+            await self._reply_html(update, format_privacy_no_operators_html())
+            return
+        if not self._is_operator(uid):
+            await self._reply_html(update, format_privacy_operator_required_html())
+            return
+
+        if sub == "lock":
+            await self._privacy_apply_lock(update)
+            return
+
+        if sub == "open":
+            await self._privacy_apply_open(update)
+            return
+
+        if sub in ("allow", "deny"):
+            if len(args) < 2:
+                await self._reply_html(update, format_privacy_allow_deny_usage_html())
+                return
+            try:
+                tid = int(args[1].strip())
+            except ValueError:
+                await self._reply_html(update, format_privacy_invalid_id_html())
+                return
+            if not self._db_enforced:
+                await self._reply_html(
+                    update,
+                    "Use <code>/private on</code> or <code>/privacy lock</code> first, then add or remove user ids.",
+                )
+                return
+            try:
+                async with self._entity.store.session() as conn:
+                    nxt = set(self._db_user_allow)
+                    if sub == "allow":
+                        nxt.add(tid)
+                    else:
+                        nxt.discard(tid)
+                        if not nxt:
+                            await self._reply_html(update, format_privacy_cannot_deny_last_html())
+                            return
+                    await save_telegram_privacy_enforced(conn, user_ids=nxt, chat_ids=set())
+                await self._refresh_privacy_from_db()
+                await self._reply_html(
+                    update,
+                    f"{'Added' if sub == 'allow' else 'Removed'} <code>{tid}</code>. "
+                    f"{len(self._db_user_allow)} id(s) allowed.",
+                )
+            except Exception as e:
+                log.warning("telegram_privacy_allow_deny_failed", error=str(e))
+                await self._reply_html(update, f"Could not update: {html.escape(str(e)[:200])}")
+            return
+
+        await self._reply_html(update, format_unknown_command(f"/privacy {sub}"))
 
     async def _on_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._check_allowed(update, notify=True):
@@ -453,6 +649,7 @@ class TelegramPlatform(Platform):
             log.warning("telegram_document_failed", error=str(e))
 
     async def connect(self) -> None:
+        await self._refresh_privacy_from_db()
         await self.app.initialize()
         await self.app.start()
         try:

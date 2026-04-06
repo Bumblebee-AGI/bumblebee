@@ -103,6 +103,20 @@ def _reply_too_thin(text: str) -> bool:
     return gemma.visible_reply_looks_truncated_stub(t)
 
 
+def _intermediate_text_looks_like_tool_channel(text: str) -> bool:
+    """True when the model leaked Gemma tool markup — must not be shown as chat."""
+    t = text or ""
+    return any(
+        m in t
+        for m in (
+            gemma.TOOL_CALL_START,
+            gemma.TOOL_RESPONSE_START,
+            gemma.TOOL_DECL_START,
+            gemma.TURN_START,
+        )
+    )
+
+
 # After tool calls, models often emit a one-token ack; we already shipped the visible line pre-tool.
 _PRO_FORMA_TOOL_FOLLOWUPS = frozenset(
     {
@@ -1084,7 +1098,9 @@ class Entity:
                     if ev.kind == "intermediate":
                         deliberate_history_extra.extend(ev.history_entries)
                         raw_seg = ev.display_text.strip()
-                        if raw_seg:
+                        if raw_seg and not _intermediate_text_looks_like_tool_channel(
+                            raw_seg
+                        ):
                             seg = self.voice_ctl.sanitize_reply(raw_seg)
                             if seg and not _reply_too_thin(seg):
                                 await _deliver_embodied_deliberate_segment(

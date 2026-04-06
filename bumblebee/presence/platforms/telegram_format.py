@@ -126,6 +126,24 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         usage="/reset",
         category="Session",
     ),
+    TelegramCommandSpec(
+        name="whoami",
+        summary="Show your Telegram user id (for operator / privacy setup)",
+        usage="/whoami",
+        category="Session",
+    ),
+    TelegramCommandSpec(
+        name="privacy",
+        summary="Lock the bot to allowed users, or open it again (operators)",
+        usage="/privacy [status|lock|open|allow ID|deny ID|help]",
+        category="Session",
+    ),
+    TelegramCommandSpec(
+        name="private",
+        summary="Turn private mode on or off (operators; same as privacy lock/open)",
+        usage="/private on  or  /private off",
+        category="Session",
+    ),
 ]
 
 
@@ -577,3 +595,112 @@ def format_access_denied() -> str:
         "🐝 This instance is locked to approved people.\n"
         "If you should have access, ask the operator to add your Telegram user id."
     )
+
+
+def format_whoami_html(*, user_id: int, full_name: str, username: str | None) -> str:
+    uid = html.escape(str(user_id))
+    fn = html.escape(full_name.strip() or "—")
+    un = f"@{html.escape(username.strip())}" if (username or "").strip() else "—"
+    return (
+        "<b>Your Telegram id</b>\n"
+        f"<code>{uid}</code>\n\n"
+        f"<b>Name</b> {fn}\n"
+        f"<b>Username</b> {un}\n\n"
+        "Share the id with the host if they need to list you under "
+        "<code>operator_user_ids</code> or use <code>/privacy allow</code>."
+    )
+
+
+def format_privacy_help_html() -> str:
+    return (
+        "<b>Privacy</b>\n\n"
+        "<b>Read</b>\n"
+        "• <code>/privacy</code> or <code>/privacy status</code>\n\n"
+        "<b>Operators only</b> (see entity YAML <code>operator_user_ids</code>)\n"
+        "• <code>/private on</code> / <code>/private off</code> — quick close or open the bot\n"
+        "• <code>/privacy lock</code> — same as <code>/private on</code>\n"
+        "• <code>/privacy allow &lt;id&gt;</code> — add a user id\n"
+        "• <code>/privacy deny &lt;id&gt;</code> — remove a user id\n"
+        "• <code>/privacy open</code> — same as <code>/private off</code>\n"
+        "• <code>/privacy help</code>\n\n"
+        "Use <code>/whoami</code> to see your numeric id."
+    )
+
+
+def format_private_usage_html() -> str:
+    return (
+        "<b>Private mode</b> (operators only)\n\n"
+        "• <code>/private on</code> — only operators (and anyone you <code>/privacy allow</code>) can chat\n"
+        "• <code>/private off</code> — public again (unless YAML <code>allowed_user_ids</code> is set)\n\n"
+        "Same as <code>/privacy lock</code> and <code>/privacy open</code>."
+    )
+
+
+def format_privacy_operator_required_html() -> str:
+    return (
+        "Only configured <b>operators</b> can change privacy.\n"
+        "The host must set <code>operator_user_ids: [ … ]</code> on the Telegram platform in your entity YAML."
+    )
+
+
+def format_privacy_no_operators_html() -> str:
+    return (
+        "Telegram privacy commands are disabled until the host sets "
+        "<code>operator_user_ids</code> (non-empty list of Telegram user ids) in the entity YAML.\n\n"
+        "Use <code>/whoami</code> to read your id."
+    )
+
+
+def format_privacy_status_html(
+    *,
+    enforced: bool,
+    allowed_ids: list[int],
+    yaml_restricted: bool,
+    operators_configured: bool,
+) -> str:
+    lines = [
+        "<b>Privacy status</b>\n",
+        f"• <b>DB lock</b>: {'<code>on</code>' if enforced else '<code>off</code>'}\n",
+    ]
+    if enforced:
+        preview = ", ".join(html.escape(str(i)) for i in sorted(allowed_ids)[:24])
+        if len(allowed_ids) > 24:
+            preview += ", …"
+        lines.append(f"• <b>Allowed user ids</b>: {preview or '—'}\n")
+    lines.append(
+        f"• <b>YAML allowlist</b>: {'<code>yes</code>' if yaml_restricted else '<code>no</code>'} "
+        f"(ignored while DB lock is on)\n"
+    )
+    lines.append(
+        f"• <b>Operators in YAML</b>: {'<code>yes</code>' if operators_configured else '<code>no</code>'}\n"
+    )
+    if not enforced and not yaml_restricted:
+        lines.append("\nAnyone can use this bot until you <code>/privacy lock</code>.\n")
+    return "".join(lines)
+
+
+def format_privacy_locked_html(count: int) -> str:
+    return (
+        f"🔒 <b>Locked.</b> {count} Telegram user id(s) can use this bot.\n"
+        "Use <code>/privacy allow</code> / <code>/deny</code> to adjust, or <code>/privacy open</code> to go public."
+    )
+
+
+def format_privacy_opened_html() -> str:
+    return (
+        "🔓 <b>Open.</b> Anyone can chat again "
+        "(unless you still have a static <code>allowed_user_ids</code> list in YAML).\n"
+        "Use <code>/privacy lock</code> to restrict."
+    )
+
+
+def format_privacy_allow_deny_usage_html() -> str:
+    return "Usage: <code>/privacy allow &lt;telegram_user_id&gt;</code> or <code>/privacy deny &lt;id&gt;</code>"
+
+
+def format_privacy_invalid_id_html() -> str:
+    return "That doesn’t look like a numeric Telegram user id."
+
+
+def format_privacy_cannot_deny_last_html() -> str:
+    return "Refusing to remove the last allowed user while locked — use <code>/privacy open</code> first."

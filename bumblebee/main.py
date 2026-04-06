@@ -456,6 +456,10 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
             allow_chats: set[int] | None = None
             if isinstance(raw_chats, list) and len(raw_chats) > 0:
                 allow_chats = {int(x) for x in raw_chats}
+            raw_ops = pl.get("operator_user_ids")
+            op_users: set[int] | None = None
+            if isinstance(raw_ops, list) and len(raw_ops) > 0:
+                op_users = {int(x) for x in raw_ops}
             raw_cu = pl.get("concurrent_updates", 64)
             try:
                 tg_concurrent_updates = max(1, min(256, int(raw_cu)))
@@ -477,6 +481,7 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
                 app_version=_app_version(),
                 allowed_user_ids=allow_users,
                 allowed_chat_ids=allow_chats,
+                operator_user_ids=op_users,
                 concurrent_updates=tg_concurrent_updates,
                 poll_timeout=tg_poll_timeout,
                 poll_interval=tg_poll_interval,

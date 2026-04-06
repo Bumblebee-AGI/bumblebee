@@ -98,6 +98,7 @@ presence:
   platforms:
     - type: "telegram"
       token_env: "TELEGRAM_TOKEN"
+      # operator_user_ids: [123456789]  # who may run /privacy lock|open|allow|deny (use /whoami for your id)
       concurrent_updates: 64
       poll_timeout: 2.0
       poll_interval: 0.0

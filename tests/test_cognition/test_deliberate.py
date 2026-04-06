@@ -1,3 +1,7 @@
+from unittest.mock import AsyncMock
+
+import pytest
+
 from bumblebee.config import HarnessConfig, entity_from_dict
 from bumblebee.cognition import gemma
 from bumblebee.cognition.deliberate import (
@@ -7,6 +11,7 @@ from bumblebee.cognition.deliberate import (
 )
 from bumblebee.presence.tools.registry import TOOL_SYSTEM_PROMPT_PREFIX
 from bumblebee.inference.types import ChatCompletionResult, ToolCallSpec
+from bumblebee.models import Input
 
 
 def _entity_config():
@@ -129,6 +134,40 @@ def test_should_not_inject_when_model_emits_tools():
         tool_calls=[ToolCallSpec(name="run_command", arguments={}, id="1")],
     )
     assert should_inject_tool_continuation(msgs, res) is False
+
+
+@pytest.mark.asyncio
+async def test_tool_round_intermediate_has_empty_display_text():
+    """Gemma often writes <|tool_response|> etc. in content during tool calls — never surface that as chat."""
+    ec = _entity_config()
+    tc = ToolCallSpec(name="get_weather", arguments={}, id="1")
+    first = ChatCompletionResult(
+        content=f"scratch {gemma.TOOL_RESPONSE_START} junk",
+        tool_calls=[tc],
+    )
+    second = ChatCompletionResult(content="Final answer.", tool_calls=[])
+    client = AsyncMock()
+    client.chat_completion = AsyncMock(side_effect=[first, second])
+    d = DeliberateCognition(ec, client=client)
+    inp = Input(text="hi", person_id="1", person_name="Test")
+    events: list = []
+
+    async def _exec(_spec):
+        return '{"ok": true}'
+
+    async for ev in d.iter_responses(
+        inp,
+        "system",
+        [{"role": "user", "content": "hi"}],
+        tools=[{"type": "function", "function": {"name": "get_weather"}}],
+        tool_executor=_exec,
+    ):
+        events.append(ev)
+    inter = [e for e in events if e.kind == "intermediate"]
+    assert len(inter) == 1
+    assert inter[0].display_text == ""
+    finals = [e for e in events if e.kind == "final"]
+    assert finals[-1].display_text == "Final answer."
 
 
 def test_should_not_inject_on_try_to_in_normal_prose_after_tool():
