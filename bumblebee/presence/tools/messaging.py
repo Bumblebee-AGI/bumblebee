@@ -34,11 +34,14 @@ def _known_contacts(entity: object, platform: str = "") -> list[dict[str, object
 @tool(
     name="send_message_to",
     description=(
-        "Send a message to someone on a platform. You can provide explicit platform+target, or target_person "
-        "to resolve from known contacts. For target_person, first call returns a confirmation payload; call again "
-        "with confirm=true to actually send. Set as_voice=true to deliver the message as a TTS voice note "
-        "(Edge-TTS; same as speak) on Telegram/Discord — requires pip install bumblebee[voice]. "
-        "Repeat as_voice and voice_id on the confirmation call when using target_person."
+        "Send a message to someone on a platform (not the current chat unless that is the resolved target). "
+        "You can provide explicit platform+target, or target_person to resolve from known contacts. "
+        "For target_person, first call returns a confirmation payload; call again with confirm=true to send.\n\n"
+        "Voice vs text: If the user asks for a speech, voice message, voice note, read aloud, say it out loud, "
+        "TTS, or audio for that person, you MUST set as_voice=true (Edge-TTS; requires bumblebee[voice]). "
+        "Do not treat 'speech' or 'tell them … in your voice' as plain text — that is voice delivery. "
+        "Repeat as_voice and voice_id on the confirmation call when using target_person.\n\n"
+        "Do not use speak() for another person; speak only reaches the current chat. Use this tool with as_voice."
     ),
 )
 async def send_message_to(
@@ -210,9 +213,12 @@ def _dm_targets(entity: object) -> list[dict[str, object]]:
         "Use list_targets=true to fetch user_id values from people this entity has seen on Telegram/Discord. "
         "On Telegram, user_id is the numeric Telegram user id (same as private chat_id). "
         "On Discord, user_id is the member snowflake. "
-        "First send attempt returns needs_confirmation; call again with confirm=true to deliver. "
-        "Set as_voice=true to send a TTS voice note (Edge-TTS; requires pip install bumblebee[voice]). "
-        "Repeat as_voice and voice_id on the confirmation call."
+        "First send attempt returns needs_confirmation; call again with confirm=true to deliver.\n\n"
+        "Voice vs text: If the user asks for a speech, voice message, voice note, read aloud, TTS, or audio "
+        "to that DM recipient, you MUST set as_voice=true (Edge-TTS; requires bumblebee[voice]). "
+        "Phrases like 'send them a good night speech' mean voice, not a text bubble. "
+        "Repeat as_voice and voice_id on the confirmation call.\n\n"
+        "Do not use speak() for another user; speak only reaches the current chat. Use send_dm with as_voice."
     ),
 )
 async def send_dm(

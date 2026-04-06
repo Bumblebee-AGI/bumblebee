@@ -207,7 +207,12 @@ async def set_tts_voice(voice_id: str) -> str:
 
 @tool(
     name="speak",
-    description="Say something out loud as a voice message instead of text. Optional voice_id lets you override voice for this single utterance. After calling this, continue normally in plain text (never output HTML/audio tags).",
+    description=(
+        "Deliver a voice message (TTS) only in the **current** chat (whoever is talking to the bot here). "
+        "To send speech/voice to another person, use send_dm or send_message_to with as_voice=true — "
+        "do not use speak for third-party recipients. Optional voice_id overrides for this utterance only. "
+        "After calling, continue in plain text (never output HTML/audio tags)."
+    ),
 )
 async def speak(text: str, voice_id: str = "") -> str:
     msg = (text or "").strip()

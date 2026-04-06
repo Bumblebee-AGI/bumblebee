@@ -78,10 +78,14 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return "❌ canceling reminder..."
     if tool_name == "send_message_to":
         platform = str(args.get("platform", "somewhere") or "somewhere")
+        if args.get("as_voice"):
+            return f"🗣️ sending a voice message on {platform}..."
         return f"💬 sending a message on {platform}..."
     if tool_name == "send_dm":
         if args.get("list_targets"):
             return "💬 listing DM targets..."
+        if args.get("as_voice"):
+            return "🗣️ sending a voice DM..."
         return "💬 sending a direct message..."
     if tool_name == "get_system_info":
         return "💻 checking system stats..."
