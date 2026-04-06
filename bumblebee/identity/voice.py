@@ -6,6 +6,7 @@ import random
 import re
 from dataclasses import dataclass
 
+from bumblebee.cognition import gemma
 from bumblebee.config import EntityConfig
 from bumblebee.models import EmotionalState
 
@@ -71,7 +72,7 @@ def strip_stage_directions(text: str) -> str:
             break
         t = t[m.end() :].lstrip()
     t = _TRAILING_TOOL_META_DONE.sub("", t).strip()
-    return t
+    return gemma.strip_leaked_control_tokens(t)
 
 
 class VoiceController:

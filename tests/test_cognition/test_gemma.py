@@ -8,6 +8,18 @@ def test_parse_thought_channel_exact_tokens():
     assert p.visible_user_text == "Hello user"
 
 
+def test_parse_mangled_tool_token_echo_not_in_visible():
+    """Unclosed <|tool_response|> blocks used to be emitted as visible text in full."""
+    raw = f"{gemma.TOOL_RESPONSE_START}{gemma.TOOL_RESPONSE_START}{gemma.TOOL_CALL_END}"
+    p = gemma.parse_assistant_output(raw)
+    assert p.visible_user_text == ""
+
+
+def test_strip_leaked_control_tokens():
+    s = f"hi {gemma.TOOL_RESPONSE_START}there{gemma.TOOL_CALL_END}bye"
+    assert gemma.strip_leaked_control_tokens(s) == "hi therebye"
+
+
 def test_parse_tool_call_gemma_delimiters():
     inner = 'call:weather{location:<|"|>London<|"|>}'
     raw = f"{gemma.TOOL_CALL_START}{inner}{gemma.TOOL_CALL_END}"

@@ -34,6 +34,42 @@ AUDIO_TOKEN = "<|audio|>"
 REDACTED_THINK_OPEN = "<redacted_thinking>"
 REDACTED_THINK_CLOSE = "</redacted_thinking>"
 
+# Spellings to strip from user-visible chat when the model echoes or mangles tool format.
+_CONTROL_TOKEN_LEAK_MARKERS: tuple[str, ...] = (
+    TOOL_RESPONSE_START,
+    TOOL_RESPONSE_END,
+    TOOL_CALL_START,
+    TOOL_CALL_END,
+    TOOL_DECL_START,
+    TOOL_DECL_END,
+    TURN_START,
+    TURN_END,
+    THINK,
+    CHANNEL_THOUGHT,
+    CHANNEL_END,
+    STRING_DELIM,
+    IMAGE_TOKEN,
+    AUDIO_TOKEN,
+    REDACTED_THINK_OPEN,
+    REDACTED_THINK_CLOSE,
+)
+
+
+def strip_leaked_control_tokens(text: str) -> str:
+    """Remove Gemma control token literals from strings shown to humans (mangled duplicates, orphans)."""
+    t = text or ""
+    if not t:
+        return t
+    changed = True
+    while changed:
+        changed = False
+        for m in _CONTROL_TOKEN_LEAK_MARKERS:
+            if m in t:
+                t = t.replace(m, "")
+                changed = True
+    return t.strip()
+
+
 # Empty thought channel (suppress spurious CoT when thinking mode is off; large models)
 EMPTY_THOUGHT_TURN = f"{TURN_START}model\n{CHANNEL_THOUGHT}\n{CHANNEL_END}\n"
 
@@ -291,8 +327,8 @@ def parse_assistant_output(text: str) -> ParsedAssistantOutput:
             start_body = i + len(TOOL_CALL_START)
             end = text.find(TOOL_CALL_END, start_body)
             if end == -1:
-                emit_text(i, n)
-                break
+                i += len(TOOL_CALL_START)
+                continue
             inner = text[start_body:end]
             out.tool_call_raws.append(inner)
             chunks.append(("tool_call", inner))
@@ -303,12 +339,23 @@ def parse_assistant_output(text: str) -> ParsedAssistantOutput:
             start_body = i + len(TOOL_RESPONSE_START)
             end = text.find(TOOL_RESPONSE_END, start_body)
             if end == -1:
-                emit_text(i, n)
-                break
+                i += len(TOOL_RESPONSE_START)
+                continue
             inner = text[start_body:end]
             out.tool_response_raws.append(inner)
             chunks.append(("tool_response", inner))
             i = end + len(TOOL_RESPONSE_END)
+            continue
+
+        # Orphan closers (model echoed only end delimiters) — never user-visible.
+        if text.startswith(TOOL_CALL_END, i):
+            i += len(TOOL_CALL_END)
+            continue
+        if text.startswith(TOOL_RESPONSE_END, i):
+            i += len(TOOL_RESPONSE_END)
+            continue
+        if text.startswith(TOOL_DECL_END, i):
+            i += len(TOOL_DECL_END)
             continue
 
         if text.startswith(TURN_START, i):
