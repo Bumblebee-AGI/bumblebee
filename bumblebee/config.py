@@ -143,7 +143,7 @@ def default_tools_config() -> dict[str, Any]:
     return {
         "shell": {
             "enabled": True,
-            "deny": ["rm -rf /", "sudo rm", "shutdown", "reboot", "format", "mkfs", "dd if="],
+            "deny": ["rm -rf /", "sudo rm", "shutdown", "reboot", "mkfs", "dd if="],
             "timeout": 30,
         },
         "browser": {"enabled": False},

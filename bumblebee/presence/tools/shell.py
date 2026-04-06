@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import structlog
@@ -14,7 +15,8 @@ from bumblebee.presence.tools.runtime import require_tool_runtime
 log = structlog.get_logger("bumblebee.presence.tools.shell")
 
 
-_DEFAULT_DENY = ["rm -rf /", "sudo rm", "shutdown", "reboot", "format", "mkfs", "dd if="]
+# Note: do not use bare substring "format" — it matches inside words like "information".
+_DEFAULT_DENY = ["rm -rf /", "sudo rm", "shutdown", "reboot", "mkfs", "dd if="]
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -47,7 +49,12 @@ def _deny_patterns() -> list[str]:
 
 def _blocked(command: str) -> str | None:
     cmd_l = (command or "").lower()
+    # Windows disk format — word-boundary so "information" / "transformation" are not blocked.
+    if re.search(r"\bformat\s+[a-z]\s*:", cmd_l):
+        return r"format <drive>:"
     for pat in _deny_patterns():
+        if pat in ("format",):
+            continue
         if pat and pat in cmd_l:
             return pat
     return None

@@ -35,6 +35,39 @@ _CLIENTS: dict[str, "ExecutionRPCClient"] = {}
 _BG_PROCS: dict[str, dict[str, Any]] = {}
 
 
+def should_fallback_rpc_to_local(res: dict[str, Any]) -> bool:
+    """
+    True when the HTTP execution RPC failed in a way that suggests the URL is wrong or down,
+    so in-container / local execution is a reasonable fallback (e.g. Railway worker with a
+    leftover BUMBLEBEE_EXECUTION_RPC_URL pointing at a home tunnel that is off).
+    """
+    err = str(res.get("error") or "").lower()
+    if "rpc http 401" in err or "rpc http 403" in err:
+        return False
+    if "rpc http 404" in err or "rpc http 405" in err or "rpc http 422" in err:
+        return False
+    if "rpc http 500" in err or "rpc http 501" in err:
+        return False
+    if "rpc http 502" in err or "rpc http 503" in err or "rpc http 504" in err:
+        return True
+    transport_markers = (
+        "cannot connect",
+        "connection refused",
+        "name or service not known",
+        "getaddrinfo failed",
+        "temporary failure in name resolution",
+        "timed out",
+        "timeout",
+        "sslcertverificationerror",
+        "certificate verify failed",
+        "newconnectionerror",
+        "clientconnectorerror",
+        "connection reset",
+        "nodename nor servname",
+    )
+    return any(m in err for m in transport_markers)
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {**base}
     for k, v in override.items():
@@ -76,7 +109,17 @@ class ExecutionRPCClient:
 
     async def call(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         if self.base_url:
-            return await self._call_http(action, payload)
+            res = await self._call_http(action, payload)
+            if res.get("ok"):
+                return res
+            if self.allow_local_backend and should_fallback_rpc_to_local(res):
+                log.warning(
+                    "execution_rpc_unreachable_fallback_local",
+                    action=action,
+                    error=str(res.get("error") or "")[:300],
+                )
+                return await asyncio.to_thread(self._call_local, action, payload)
+            return res
         if self.allow_local_backend:
             return await asyncio.to_thread(self._call_local, action, payload)
         return {

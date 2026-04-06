@@ -6,6 +6,7 @@ import pytest
 
 from bumblebee.config import HarnessConfig, entity_from_dict
 from bumblebee.presence.tools import execution_rpc
+from bumblebee.presence.tools.execution_rpc import should_fallback_rpc_to_local
 from bumblebee.presence.tools.runtime import ToolRuntimeContext, reset_tool_runtime, set_tool_runtime
 
 _MIN_ENTITY = {
@@ -71,3 +72,17 @@ def test_allow_local_backend_hybrid_only_on_railway_or_opt_in(
         assert client.allow_local_backend is expect_local
     finally:
         reset_tool_runtime(tok)
+
+
+@pytest.mark.parametrize(
+    ("error", "expect"),
+    [
+        ("Cannot connect to host example.com port 443", True),
+        ("rpc http 503", True),
+        ("rpc http 404", False),
+        ("rpc http 401", False),
+        ("something unknown", False),
+    ],
+)
+def test_should_fallback_rpc_to_local(error: str, expect: bool) -> None:
+    assert should_fallback_rpc_to_local({"ok": False, "error": error}) is expect
