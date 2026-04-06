@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 import pytest
 
@@ -9,8 +10,8 @@ from bumblebee.presence.tools.runtime import ToolRuntimeContext, reset_tool_runt
 
 class _DummyEntity:
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str, str]] = []
-        self.dms: list[tuple[str, str, str]] = []
+        self.sent: list[tuple[str, str, str, dict[str, Any]]] = []
+        self.dms: list[tuple[str, str, str, dict[str, Any]]] = []
         self.routes = [
             {
                 "person_name": "Bob",
@@ -30,11 +31,13 @@ class _DummyEntity:
             },
         ]
 
-    async def send_message_to_platform(self, platform: str, target: str, message: str) -> None:
-        self.sent.append((platform, target, message))
+    async def send_message_to_platform(
+        self, platform: str, target: str, message: str, **kw: Any
+    ) -> None:
+        self.sent.append((platform, target, message, dict(kw)))
 
-    async def send_dm_to_user(self, platform: str, user_id: str, message: str) -> None:
-        self.dms.append((platform, user_id, message))
+    async def send_dm_to_user(self, platform: str, user_id: str, message: str, **kw: Any) -> None:
+        self.dms.append((platform, user_id, message, dict(kw)))
 
     def list_known_person_routes(self, platform: str = "") -> list[dict[str, str | float]]:
         pf = (platform or "").strip().lower()
@@ -66,6 +69,46 @@ def _set_ctx(entity: _DummyEntity):
 
 
 @pytest.mark.asyncio
+async def test_send_message_to_as_voice_passes_kwargs() -> None:
+    entity = _DummyEntity()
+    tok = _set_ctx(entity)
+    try:
+        out = await send_message_to(
+            message="hello voice",
+            platform="telegram",
+            target="12345",
+            as_voice=True,
+            voice_id="en-US-JennyNeural",
+        )
+        data = json.loads(out)
+        assert data["ok"] is True
+        assert entity.sent == [
+            (
+                "telegram",
+                "12345",
+                "hello voice",
+                {"as_voice": True, "voice_id": "en-US-JennyNeural"},
+            )
+        ]
+    finally:
+        reset_tool_runtime(tok)
+
+
+@pytest.mark.asyncio
+async def test_send_message_to_person_confirm_includes_as_voice() -> None:
+    entity = _DummyEntity()
+    tok = _set_ctx(entity)
+    try:
+        out = await send_message_to(message="yo", target_person="Bob", as_voice=True, voice_id="en-GB")
+        data = json.loads(out)
+        assert data["needs_confirmation"] is True
+        assert data["as_voice"] is True
+        assert data["voice_id"] == "en-GB"
+    finally:
+        reset_tool_runtime(tok)
+
+
+@pytest.mark.asyncio
 async def test_send_message_to_explicit_destination() -> None:
     entity = _DummyEntity()
     tok = _set_ctx(entity)
@@ -73,7 +116,7 @@ async def test_send_message_to_explicit_destination() -> None:
         out = await send_message_to(message="hello", platform="telegram", target="12345")
         data = json.loads(out)
         assert data["ok"] is True
-        assert entity.sent == [("telegram", "12345", "hello")]
+        assert entity.sent == [("telegram", "12345", "hello", {"as_voice": False, "voice_id": ""})]
     finally:
         reset_tool_runtime(tok)
 
@@ -99,7 +142,7 @@ async def test_send_message_to_person_confirm_sends_private_route() -> None:
         out = await send_message_to(message="yo", target_person="Bob", confirm=True)
         data = json.loads(out)
         assert data["ok"] is True
-        assert entity.sent == [("telegram", "222", "yo")]
+        assert entity.sent == [("telegram", "222", "yo", {"as_voice": False, "voice_id": ""})]
     finally:
         reset_tool_runtime(tok)
 
@@ -133,6 +176,20 @@ async def test_send_dm_list_targets_dedupes_user() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_dm_confirmation_includes_as_voice() -> None:
+    entity = _DummyEntity()
+    tok = _set_ctx(entity)
+    try:
+        out = await send_dm(message="vm", user_id="222", platform="telegram", as_voice=True, voice_id="fr-FR")
+        data = json.loads(out)
+        assert data["needs_confirmation"] is True
+        assert data["as_voice"] is True
+        assert data["voice_id"] == "fr-FR"
+    finally:
+        reset_tool_runtime(tok)
+
+
+@pytest.mark.asyncio
 async def test_send_dm_requires_confirmation() -> None:
     entity = _DummyEntity()
     tok = _set_ctx(entity)
@@ -153,7 +210,7 @@ async def test_send_dm_confirm_delivers() -> None:
         out = await send_dm(message="hi dm", user_id="222", platform="telegram", confirm=True)
         data = json.loads(out)
         assert data["ok"] is True
-        assert entity.dms == [("telegram", "222", "hi dm")]
+        assert entity.dms == [("telegram", "222", "hi dm", {"as_voice": False, "voice_id": ""})]
     finally:
         reset_tool_runtime(tok)
 
@@ -166,7 +223,7 @@ async def test_send_dm_target_person_confirm() -> None:
         out = await send_dm(message="yo", target_person="Bob", platform="telegram", confirm=True)
         data = json.loads(out)
         assert data["ok"] is True
-        assert entity.dms == [("telegram", "222", "yo")]
+        assert entity.dms == [("telegram", "222", "yo", {"as_voice": False, "voice_id": ""})]
     finally:
         reset_tool_runtime(tok)
 

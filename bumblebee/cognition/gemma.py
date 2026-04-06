@@ -55,6 +55,14 @@ _CONTROL_TOKEN_LEAK_MARKERS: tuple[str, ...] = (
 )
 
 
+# After exact-marker removal, catch concatenated / partial fragments (no stable close delimiter).
+_GEMMA_LEAK_TAIL = re.compile(
+    r"<\|[^>\n]{1,120}>"
+    r"|<tool_(?:call|response)\|>",
+    re.IGNORECASE,
+)
+
+
 def strip_leaked_control_tokens(text: str) -> str:
     """Remove Gemma control token literals from strings shown to humans (mangled duplicates, orphans)."""
     t = text or ""
@@ -67,7 +75,13 @@ def strip_leaked_control_tokens(text: str) -> str:
             if m in t:
                 t = t.replace(m, "")
                 changed = True
-    return t.strip()
+    t = t.strip()
+    while True:
+        nxt = _GEMMA_LEAK_TAIL.sub("", t).strip()
+        if nxt == t:
+            break
+        t = nxt
+    return t
 
 
 # Empty thought channel (suppress spurious CoT when thinking mode is off; large models)

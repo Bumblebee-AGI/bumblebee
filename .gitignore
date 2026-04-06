@@ -29,6 +29,10 @@ htmlcov/
 venv/
 ENV/
 
+# Local harness overrides (operator-specific; not committed)
+configs/default.yaml
+# Entity YAML under configs/entities/ must be committed for Docker/Railway — the image is built from git only.
+
 # Local databases / entity state
 *.db
 *.sqlite

@@ -20,6 +20,13 @@ def test_strip_leaked_control_tokens():
     assert gemma.strip_leaked_control_tokens(s) == "hi therebye"
 
 
+def test_strip_leaked_control_tokens_mangled_concat():
+    raw = "<|tool_response><tool_call|><|tool_response><|tool_response>"
+    assert gemma.strip_leaked_control_tokens(raw) == ""
+    out = gemma.strip_leaked_control_tokens(f"ok {raw} cool")
+    assert out.split() == ["ok", "cool"]
+
+
 def test_parse_tool_call_gemma_delimiters():
     inner = 'call:weather{location:<|"|>London<|"|>}'
     raw = f"{gemma.TOOL_CALL_START}{inner}{gemma.TOOL_CALL_END}"

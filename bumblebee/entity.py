@@ -315,14 +315,48 @@ class Entity:
             return
         self._platforms[n] = platform
 
-    async def send_message_to_platform(self, platform: str, target: str, message: str) -> None:
+    async def send_message_to_platform(
+        self,
+        platform: str,
+        target: str,
+        message: str,
+        *,
+        as_voice: bool = False,
+        voice_id: str = "",
+    ) -> None:
         n = (platform or "").strip().lower()
         pf = self._platforms.get(n)
         if pf is None:
             raise RuntimeError(f"platform not connected: {platform}")
-        await pf.send_message(str(target), str(message))
+        msg = (message or "").strip()
+        if not msg:
+            raise RuntimeError("message is empty")
+        if not as_voice:
+            await pf.send_message(str(target), msg)
+            return
+        out_path = await voice_tools.synthesize_tts_to_file(self, msg, voice_id)
+        try:
+            send_audio = getattr(pf, "send_audio", None)
+            if not callable(send_audio):
+                raise RuntimeError(f"platform {platform!r} does not support voice delivery (send_audio)")
+            ok = await send_audio(str(target), str(out_path))
+            if not ok:
+                raise RuntimeError("voice delivery failed (send_audio returned false)")
+        finally:
+            try:
+                out_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
-    async def send_dm_to_user(self, platform: str, user_id: str, message: str) -> None:
+    async def send_dm_to_user(
+        self,
+        platform: str,
+        user_id: str,
+        message: str,
+        *,
+        as_voice: bool = False,
+        voice_id: str = "",
+    ) -> None:
         """Send a private DM using the user's platform id (Telegram: chat_id == user id; Discord: user snowflake)."""
         n = (platform or "").strip().lower()
         uid = (user_id or "").strip()
@@ -334,16 +368,42 @@ class Entity:
         pf = self._platforms.get(n)
         if pf is None:
             raise RuntimeError(f"platform not connected: {platform}")
-        if n == "telegram":
-            await pf.send_message(uid, msg)
-            return
-        if n == "discord":
-            dm = getattr(pf, "send_dm_to_user", None)
-            if not callable(dm):
-                raise RuntimeError("discord platform does not support send_dm_to_user")
-            await dm(uid, msg)
-            return
-        raise RuntimeError(f"send_dm_to_user is only supported for telegram and discord, not {platform!r}")
+        if not as_voice:
+            if n == "telegram":
+                await pf.send_message(uid, msg)
+                return
+            if n == "discord":
+                dm = getattr(pf, "send_dm_to_user", None)
+                if not callable(dm):
+                    raise RuntimeError("discord platform does not support send_dm_to_user")
+                await dm(uid, msg)
+                return
+            raise RuntimeError(f"send_dm_to_user is only supported for telegram and discord, not {platform!r}")
+
+        out_path = await voice_tools.synthesize_tts_to_file(self, msg, voice_id)
+        try:
+            if n == "telegram":
+                send_audio = getattr(pf, "send_audio", None)
+                if not callable(send_audio):
+                    raise RuntimeError("telegram does not support voice delivery (send_audio)")
+                ok = await send_audio(uid, str(out_path))
+                if not ok:
+                    raise RuntimeError("telegram voice DM failed (send_audio returned false)")
+                return
+            if n == "discord":
+                dm_audio = getattr(pf, "send_dm_audio", None)
+                if not callable(dm_audio):
+                    raise RuntimeError("discord platform does not support send_dm_audio")
+                ok = await dm_audio(uid, str(out_path))
+                if not ok:
+                    raise RuntimeError("discord voice DM failed")
+                return
+            raise RuntimeError(f"voice DM is only supported for telegram and discord, not {platform!r}")
+        finally:
+            try:
+                out_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _remember_person_route(self, inp: Input) -> None:
         chat_type = str((inp.metadata or {}).get("chat_type") or "").strip().lower()

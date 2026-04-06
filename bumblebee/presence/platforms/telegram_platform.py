@@ -7,6 +7,7 @@ import base64
 import html
 import io
 import os
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -58,6 +59,9 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger("bumblebee.presence.telegram")
 
+# Telegram may redeliver the same update; bounded memory for seen update_id values.
+_UPDATE_DEDUP_CAP = 8192
+
 
 def _telegram_display_name(user: Any) -> str:
     """Disambiguate members in groups: full name + @username when available."""
@@ -87,9 +91,9 @@ class TelegramPlatform(Platform):
         allowed_user_ids: set[int] | None = None,
         allowed_chat_ids: set[int] | None = None,
         operator_user_ids: set[int] | None = None,
-        concurrent_updates: int = 64,
-        poll_timeout: float = 5.0,
-        poll_interval: float = 0.0,
+        concurrent_updates: int = 1,
+        poll_timeout: float = 20.0,
+        poll_interval: float = 0.35,
     ) -> None:
         self.token = token
         self._entity = entity
@@ -103,18 +107,18 @@ class TelegramPlatform(Platform):
         try:
             cu = int(concurrent_updates)
         except (TypeError, ValueError):
-            cu = 64
+            cu = 1
         # PTB defaults to sequential update handling; allow bounded concurrency for busy group chats.
         self._concurrent_updates = max(1, min(256, cu))
         try:
             pt = float(poll_timeout)
         except (TypeError, ValueError):
-            pt = 5.0
+            pt = 20.0
         self._poll_timeout = max(1.0, min(30.0, pt))
         try:
             pi = float(poll_interval)
         except (TypeError, ValueError):
-            pi = 0.0
+            pi = 0.35
         self._poll_interval = max(0.0, min(2.0, pi))
         self.app = (
             Application.builder()
@@ -125,7 +129,8 @@ class TelegramPlatform(Platform):
         self._cb: Callable[[Input], Any] | None = None
         self.last_chat_id: str | None = None
         self._denied_notified_chat_ids: set[int] = set()
-        self._inflight_tasks: set[asyncio.Task[Any]] = set()
+        self._seen_update_ids: OrderedDict[int, None] = OrderedDict()
+        self._update_dedup_lock = asyncio.Lock()
 
         self._register_handlers()
 
@@ -223,6 +228,18 @@ class TelegramPlatform(Platform):
         self.last_chat_id = str(chat.id)
         return chat.id
 
+    async def _take_update_if_fresh(self, update: Update) -> bool:
+        """First delivery of ``update_id`` returns True; retries/duplicates return False."""
+        async with self._update_dedup_lock:
+            uid = update.update_id
+            if uid in self._seen_update_ids:
+                log.info("telegram_duplicate_update_skipped", update_id=uid)
+                return False
+            self._seen_update_ids[uid] = None
+            while len(self._seen_update_ids) > _UPDATE_DEDUP_CAP:
+                self._seen_update_ids.popitem(last=False)
+            return True
+
     async def _run_callback(self, inp: Input) -> None:
         if not self._cb:
             return
@@ -230,11 +247,6 @@ class TelegramPlatform(Platform):
             await self._cb(inp)
         except Exception as e:
             log.warning("telegram_callback_failed", error=str(e))
-
-    def _dispatch_callback(self, inp: Input) -> None:
-        task = asyncio.create_task(self._run_callback(inp), name="telegram-callback")
-        self._inflight_tasks.add(task)
-        task.add_done_callback(lambda t: self._inflight_tasks.discard(t))
 
     async def _send_html_chunks(self, chat_id: int, html_text: str, *, pause: float = 0.0) -> None:
         chunks = split_telegram_chunks(html_text, limit=3900)
@@ -287,6 +299,8 @@ class TelegramPlatform(Platform):
             return default
 
     async def _on_whoami(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         _ = context
         u = update.effective_user
         if u is None or update.effective_chat is None:
@@ -329,6 +343,8 @@ class TelegramPlatform(Platform):
             await self._reply_html(update, f"Could not open: {html.escape(str(e)[:200])}")
 
     async def _on_private(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         args = [str(a).strip().lower() for a in (context.args or []) if str(a).strip()]
         u = update.effective_user
         if u is None or update.effective_chat is None:
@@ -350,6 +366,8 @@ class TelegramPlatform(Platform):
             await self._privacy_apply_open(update)
 
     async def _on_privacy(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         args = [a.strip() for a in (context.args or []) if str(a).strip()]
         sub = (args[0] or "status").lower() if args else "status"
         if sub in ("help", "?"):
@@ -431,6 +449,8 @@ class TelegramPlatform(Platform):
         await self._reply_html(update, format_unknown_command(f"/privacy {sub}"))
 
     async def _on_start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
@@ -442,12 +462,16 @@ class TelegramPlatform(Platform):
         )
 
     async def _on_help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
         await self._reply_html(update, format_help_html(self._entity.config.name))
 
     async def _on_commands_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         args = list(context.args or [])
@@ -456,6 +480,8 @@ class TelegramPlatform(Platform):
         await self._reply_html(update, body)
 
     async def _on_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
@@ -463,6 +489,8 @@ class TelegramPlatform(Platform):
         await self._reply_html(update, body)
 
     async def _on_memories_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         limit = self._parse_memories_count(list(context.args or []), default=5)
@@ -471,6 +499,8 @@ class TelegramPlatform(Platform):
         await self._reply_html(update, body)
 
     async def _on_feelings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
@@ -478,6 +508,8 @@ class TelegramPlatform(Platform):
         await self._reply_html(update, body)
 
     async def _on_me_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
@@ -488,18 +520,24 @@ class TelegramPlatform(Platform):
         await self._reply_html(update, format_me_html(self._entity.config.name, rel))
 
     async def _on_models_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
         await self._reply_html(update, format_models_html(self._entity))
 
     async def _on_tools_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
         await self._reply_html(update, format_tools_html(self._entity))
 
     async def _on_routines_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
@@ -514,12 +552,16 @@ class TelegramPlatform(Platform):
         await self._reply_html(update, body)
 
     async def _on_ping_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
         await self._reply_html(update, format_ping_html(self._app_version))
 
     async def _on_reset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
@@ -527,6 +569,8 @@ class TelegramPlatform(Platform):
         await self._reply_html(update, format_reset_html(self._entity.config.name))
 
     async def _on_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
@@ -535,6 +579,8 @@ class TelegramPlatform(Platform):
         await self._reply_html(update, format_unknown_command(txt or "/unknown"))
 
     async def _on_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not update.message or not update.message.text or not self._cb:
             return
         if not await self._check_allowed(update, notify=True):
@@ -552,9 +598,11 @@ class TelegramPlatform(Platform):
             platform="telegram",
             metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
         )
-        self._dispatch_callback(inp)
+        await self._run_callback(inp)
 
     async def _on_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not update.message or not update.message.photo or not self._cb:
             return
         if not await self._check_allowed(update, notify=True):
@@ -578,11 +626,13 @@ class TelegramPlatform(Platform):
                 images=[{"base64": b64, "mime": "image/jpeg"}],
                 metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
             )
-            self._dispatch_callback(inp)
+            await self._run_callback(inp)
         except Exception as e:
             log.warning("telegram_photo_failed", error=str(e))
 
     async def _on_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not update.message or not self._cb:
             return
         if not await self._check_allowed(update, notify=True):
@@ -614,11 +664,13 @@ class TelegramPlatform(Platform):
                 audio=[{"base64": b64, "format": "ogg"}],
                 metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
             )
-            self._dispatch_callback(inp)
+            await self._run_callback(inp)
         except Exception as e:
             log.warning("telegram_voice_failed", error=str(e))
 
     async def _on_doc_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
         if not update.message or not update.message.document or not self._cb:
             return
         if not await self._check_allowed(update, notify=True):
@@ -649,7 +701,7 @@ class TelegramPlatform(Platform):
                 images=[{"base64": b64, "mime": mime or "image/jpeg"}],
                 metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
             )
-            self._dispatch_callback(inp)
+            await self._run_callback(inp)
         except Exception as e:
             log.warning("telegram_document_failed", error=str(e))
 
@@ -770,12 +822,6 @@ class TelegramPlatform(Platform):
         pass
 
     async def disconnect(self) -> None:
-        if self._inflight_tasks:
-            done, pending = await asyncio.wait(self._inflight_tasks, timeout=2.0)
-            _ = done
-            for t in pending:
-                t.cancel()
-            self._inflight_tasks.clear()
         if self.app.updater is not None:
             await self.app.updater.stop()
         await self.app.stop()

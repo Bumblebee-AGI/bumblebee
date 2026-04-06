@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import random
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from bumblebee.cognition import gemma
 from bumblebee.config import EntityConfig
@@ -75,12 +77,38 @@ def strip_stage_directions(text: str) -> str:
     return gemma.strip_leaked_control_tokens(t)
 
 
+def apply_voice_outgoing_substitutions(text: str, voice: Mapping[str, Any] | None) -> str:
+    """
+    Optional ``personality.voice.outgoing_text_substitutions`` map in entity YAML:
+    replace keys with values in outbound user-visible text. Keys that are plain
+    alphanumeric tokens use case-insensitive whole-word replacement; other keys
+    use literal substring replacement (first match wins per key, in YAML order).
+    """
+    if not voice:
+        return text
+    raw = voice.get("outgoing_text_substitutions")
+    if not raw or not isinstance(raw, dict):
+        return text
+    t = text or ""
+    for k, v in raw.items():
+        if not isinstance(k, str) or not k.strip() or v is None:
+            continue
+        repl = str(v)
+        key = k.strip()
+        if key.isascii() and key.isalnum() and len(key) <= 48:
+            t = re.sub(r"\b" + re.escape(key) + r"\b", repl, t, flags=re.IGNORECASE)
+        else:
+            t = t.replace(key, repl)
+    return t
+
+
 class VoiceController:
     def __init__(self, entity: EntityConfig) -> None:
         self.entity = entity
 
     def sanitize_reply(self, text: str) -> str:
-        return strip_stage_directions(text)
+        t = strip_stage_directions(text)
+        return apply_voice_outgoing_substitutions(t, self.entity.personality.voice)
 
     def meta_for_response(
         self,

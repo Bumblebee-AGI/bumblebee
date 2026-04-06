@@ -18,7 +18,7 @@ The first entitative harness. Gemma 4-native persistent digital entities.
 
 **Inference** stays **local** by default — Ollama on your GPU, no API keys, no subscriptions. **Hybrid** mode keeps the brain at home behind a gateway and tunnel while an always-on **worker** runs on Railway with Postgres. Use **`bumblebee setup`**, **`.env.example`**, and **`configs/default.yaml`** (`deployment`, `inference`) for wiring.
 
-**Quick links:** [Requirements](#requirements) · [Install & usage](#install) · [Setup wizard](#setup-wizard) · [Gateway setup](#gateway-setup-hybrid-home-brain) · [Telegram](#telegram) · [Platforms](#platforms) · [Tools](#tools) · [Native tools (table)](#native-tool-reference) · [Knowledge & journal](#knowledge-system) · [CLI reference](#cli-reference) · [Architecture](#architecture)
+**Quick links:** [Requirements](#requirements) · [Install & usage](#install) · [Setup wizard](#setup-wizard) · [Gateway setup](#gateway-setup-hybrid-home-brain) · [Telegram](#telegram) · [Platforms](#platforms) · [Tools](#tools) · [Native tools (table)](#native-tool-reference) · [Hybrid: inference vs tool execution](#hybrid-inference-vs-tool-execution) · [Knowledge & journal](#knowledge-system) · [CLI reference](#cli-reference) · [Architecture](#architecture)
 
 ---
 
@@ -160,12 +160,27 @@ Equivalent wrappers (double-click or run from repo root):
 .\scripts\windows\gateway-restart.cmd
 ```
 
+### Stopping local Bumblebee, gateway, and Ollama
+
+**`bumblebee stop`** tears down a typical **local** machine: it stops other **Bumblebee** processes (for example stray **`run`** / **`talk`** sessions), runs **`gateway off`** when **`scripts/gateway.ps1`** is available (Windows home stack), and stops **Ollama** OS processes unless you opt out.
+
+| Flag | Effect |
+|------|--------|
+| **`--dry-run`** | List what would be stopped; no kills; show whether gateway off would run. |
+| **`--skip-gateway`** | Do not run the gateway shutdown script. |
+| **`--leave-ollama-running`** | Forward **`LeaveOllamaRunning`** to gateway off when used; also skip the Ollama process sweep at the end. |
+| **`--tunnel-name`** | Tunnel name for gateway off (default **`bumblebee-inference`**). |
+
+This does **not** stop services on **Railway**; use the Railway dashboard or redeploy there.
+
 NPM shortcuts in this repo (`package.json`):
 
 ```powershell
 npm run deploy:canary   # deploy bumblebee-worker + bumblebee-api to Railway
 npm run ollama:reset    # full local Ollama cleanup + safe restart checks
 ```
+
+**Railway / Docker:** The worker loads **`configs/entities/<BUMBLEBEE_ENTITY>.yaml` from the image**. Builds use **git**, so that file must be **tracked and committed**. A gitignored or laptop-only entity file never reaches the container and you get `Entity file not found`. Edit the committed **`canary.yaml`** (for example set **`operator_user_ids`** from **`/whoami`**) on a deploy branch, or use a private fork; with **`operator_user_ids: []`**, operator-only **`/privacy`** commands stay disabled until you add ids and redeploy.
 
 List all available npm scripts anytime:
 
@@ -302,7 +317,17 @@ An **always-on daemon** ticks continuously: emotions, drives, memory consolidati
 
 **Multi-platform adapters** expose the same entity on CLI, Telegram, Discord, and elsewhere you configure, with consistent memory and emotional continuity.
 
-Deeper design (inference boundary, hybrid trust model) is reflected in **`configs/default.yaml`**, gateway code under **`bumblebee/inference_gateway/`**, and comments in **`.env.example`**.
+### Hybrid: inference vs tool execution
+
+In **`hybrid_railway`**, **chat and embeddings** go to your **home inference gateway** (Cloudflare Tunnel URL + bearer token). That is separate from **where shell and workspace tools run**.
+
+Tools such as **`run_command`**, **`run_background`**, **`write_file`**, **`read_file`**, **`execute_python`**, and **`execute_javascript`** use the shared execution layer (`tools.execution` in YAML, or **`BUMBLEBEE_EXECUTION_RPC_URL`** / **`BUMBLEBEE_EXECUTION_RPC_TOKEN`** in `.env`). Unless a remote RPC URL is set, commands run **in the same OS environment as the Bumblebee worker process**:
+
+- **Worker on Railway** — Railway injects **`RAILWAY_ENVIRONMENT`**, so those tools use the **container filesystem** and process space (not your laptop), which is what you want for an always-on cloud body.
+- **Hybrid env on your home PC** — If you run **`bumblebee run`** locally with **`deployment.mode: hybrid_railway`** but **without** an execution RPC URL, the harness **does not** fall back to running shell/file tools on your PC. Tools then return a clear “execution backend unavailable” style error unless you either set **`tools.execution.allow_local: true`** on the entity (explicit opt-in for local debugging) or point **`BUMBLEBEE_EXECUTION_RPC_URL`** at a reachable RPC host. **Prefer running the live worker on Railway** and keeping Telegram/Discord tokens only there so the body has a single home.
+- **Optional RPC** — When **`BUMBLEBEE_EXECUTION_RPC_URL`** is set, execution is delegated to that HTTP endpoint (for example a dedicated “hands” host). **`browser_*`** and **`generate_image`** still expect an RPC backend with the right capabilities when you are not on a full local stack.
+
+Deeper design (inference gateway, harness defaults) is reflected in **`configs/default.yaml`**, code under **`bumblebee/inference_gateway/`**, **`bumblebee/presence/tools/execution_rpc.py`**, and **`.env.example`**.
 
 ## Entity creation
 
@@ -379,7 +404,7 @@ presence:
 
 ## Tools
 
-Tools are how the entity interacts with the world — not “services for the user,” but **senses and reach**. When `presence.tool_activity` is on, tool use can surface in chat with short status lines. Unless noted, tools run on the **deliberate** path only.
+Tools are how the entity interacts with the world — not “services for the user,” but **senses and reach**. When `presence.tool_activity` is on, tool use can surface in chat with short status lines. Unless noted, tools run on the **deliberate** path only. **Shell, workspace file, and inline code tools** execute via the execution layer described under [Hybrid: inference vs tool execution](#hybrid-inference-vs-tool-execution) (worker host, optional RPC, or explicit local opt-in).
 
 ### Native tool reference
 
@@ -427,8 +452,8 @@ Built-in tools live under `bumblebee/presence/tools/` and register at entity sta
 | `search_tools` | — | on | Search registered tools by keyword at runtime. |
 | `search_web` | — | on | Web search (DuckDuckGo by default; optional Firecrawl). |
 | `search_youtube` | `youtube` | on | Search YouTube. |
-| `send_dm` | `messaging` | on | DM on Telegram or Discord (confirm flow; optional target listing). |
-| `send_message_to` | `messaging` | on | Message a platform target or resolved person (confirm flow). |
+| `send_dm` | `messaging` | on | DM on Telegram or Discord (confirm flow; optional **`as_voice`** TTS + **`voice_id`**; optional target listing). |
+| `send_message_to` | `messaging` | on | Message a platform target or resolved person (confirm flow; optional **`as_voice`** / **`voice_id`** for Edge-TTS voice notes). |
 | `set_reminder` | `reminders` | on | Schedule a reminder (DB + APScheduler). |
 | `set_tts_voice` | `voice` | on | Set Edge-TTS voice for this process. |
 | `speak` | `voice` | on | Send a TTS voice note to the active chat. |
@@ -503,6 +528,8 @@ Harness defaults live in **`configs/default.yaml`**. Per-entity overrides go in 
 
 **Hybrid attachments:** harness **`attachments.backend`** can be **`object_s3_compat`** with S3-compatible env vars (see **`.env.example`**) for durable blobs when the worker runs in the cloud.
 
+**Tool execution:** harness **`tools.execution`** (`base_url`, **`allow_local`**, **`workspace_dir`**, **`token_env`**, **`timeout`**, **`rpc_path`**) plus env **`BUMBLEBEE_EXECUTION_RPC_URL`** — see [Hybrid: inference vs tool execution](#hybrid-inference-vs-tool-execution).
+
 **Timezone:** optional **`BUMBLEBEE_TIMEZONE`** (IANA name) for wall-clock prompts and **`get_current_time`**.
 
 Illustrative harness defaults (see the file for the full list):
@@ -548,19 +575,23 @@ bumblebee create                               # genesis wizard — new entity Y
 bumblebee talk <entity>                        # CLI conversation (no daemon)
 bumblebee run <entity>                         # daemon + configured platforms (local or hybrid)
 bumblebee worker <entity>                      # daemon + platforms, no CLI (Railway worker role)
+bumblebee stop [--dry-run] [--skip-gateway] [--leave-ollama-running] [--tunnel-name NAME]
+                                               # local: stop Bumblebee processes + optional gateway off + Ollama
 bumblebee api [--host 0.0.0.0] [--port 8080]  # HTTP health API (extras: pip install 'bumblebee[api]')
 bumblebee status <entity>                      # emotional state, drives, paths
 bumblebee evolve <entity>                      # force one trait evolution cycle (debug/advanced)
-bumblebee knowledge <entity>                   # open knowledge.md in $EDITOR
-bumblebee journal <entity>                     # open journal.md in $EDITOR
+bumblebee knowledge <entity>                   # create/open knowledge.md in $EDITOR
+bumblebee journal <entity>                     # create/open journal.md in $EDITOR
 bumblebee recall <entity> "<query>"            # semantic search over episodic memory
 bumblebee wipe <entity> [--yes]                # clear rolling chat + wipe SQLite/Postgres memory
 bumblebee export <entity> <dest_dir>           # backup entity YAML + DB
 bumblebee import <bundle_dir>                  # restore entity bundle
 
-bumblebee talk canary --ollama                 # start local Ollama if needed
-bumblebee run canary --ollama --pull-models    # also pull models from config
+bumblebee talk canary --ollama [--pull-models] # start local Ollama if needed; optional model pull
+bumblebee run canary --ollama [--pull-models]  # same flags as talk
 ```
+
+**`gateway setup`** accepts **`--tunnel-name`**, **`--cloudflared-config`**, **`--gateway-host`**, **`--gateway-port`**. **`on`**, **`status`**, **`restart`** accept **`--tunnel-name`**, **`--cloudflared-config`**, **`--tunnel-url`**, **`--gateway-host`**, **`--gateway-port`**; **`off`** and **`restart`** also accept **`--leave-ollama-running`**.
 
 `gateway` subcommands other than **`setup`** use **`scripts/gateway.ps1`** and are intended for **Windows**; **`gateway setup`** is interactive documentation + **`.env`** on any OS, then offers **`gateway on`** when the script is available.
 

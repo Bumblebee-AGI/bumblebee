@@ -1,4 +1,9 @@
-"""Shared execution client for dangerous tools (RPC first, guarded local fallback)."""
+"""Shared execution client for dangerous tools (RPC first, guarded local fallback).
+
+Hybrid (`hybrid_railway`) is meant to run the **body** on Railway. Local subprocess/file
+fallback is only allowed there (``RAILWAY_ENVIRONMENT``) or when ``tools.execution.allow_local``
+is true — so a home workstation with hybrid env vars does not silently become the execution host.
+"""
 
 from __future__ import annotations
 
@@ -323,7 +328,12 @@ def get_execution_client() -> ExecutionRPCClient:
     )
     mode = (entity.config.harness.deployment.mode or "local").strip().lower()
     allow_local = bool(exec_cfg.get("allow_local", False))
-    allow_local_backend = (mode == "hybrid_railway") or allow_local
+    on_railway = bool((os.environ.get("RAILWAY_ENVIRONMENT") or "").strip())
+    allow_local_backend = (
+        allow_local
+        or mode == "local"
+        or (mode == "hybrid_railway" and on_railway)
+    )
 
     client = ExecutionRPCClient(
         base_url=base_url,

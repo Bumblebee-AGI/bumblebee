@@ -230,6 +230,25 @@ class DiscordPlatform(Platform):
         dm = await user.create_dm()
         await dm.send(plain)
 
+    async def send_dm_audio(self, user_id: str, path: str) -> bool:
+        """Send a voice/audio file to a user's DM channel (snowflake user id)."""
+        p = Path(path)
+        if not p.is_file():
+            return False
+        await self._ready.wait()
+        try:
+            uid = int((user_id or "").strip())
+        except ValueError:
+            return False
+        try:
+            user = await self.client.fetch_user(uid)
+            dm = await user.create_dm()
+            await dm.send(file=discord.File(str(p), filename=p.name[:255]))
+            return True
+        except Exception as e:
+            _discord_log.warning("discord_send_dm_audio_failed", error=str(e))
+            return False
+
     async def send_audio(self, channel: str, path: str) -> bool:
         p = Path(path)
         if not p.is_file():

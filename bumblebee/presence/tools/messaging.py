@@ -33,7 +33,13 @@ def _known_contacts(entity: object, platform: str = "") -> list[dict[str, object
 
 @tool(
     name="send_message_to",
-    description="Send a message to someone on a platform. You can provide explicit platform+target, or target_person to resolve from known contacts. For target_person, first call returns a confirmation payload; call again with confirm=true to actually send.",
+    description=(
+        "Send a message to someone on a platform. You can provide explicit platform+target, or target_person "
+        "to resolve from known contacts. For target_person, first call returns a confirmation payload; call again "
+        "with confirm=true to actually send. Set as_voice=true to deliver the message as a TTS voice note "
+        "(Edge-TTS; same as speak) on Telegram/Discord — requires pip install bumblebee[voice]. "
+        "Repeat as_voice and voice_id on the confirmation call when using target_person."
+    ),
 )
 async def send_message_to(
     message: str,
@@ -42,6 +48,8 @@ async def send_message_to(
     target_person: str = "",
     confirm: bool = False,
     prefer_private: bool = True,
+    as_voice: bool = False,
+    voice_id: str = "",
 ) -> str:
     msg = (message or "").strip()
     if not msg:
@@ -92,8 +100,11 @@ async def send_message_to(
                     "target": tgt,
                     "resolved": resolved,
                     "message_preview": msg[:300],
+                    "as_voice": bool(as_voice),
+                    "voice_id": (voice_id or "").strip(),
                     "instruction": (
-                        "Call send_message_to again with the same arguments and confirm=true to send."
+                        "Call send_message_to again with the same arguments (including as_voice and voice_id) "
+                        "and confirm=true to send."
                     ),
                 },
                 ensure_ascii=False,
@@ -112,9 +123,22 @@ async def send_message_to(
     if not callable(sender):
         return json.dumps({"error": "entity messaging bridge unavailable"})
     try:
-        await sender(pf, tgt, msg)
+        await sender(
+            pf,
+            tgt,
+            msg,
+            as_voice=bool(as_voice),
+            voice_id=(voice_id or "").strip(),
+        )
         return json.dumps(
-            {"ok": True, "platform": pf, "target": tgt, "resolved": resolved},
+            {
+                "ok": True,
+                "platform": pf,
+                "target": tgt,
+                "resolved": resolved,
+                "as_voice": bool(as_voice),
+                "voice_id": (voice_id or "").strip() or None,
+            },
             ensure_ascii=False,
         )
     except Exception as e:
@@ -186,7 +210,9 @@ def _dm_targets(entity: object) -> list[dict[str, object]]:
         "Use list_targets=true to fetch user_id values from people this entity has seen on Telegram/Discord. "
         "On Telegram, user_id is the numeric Telegram user id (same as private chat_id). "
         "On Discord, user_id is the member snowflake. "
-        "First send attempt returns needs_confirmation; call again with confirm=true to deliver."
+        "First send attempt returns needs_confirmation; call again with confirm=true to deliver. "
+        "Set as_voice=true to send a TTS voice note (Edge-TTS; requires pip install bumblebee[voice]). "
+        "Repeat as_voice and voice_id on the confirmation call."
     ),
 )
 async def send_dm(
@@ -196,6 +222,8 @@ async def send_dm(
     target_person: str = "",
     confirm: bool = False,
     list_targets: bool = False,
+    as_voice: bool = False,
+    voice_id: str = "",
 ) -> str:
     ctx = require_tool_runtime()
     entity = ctx.entity
@@ -287,19 +315,32 @@ async def send_dm(
                 "user_id": uid,
                 "resolved_name": resolved_name,
                 "message_preview": msg[:300],
-                "instruction": "Call send_dm again with the same message, user_id, platform, and confirm=true.",
+                "as_voice": bool(as_voice),
+                "voice_id": (voice_id or "").strip(),
+                "instruction": (
+                    "Call send_dm again with the same message, user_id, platform, as_voice, voice_id, "
+                    "and confirm=true."
+                ),
             },
             ensure_ascii=False,
         )
 
     try:
-        await sender(pf, uid, msg)
+        await sender(
+            pf,
+            uid,
+            msg,
+            as_voice=bool(as_voice),
+            voice_id=(voice_id or "").strip(),
+        )
         return json.dumps(
             {
                 "ok": True,
                 "platform": pf,
                 "user_id": uid,
                 "resolved_name": resolved_name,
+                "as_voice": bool(as_voice),
+                "voice_id": (voice_id or "").strip() or None,
             },
             ensure_ascii=False,
         )

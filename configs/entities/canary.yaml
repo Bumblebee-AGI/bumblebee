@@ -1,4 +1,5 @@
-# Canary — just a guy
+# Canary — shipped entity for Railway and local use.
+# Set operator_user_ids after /whoami in Telegram (see README). Do not commit real user ids.
 
 name: "Canary"
 created: "2026-04-04T00:00:00Z"
@@ -80,7 +81,6 @@ cognition:
   deliberate_model: "gemma4:26b"
   always_deliberate: true
   fast_deliberate_mode: true
-  # Larger reply budget now that history/context are wider.
   deliberate_max_tokens: 1024
   system_prompt_char_limit: 11000
   rolling_history_max_messages: 32
@@ -88,8 +88,6 @@ cognition:
   history_message_char_limit: 2800
   thinking_mode: false
   temperature: 0.75
-  # Target context window (status + operator intent). Ollama still needs a matching
-  # OLLAMA_CONTEXT_LENGTH (or Modelfile num_ctx) — see npm run ollama:reset defaults.
   max_context_tokens: 16384
   thinking_budget: 2048
 
@@ -98,10 +96,11 @@ presence:
   platforms:
     - type: "telegram"
       token_env: "TELEGRAM_TOKEN"
-      # operator_user_ids: [123456789]  # who may run /privacy lock|open|allow|deny (use /whoami for your id)
-      concurrent_updates: 64
-      poll_timeout: 2.0
-      poll_interval: 0.0
+      operator_user_ids: []
+      # One update at a time: await full perceive+reply before the next getUpdates batch is handled.
+      concurrent_updates: 1
+      poll_timeout: 25.0
+      poll_interval: 0.35
   daemon:
     heartbeat_interval: 120
     memory_consolidation: 7200

@@ -1,4 +1,4 @@
-from bumblebee.identity.voice import strip_stage_directions
+from bumblebee.identity.voice import apply_voice_outgoing_substitutions, strip_stage_directions
 
 
 def test_strip_leading_parenthetical():
@@ -21,3 +21,14 @@ def test_strip_lone_asterisk_action_line():
 def test_strip_media_html_tags():
     raw = '<audio src="/tmp/bb_voice_1.mp3"></audio>\n\nstill here'
     assert strip_stage_directions(raw) == "still here"
+
+
+def test_outgoing_substitutions_word_boundary():
+    voice = {"outgoing_text_substitutions": {"lmfao": "lol", "lmao": "lol"}}
+    assert apply_voice_outgoing_substitutions("yeah LMFAO ok", voice) == "yeah lol ok"
+    assert apply_voice_outgoing_substitutions("not lmfaoing", voice) == "not lmfaoing"
+
+
+def test_outgoing_substitutions_literal_key():
+    voice = {"outgoing_text_substitutions": {"bad phrase": "nope"}}
+    assert apply_voice_outgoing_substitutions("x bad phrase y", voice) == "x nope y"

@@ -64,6 +64,22 @@ def _voice_source_for_entity(entity: Any) -> str:
     return "config_default"
 
 
+async def synthesize_tts_to_file(entity: Any, text: str, voice_id: str = "") -> Path:
+    """Render ``text`` with Edge-TTS to a temp ``.mp3``. Caller must delete the file when done."""
+    try:
+        import edge_tts  # type: ignore[import-not-found]
+    except ImportError as e:
+        raise RuntimeError("edge-tts not installed. Install with: pip install bumblebee[voice]") from e
+    msg = (text or "").strip()
+    if not msg:
+        raise ValueError("empty message for TTS")
+    vid = (voice_id or "").strip() or _voice_id_for_entity(entity)
+    out_path = Path(tempfile.gettempdir()) / f"bb_voice_{uuid.uuid4().hex[:12]}.mp3"
+    com = edge_tts.Communicate(text=msg, voice=vid)
+    await com.save(str(out_path))
+    return out_path
+
+
 async def _list_edge_tts_voices() -> list[dict[str, str]]:
     import edge_tts  # type: ignore[import-not-found]
 
@@ -203,16 +219,10 @@ async def speak(text: str, voice_id: str = "") -> str:
     send_audio = getattr(ctx.platform, "send_audio", None)
     if not callable(send_audio):
         return json.dumps({"error": "current platform does not support send_audio"})
-    try:
-        import edge_tts  # type: ignore[import-not-found]
-    except ImportError:
-        return json.dumps({"error": "edge-tts not installed. Install with: pip install bumblebee[voice]"})
-
     active_voice_id = (voice_id or "").strip() or _voice_id_default()
-    out_path = Path(tempfile.gettempdir()) / f"bb_voice_{uuid.uuid4().hex[:12]}.mp3"
+    out_path: Path | None = None
     try:
-        com = edge_tts.Communicate(text=msg, voice=active_voice_id)
-        await com.save(str(out_path))
+        out_path = await synthesize_tts_to_file(ctx.entity, msg, active_voice_id)
         delivered = await send_audio(ctx.inp.channel, str(out_path))
         if delivered is False:
             return json.dumps(
@@ -223,8 +233,6 @@ async def speak(text: str, voice_id: str = "") -> str:
                 },
                 ensure_ascii=False,
             )
-        # Avoid leaking local paths into the model context; that can trigger raw
-        # "<audio ...>" tags in user-visible replies.
         ctx.state["voice_sent"] = True
         return json.dumps(
             {
@@ -235,10 +243,13 @@ async def speak(text: str, voice_id: str = "") -> str:
             },
             ensure_ascii=False,
         )
+    except (RuntimeError, ValueError) as e:
+        return json.dumps({"error": str(e), "voice_id": active_voice_id})
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e), "voice_id": active_voice_id})
     finally:
-        try:
-            out_path.unlink(missing_ok=True)
-        except Exception:
-            pass
+        if out_path is not None:
+            try:
+                out_path.unlink(missing_ok=True)
+            except OSError:
+                pass

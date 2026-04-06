@@ -1,4 +1,4 @@
-"""CLI entry: setup, create, run, talk, status, evolve, recall, export, import, gateway (on/off/status/restart/setup)."""
+"""CLI entry: setup, create, run, stop, talk, worker, api, status, evolve, knowledge, journal, recall, wipe, export, import, gateway (on/off/status/restart/setup)."""
 
 from __future__ import annotations
 
@@ -29,7 +29,10 @@ from bumblebee.presence.platforms.discord_platform import DiscordPlatform, token
 from bumblebee.presence.platforms.telegram_platform import TelegramPlatform
 from bumblebee.utils.log import setup_logging
 from bumblebee.utils.ollama_bootstrap import bootstrap_stack, shutdown_spawned_ollama
-from bumblebee.utils.gateway_script import run_gateway_script as _run_gateway_script_subprocess
+from bumblebee.utils.gateway_script import (
+    gateway_script_available,
+    run_gateway_script as _run_gateway_script_subprocess,
+)
 from bumblebee.utils.repo_dotenv import load_repo_dotenv
 
 
@@ -395,6 +398,77 @@ def cmd_run(entity_name: str, with_ollama: bool, pull_models: bool) -> None:
         shutdown_spawned_ollama()
 
 
+@cli.command("stop")
+@click.option(
+    "--skip-gateway",
+    is_flag=True,
+    help="Do not run scripts/gateway.ps1 off (Windows home stack: cloudflared + gateway + Ollama).",
+)
+@click.option("--tunnel-name", default="bumblebee-inference", show_default=True)
+@click.option(
+    "--leave-ollama-running",
+    is_flag=True,
+    help="Do not terminate Ollama OS processes; forward to gateway.ps1 off when applicable.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="List processes that would be stopped; do not kill or run gateway off.",
+)
+def cmd_stop(
+    skip_gateway: bool,
+    tunnel_name: str,
+    leave_ollama_running: bool,
+    dry_run: bool,
+) -> None:
+    """Stop local Bumblebee processes, optional Windows gateway stack, and all Ollama OS processes."""
+    from bumblebee.utils.stack_stop import stop_all_ollama_processes, stop_local_bumblebee_processes
+
+    stop_local_bumblebee_processes(dry_run=dry_run, log=click.echo)
+    if dry_run:
+        if skip_gateway:
+            click.echo("Dry run: would skip gateway off (--skip-gateway).")
+        elif gateway_script_available():
+            click.echo(
+                f"Dry run: would run gateway off (tunnel={tunnel_name!r}"
+                f"{', leave Ollama running (script only)' if leave_ollama_running else ''})."
+            )
+        else:
+            click.echo("Dry run: gateway.ps1 not available — would skip gateway off.")
+        if leave_ollama_running:
+            click.echo("Dry run: would leave Ollama OS processes running (--leave-ollama-running).")
+        else:
+            stop_all_ollama_processes(dry_run=True, log=click.echo)
+        return
+
+    if not skip_gateway and gateway_script_available():
+        args = ["-TunnelName", tunnel_name]
+        if leave_ollama_running:
+            args.append("-LeaveOllamaRunning")
+        rc = _run_gateway_script_subprocess("off", args)
+        if rc != 0:
+            click.echo(
+                f"gateway off exited with code {rc} (nothing running or script reported an error).",
+                err=True,
+            )
+        else:
+            click.echo("Home gateway stack stopped (gateway.ps1 off).")
+    elif not skip_gateway:
+        click.echo(
+            "Gateway script not available (Windows + scripts/gateway.ps1 only). "
+            "Skipping gateway off; stopping Bumblebee + Ollama processes only.",
+            err=True,
+        )
+
+    if skip_gateway:
+        click.echo("Left gateway script untouched (--skip-gateway).")
+
+    if leave_ollama_running:
+        click.echo("Left Ollama running (--leave-ollama-running).")
+    else:
+        stop_all_ollama_processes(dry_run=False, log=click.echo)
+
+
 async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
     harness = load_harness_config()
     ec = load_entity_config(entity_name, harness)
@@ -460,21 +534,21 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
             op_users: set[int] | None = None
             if isinstance(raw_ops, list) and len(raw_ops) > 0:
                 op_users = {int(x) for x in raw_ops}
-            raw_cu = pl.get("concurrent_updates", 64)
+            raw_cu = pl.get("concurrent_updates", 1)
             try:
                 tg_concurrent_updates = max(1, min(256, int(raw_cu)))
             except (TypeError, ValueError):
-                tg_concurrent_updates = 64
-            raw_pt = pl.get("poll_timeout", 5.0)
+                tg_concurrent_updates = 1
+            raw_pt = pl.get("poll_timeout", 20.0)
             try:
                 tg_poll_timeout = max(1.0, min(30.0, float(raw_pt)))
             except (TypeError, ValueError):
-                tg_poll_timeout = 5.0
-            raw_pi = pl.get("poll_interval", 0.0)
+                tg_poll_timeout = 20.0
+            raw_pi = pl.get("poll_interval", 0.35)
             try:
                 tg_poll_interval = max(0.0, min(2.0, float(raw_pi)))
             except (TypeError, ValueError):
-                tg_poll_interval = 0.0
+                tg_poll_interval = 0.35
             telegram_p = TelegramPlatform(
                 tok,
                 entity=ent,
