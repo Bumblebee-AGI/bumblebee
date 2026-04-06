@@ -10,8 +10,9 @@
 # Railway / Docker: the Dockerfile copies this file to configs/entities/canary.yaml during
 # the image build so BUMBLEBEE_ENTITY=canary works without committing per-machine YAML.
 #
-# Operator-only Telegram commands (/privacy): set operator_user_ids in THIS example file
-# (or your deployed copy path), commit, and redeploy — not in a laptop-only canary.yaml.
+# Operator-only Telegram commands (/privacy):
+# • Put ids here and commit, OR
+# • Set BUMBLEBEE_TELEGRAM_OPERATOR_IDS on Railway (comma-separated) — local canary.yaml is NOT in the image.
 
 name: "Canary"
 created: "2026-04-04T00:00:00Z"

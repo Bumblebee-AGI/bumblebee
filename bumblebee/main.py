@@ -26,7 +26,7 @@ from bumblebee.health import check_inference
 from bumblebee.presence.daemon import PresenceDaemon
 from bumblebee.presence.platforms.cli import CLIPlatform
 from bumblebee.presence.platforms.discord_platform import DiscordPlatform, token_from_config
-from bumblebee.presence.platforms.telegram_platform import TelegramPlatform
+from bumblebee.presence.platforms.telegram_platform import TelegramPlatform, merge_telegram_operator_user_ids
 from bumblebee.utils.log import setup_logging
 from bumblebee.utils.ollama_bootstrap import bootstrap_stack, shutdown_spawned_ollama
 from bumblebee.utils.gateway_script import (
@@ -530,10 +530,7 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
             allow_chats: set[int] | None = None
             if isinstance(raw_chats, list) and len(raw_chats) > 0:
                 allow_chats = {int(x) for x in raw_chats}
-            raw_ops = pl.get("operator_user_ids")
-            op_users: set[int] | None = None
-            if isinstance(raw_ops, list) and len(raw_ops) > 0:
-                op_users = {int(x) for x in raw_ops}
+            op_users = merge_telegram_operator_user_ids(pl.get("operator_user_ids"))
             raw_cu = pl.get("concurrent_updates", 1)
             try:
                 tg_concurrent_updates = max(1, min(256, int(raw_cu)))

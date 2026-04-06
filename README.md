@@ -190,7 +190,7 @@ npm run deploy:canary   # deploy bumblebee-worker + bumblebee-api to Railway
 npm run ollama:reset    # full local Ollama cleanup + safe restart checks
 ```
 
-**Railway / Docker:** The worker loads **`configs/entities/<BUMBLEBEE_ENTITY>.yaml` from the image**. **`canary.yaml` is not committed**: the **Dockerfile** copies **`configs/entities/canary.example.yaml` → `canary.yaml`** during the build, so **`BUMBLEBEE_ENTITY=canary`** keeps working. Set **`operator_user_ids`** (from Telegram **`/whoami`**) in **`canary.example.yaml`**, commit, and redeploy for production; laptop-only **`configs/entities/canary.yaml`** is listed in **`.dockerignore`** / **`.railwayignore`** so it does not override the image. Other entity files (e.g. **`mybot.yaml`**) can stay tracked if you add them and set **`BUMBLEBEE_ENTITY`** accordingly.
+**Railway / Docker:** The worker loads **`configs/entities/<BUMBLEBEE_ENTITY>.yaml` from the image**. **`canary.yaml` is not committed**: the **Dockerfile** copies **`configs/entities/canary.example.yaml` → `canary.yaml`** during the build, so **`BUMBLEBEE_ENTITY=canary`** keeps working. Laptop-only **`configs/entities/canary.yaml`** is **`.dockerignore`** / **`.railwayignore`** — it never reaches the container, so **`operator_user_ids`** you set only there do **not** apply on Railway. For operators/privacy on the cloud worker, either set **`operator_user_ids`** in **`canary.example.yaml`** and commit, or set **`BUMBLEBEE_TELEGRAM_OPERATOR_IDS`** (comma-separated Telegram user ids) on the **bumblebee-worker** service in Railway (see **`.env.example`**). Other entity files (e.g. **`mybot.yaml`**) can stay tracked if you add them and set **`BUMBLEBEE_ENTITY`** accordingly.
 
 List all available npm scripts anytime:
 
@@ -255,7 +255,7 @@ presence:
       # operator_user_ids: [123456789]
 ```
 
-**Privacy from Telegram (operators):** set **`operator_user_ids`** to a non-empty list of numeric Telegram user ids (use **`/whoami`** in chat to read yours). Operators can use **`/private on`** (or **`/privacy lock`**) so only those operators can use the bot until they **`/privacy allow`** with a numeric id for guests, or **`/private off`** / **`/privacy open`** to go public again. The allowlist is stored in the entity database (`entity_state`) and survives restarts. While the DB lock is on, static **`allowed_user_ids`** in YAML is ignored; after **`/private off`**, YAML allowlists apply again if set.
+**Privacy from Telegram (operators):** set **`operator_user_ids`** in entity YAML and/or **`BUMBLEBEE_TELEGRAM_OPERATOR_IDS`** on the process (comma-separated ids; ideal for Railway when **`canary.yaml` is not in the image). Values are **merged**. Use **`/whoami`** in chat to read your id. Operators can use **`/private on`** (or **`/privacy lock`**) so only those operators can use the bot until they **`/privacy allow`** with a numeric id for guests, or **`/private off`** / **`/privacy open`** to go public again. The allowlist is stored in the entity database (`entity_state`) and survives restarts. While the DB lock is on, static **`allowed_user_ids`** in YAML is ignored; after **`/private off`**, YAML allowlists apply again if set.
 
 4. **Optional — inline mode:** In BotFather run `/setinline` for the bot and pick a placeholder. Then in any chat you can type `@YourBot …` and get quick “about” cards (same identity story as `/start`).
 

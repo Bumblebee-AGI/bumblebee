@@ -613,8 +613,9 @@ def format_whoami_html(*, user_id: int, full_name: str, username: str | None) ->
         f"<code>{uid}</code>\n\n"
         f"<b>Name</b> {fn}\n"
         f"<b>Username</b> {un}\n\n"
-        "Share the id with the host if they need to list you under "
-        "<code>operator_user_ids</code> or use <code>/privacy allow</code>."
+        "Share the id with the host: they can set <code>operator_user_ids</code> in entity YAML, "
+        "set <code>BUMBLEBEE_TELEGRAM_OPERATOR_IDS</code> on the worker (Railway), "
+        "or use <code>/privacy allow</code> once operators exist."
     )
 
 
@@ -623,7 +624,8 @@ def format_privacy_help_html() -> str:
         "<b>Privacy</b>\n\n"
         "<b>Read</b>\n"
         "• <code>/privacy</code> or <code>/privacy status</code>\n\n"
-        "<b>Operators only</b> (see entity YAML <code>operator_user_ids</code>)\n"
+        "<b>Operators only</b> (YAML <code>operator_user_ids</code> and/or "
+        "<code>BUMBLEBEE_TELEGRAM_OPERATOR_IDS</code>)\n"
         "• <code>/private on</code> / <code>/private off</code> — quick close or open the bot\n"
         "• <code>/privacy lock</code> — same as <code>/private on</code>\n"
         "• <code>/privacy allow &lt;id&gt;</code> — add a user id\n"
@@ -646,14 +648,19 @@ def format_private_usage_html() -> str:
 def format_privacy_operator_required_html() -> str:
     return (
         "Only configured <b>operators</b> can change privacy.\n"
-        "The host must set <code>operator_user_ids: [ … ]</code> on the Telegram platform in your entity YAML."
+        "The host must set operators: <code>operator_user_ids</code> in entity YAML and/or "
+        "<code>BUMBLEBEE_TELEGRAM_OPERATOR_IDS</code> (comma-separated ids) on the worker."
     )
 
 
 def format_privacy_no_operators_html() -> str:
     return (
-        "Telegram privacy commands are disabled until the host sets "
-        "<code>operator_user_ids</code> (non-empty list of Telegram user ids) in the entity YAML.\n\n"
+        "Telegram privacy commands are disabled until the host sets operators:\n"
+        "• <code>operator_user_ids: [ … ]</code> in entity YAML (committed <code>canary.example.yaml</code> "
+        "for Railway builds), <b>or</b>\n"
+        "• <code>BUMBLEBEE_TELEGRAM_OPERATOR_IDS</code> on the worker (comma-separated ids — "
+        "best for Railway without committing your id).\n\n"
+        "Local-only <code>canary.yaml</code> is not copied into Docker/Railway images.\n\n"
         "Use <code>/whoami</code> to read your id."
     )
 

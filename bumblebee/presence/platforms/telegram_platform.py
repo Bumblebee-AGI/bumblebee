@@ -63,6 +63,34 @@ log = structlog.get_logger("bumblebee.presence.telegram")
 _UPDATE_DEDUP_CAP = 8192
 
 
+def merge_telegram_operator_user_ids(yaml_ids: object) -> set[int] | None:
+    """
+    Union of entity YAML ``operator_user_ids`` and env ``BUMBLEBEE_TELEGRAM_OPERATOR_IDS``
+    (comma-separated Telegram user ids). Railway/Docker builds often ship YAML with ``[]``;
+    set the env on the worker service without committing ids to git.
+    """
+    from_yaml: set[int] = set()
+    if isinstance(yaml_ids, list) and len(yaml_ids) > 0:
+        for x in yaml_ids:
+            try:
+                from_yaml.add(int(x))
+            except (TypeError, ValueError):
+                pass
+    raw_env = (os.environ.get("BUMBLEBEE_TELEGRAM_OPERATOR_IDS") or "").strip()
+    from_env: set[int] = set()
+    if raw_env:
+        for part in raw_env.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                from_env.add(int(part))
+            except ValueError:
+                pass
+    out = from_yaml | from_env
+    return out if out else None
+
+
 def _telegram_display_name(user: Any) -> str:
     """Disambiguate members in groups: full name + @username when available."""
     if user is None:
