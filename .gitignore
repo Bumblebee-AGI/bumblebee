@@ -29,8 +29,6 @@ htmlcov/
 venv/
 ENV/
 
-# Local harness overrides (operator-specific; not committed)
-configs/default.yaml
 # Local Canary overlay — copy from configs/entities/canary.example.yaml (see README). Docker copies example → canary in the image.
 configs/entities/canary.yaml
 
