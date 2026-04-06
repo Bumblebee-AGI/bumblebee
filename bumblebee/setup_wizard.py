@@ -70,6 +70,8 @@ def _list_entity_names() -> list[str]:
     for p in sorted(ent_dir.glob("*.yaml")):
         if p.name.startswith("."):
             continue
+        if p.name.endswith(".example.yaml"):
+            continue
         names.append(p.stem)
     return names
 

@@ -1,5 +1,17 @@
-# Canary — shipped entity for Railway and local use.
-# Set operator_user_ids after /whoami in Telegram (see README). Do not commit real user ids.
+# Canonical Canary entity — snapshot shipped in-repo. Edit THIS file when you want to change
+# the default Canary personality/platforms for everyone and for Docker/Railway builds.
+#
+# Local development (avoid git conflicts):
+#   cp configs/entities/canary.example.yaml configs/entities/canary.yaml
+# Then edit configs/entities/canary.yaml (gitignored). Use any entity name you like:
+#   cp configs/entities/canary.example.yaml configs/entities/yamashi.yaml
+#   bumblebee run yamashi
+#
+# Railway / Docker: the Dockerfile copies this file to configs/entities/canary.yaml during
+# the image build so BUMBLEBEE_ENTITY=canary works without committing per-machine YAML.
+#
+# Operator-only Telegram commands (/privacy): set operator_user_ids in THIS example file
+# (or your deployed copy path), commit, and redeploy — not in a laptop-only canary.yaml.
 
 name: "Canary"
 created: "2026-04-04T00:00:00Z"

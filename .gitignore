@@ -31,7 +31,8 @@ ENV/
 
 # Local harness overrides (operator-specific; not committed)
 configs/default.yaml
-# Entity YAML under configs/entities/ must be committed for Docker/Railway — the image is built from git only.
+# Local Canary overlay — copy from configs/entities/canary.example.yaml (see README). Docker copies example → canary in the image.
+configs/entities/canary.yaml
 
 # Local databases / entity state
 *.db

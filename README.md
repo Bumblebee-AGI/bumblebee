@@ -63,7 +63,17 @@ uv sync
 # or: pip install -e ".[dev]"
 ```
 
-Harness defaults live only in `configs/default.yaml` (not the repo root). Entity definitions go in `configs/entities/<name>.yaml` (see `canary` and `example`). **`models.reflex`** and **`models.deliberate`** default to **`gemma4:26b`** (reflex uses a smaller max token budget but the same weights). **`models.embedding`** is **`nomic-embed-text`** for vector recall (not a chat model).
+Harness defaults live only in `configs/default.yaml` (not the repo root). Entity definitions go in `configs/entities/<name>.yaml`. The canonical **Canary** snapshot is **`configs/entities/canary.example.yaml`**; copy it to a **local** `configs/entities/canary.yaml` (gitignored) or another name for day-to-day edits so `git pull` does not fight your YAML. See **`configs/entities/example.yaml`** for a shorter generic template. **`models.reflex`** and **`models.deliberate`** default to **`gemma4:26b`** (reflex uses a smaller max token budget but the same weights). **`models.embedding`** is **`nomic-embed-text`** for vector recall (not a chat model).
+
+After cloning, create a local Canary file once (then edit `canary.yaml` freely; it will not be committed):
+
+```bash
+cp configs/entities/canary.example.yaml configs/entities/canary.yaml
+```
+
+```powershell
+Copy-Item configs/entities/canary.example.yaml configs/entities/canary.yaml
+```
 
 ## Setup wizard
 
@@ -180,7 +190,7 @@ npm run deploy:canary   # deploy bumblebee-worker + bumblebee-api to Railway
 npm run ollama:reset    # full local Ollama cleanup + safe restart checks
 ```
 
-**Railway / Docker:** The worker loads **`configs/entities/<BUMBLEBEE_ENTITY>.yaml` from the image**. Builds use **git**, so that file must be **tracked and committed**. A gitignored or laptop-only entity file never reaches the container and you get `Entity file not found`. Edit the committed **`canary.yaml`** (for example set **`operator_user_ids`** from **`/whoami`**) on a deploy branch, or use a private fork; with **`operator_user_ids: []`**, operator-only **`/privacy`** commands stay disabled until you add ids and redeploy.
+**Railway / Docker:** The worker loads **`configs/entities/<BUMBLEBEE_ENTITY>.yaml` from the image**. **`canary.yaml` is not committed**: the **Dockerfile** copies **`configs/entities/canary.example.yaml` → `canary.yaml`** during the build, so **`BUMBLEBEE_ENTITY=canary`** keeps working. Set **`operator_user_ids`** (from Telegram **`/whoami`**) in **`canary.example.yaml`**, commit, and redeploy for production; laptop-only **`configs/entities/canary.yaml`** is listed in **`.dockerignore`** / **`.railwayignore`** so it does not override the image. Other entity files (e.g. **`mybot.yaml`**) can stay tracked if you add them and set **`BUMBLEBEE_ENTITY`** accordingly.
 
 List all available npm scripts anytime:
 
