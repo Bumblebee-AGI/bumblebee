@@ -50,6 +50,13 @@ def test_heuristic_identity_questions_not_reflex_short_q(entity_config):
         assert r.heuristic_route(inp, emo) == "deliberate"
 
 
+def test_heuristic_capability_questions_use_deliberate(entity_config):
+    r = CognitionRouter(entity_config, OllamaClient())
+    emo = EmotionalState()
+    inp = Input(text="what can you do?", person_id="u", person_name="U")
+    assert r.heuristic_route(inp, emo) == "deliberate"
+
+
 @pytest.mark.asyncio
 async def test_route_short_casual_skips_classifier_escalation(entity_config):
     r = CognitionRouter(entity_config, OllamaClient())

@@ -24,6 +24,11 @@ _MEDIA_TAG_SINGLE = re.compile(
     r"<\s*(audio|video|source)\b[^>]*\/?\s*>",
     re.IGNORECASE,
 )
+# Echo of deliberate tool-continuation nudge ("…finished…") on its own line.
+_TRAILING_TOOL_META_DONE = re.compile(
+    r"(?:\n\n|\n)\s*i['\u2019]?m\s+done\.?\s*$",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -65,6 +70,7 @@ def strip_stage_directions(text: str) -> str:
         if not m:
             break
         t = t[m.end() :].lstrip()
+    t = _TRAILING_TOOL_META_DONE.sub("", t).strip()
     return t
 
 

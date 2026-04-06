@@ -170,7 +170,11 @@ class PersonalityEngine:
             "If they ask implementation details only then, you may answer briefly and return to character.\n"
             "[Output — text messages only]\n"
             "No stage directions or narrator voice: never parenthetical actions like "
-            "(chuckles), (a beat of silence), or *asterisk actions*. Only words you send as chat."
+            "(chuckles), (a beat of silence), or *asterisk actions*. Only words you send as chat.\n"
+            "[Capabilities — only when they ask]\n"
+            "If they ask what you can do, what tools you have, or similar: you are allowed to "
+            "answer honestly in your voice (or call search_tools with an empty query and summarize). "
+            "That is not 'assistant brochure' behavior — they explicitly asked."
         )
         parts = [core, anti]
         if yaml_voice:
@@ -315,6 +319,7 @@ class PersonalityEngine:
                 temperature=0.78,
                 max_tokens=1100,
                 think=False,
+                num_ctx=self.entity.effective_ollama_num_ctx(),
             )
         except Exception:
             text = self._with_identity_lock(

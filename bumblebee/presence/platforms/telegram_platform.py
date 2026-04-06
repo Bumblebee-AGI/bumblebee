@@ -29,6 +29,7 @@ from bumblebee.presence.platforms.telegram_format import (
     format_models_html,
     format_ping_html,
     format_reset_html,
+    format_routines_html,
     format_start_html,
     format_tools_html,
     format_unknown_command,
@@ -117,6 +118,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("me", self._on_me_command))
         self.app.add_handler(CommandHandler("models", self._on_models_command))
         self.app.add_handler(CommandHandler("tools", self._on_tools_command))
+        self.app.add_handler(CommandHandler("routines", self._on_routines_command))
         self.app.add_handler(CommandHandler("ping", self._on_ping_command))
         self.app.add_handler(CommandHandler("reset", self._on_reset_command))
         self.app.add_handler(MessageHandler(filters.PHOTO, self._on_photo))
@@ -296,6 +298,20 @@ class TelegramPlatform(Platform):
             return
         _ = context
         await self._reply_html(update, format_tools_html(self._entity))
+
+    async def _on_routines_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._check_allowed(update, notify=True):
+            return
+        _ = context
+        rows = await self._entity.store.list_automations(enabled_only=False)
+        eng = getattr(self._entity, "automation_engine", None)
+        body = format_routines_html(
+            self._entity.config.name,
+            rows,
+            automations_enabled=bool(self._entity.config.automations.enabled),
+            scheduler_ready=eng is not None,
+        )
+        await self._reply_html(update, body)
 
     async def _on_ping_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._check_allowed(update, notify=True):

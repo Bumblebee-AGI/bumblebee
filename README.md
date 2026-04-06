@@ -449,6 +449,8 @@ mcp_servers:
 
 See **`configs/entities/example.yaml`** for a commented template. Anything that speaks MCP can extend the entity’s reach without forking the core harness.
 
+**Zapier MCP (hosted tools):** Zapier exposes MCP over **Streamable HTTP** with a URL and Bearer secret from the Connect tab, while Bumblebee only spawns **stdio** servers today. You can still attach Zapier by running a local **stdio → Streamable HTTP** proxy (documented with example config), or plan a native remote client—see **[`docs/mcp-zapier.md`](docs/mcp-zapier.md)** for both approaches.
+
 **Optional extras**
 
 - **Voice:** `pip install 'bumblebee[voice]'` (Edge-TTS for `speak` / voice listing tools).
@@ -582,6 +584,6 @@ Everything else — platforms, tools, memory layers, hybrid deployment — exist
 Apache 2.0
 
 <p align="center">
-  <strong>◈</strong><br/>
+  <strong>🐝</strong><br/>
   <sub>Apache 2.0 — built with Gemma by Google DeepMind</sub>
 </p>

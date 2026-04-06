@@ -3,16 +3,51 @@
 from __future__ import annotations
 
 import json
+import re
 
 from bumblebee.presence.automations.engine import build_automation_from_tool_args
 from bumblebee.presence.automations.models import AutomationOrigin
 from bumblebee.presence.automations.schedule import ScheduleParseError, parse_schedule
 from bumblebee.presence.tools.registry import tool
-from bumblebee.presence.tools.runtime import require_tool_runtime
+from bumblebee.presence.tools.runtime import ToolRuntimeContext, require_tool_runtime
 
 
 def _engine(ent: object):
     return getattr(ent, "automation_engine", None)
+
+
+def _default_deliver_from_ctx(ctx: ToolRuntimeContext) -> str:
+    """If the user is on Telegram or Discord, default delivery to this chat."""
+    inp = ctx.inp
+    if inp is None:
+        return ""
+    p = (inp.platform or "").strip().lower()
+    ch = (inp.channel or "").strip()
+    if p in ("telegram", "discord") and ch:
+        return f"{p}:{ch}"
+    return ""
+
+
+_BARE_ID = re.compile(r"^-?\d+$")
+
+
+def _qualify_deliver_to_if_bare_id(raw: str, ctx: ToolRuntimeContext) -> str:
+    """
+    If deliver_to is a bare numeric id (e.g. Telegram chat id, including -100… groups),
+    prefix with the current platform when the turn is Telegram or Discord.
+    """
+    s = (raw or "").strip()
+    if not s or ":" in s:
+        return s
+    if not _BARE_ID.fullmatch(s):
+        return s
+    inp = ctx.inp
+    if inp is None:
+        return s
+    p = (inp.platform or "").strip().lower()
+    if p in ("telegram", "discord"):
+        return f"{p}:{s}"
+    return s
 
 
 @tool(
@@ -20,7 +55,10 @@ def _engine(ent: object):
     description=(
         "Create a new scheduled routine for yourself. Use when something should happen regularly — "
         "checking news, reaching out, monitoring a topic, reflecting. You may create routines on your "
-        "own when your drives motivate you."
+        "own when your drives motivate you. For routines that should message the user on Telegram or "
+        "Discord, set deliver_to to telegram:<chat_id> or discord:<channel_id>, pass only the numeric "
+        "id while in that platform's chat to target that id, or leave deliver_to empty to use the "
+        "current chat."
     ),
 )
 async def create_automation(
@@ -38,12 +76,17 @@ async def create_automation(
     if not cfg.enabled or not ent._tool_enabled("automations", True):
         return json.dumps({"ok": False, "error": "automations disabled"})
     eng = _engine(ent)
+    eff_deliver = (deliver_to or "").strip()
+    if not eff_deliver:
+        eff_deliver = _default_deliver_from_ctx(ctx)
+    else:
+        eff_deliver = _qualify_deliver_to_if_bare_id(eff_deliver, ctx)
     try:
         auto = build_automation_from_tool_args(
             name=name,
             description=description,
             schedule=schedule,
-            deliver_to=deliver_to,
+            deliver_to=eff_deliver,
             priority=priority,
             context=context,
             self_destruct_condition=self_destruct_condition,
@@ -59,13 +102,22 @@ async def create_automation(
                 {
                     "ok": True,
                     "id": auto.id,
-                    "cron": cron,
+                    "cron": auto.cron_expression,
+                    "deliver_to": auto.deliver_to,
                     "note": "saved; scheduler will pick it up when the daemon runs",
                 },
                 ensure_ascii=False,
             )
         await eng.create(auto)
-        return json.dumps({"ok": True, "id": auto.id, "cron": cron}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "id": auto.id,
+                "cron": auto.cron_expression,
+                "deliver_to": auto.deliver_to,
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)})
 
@@ -98,7 +150,8 @@ async def list_automations() -> str:
 @tool(
     name="edit_automation",
     description="Modify a routine — field one of: name, description, schedule_natural, cron_expression, "
-    "deliver_to, priority, context, self_destruct_condition, tools_hint (JSON array string).",
+    "deliver_to, priority, context, self_destruct_condition, tools_hint (JSON array string). "
+    "For deliver_to, use telegram:<id>, discord:<id>, or a bare numeric id while in that platform's chat.",
 )
 async def edit_automation(automation_id: str, field: str, value: str) -> str:
     ctx = require_tool_runtime()
@@ -127,7 +180,11 @@ async def edit_automation(automation_id: str, field: str, value: str) -> str:
     if f == "deliver_to":
         from bumblebee.presence.automations.engine import _parse_deliver_to
 
-        plat, tgt = _parse_deliver_to(value.strip() or None)
+        resolved = (value or "").strip()
+        if resolved:
+            resolved = _qualify_deliver_to_if_bare_id(resolved, ctx)
+        kwargs["deliver_to"] = resolved
+        plat, tgt = _parse_deliver_to(resolved or None)
         kwargs["deliver_platform"] = plat
     if f == "tools_hint":
         try:

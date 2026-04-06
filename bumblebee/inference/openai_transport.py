@@ -113,7 +113,7 @@ class OpenAICompatibleTransport:
             missing.append(n)
         return (len(missing) == 0, missing)
 
-    async def chat_completion(
+    def _build_chat_completions_payload(
         self,
         model: str,
         messages: list[dict[str, Any]],
@@ -123,7 +123,8 @@ class OpenAICompatibleTransport:
         max_tokens: int = 1024,
         think: bool = False,
         stream: bool = False,
-    ) -> ChatCompletionResult | AsyncIterator[str]:
+        num_ctx: Optional[int] = None,
+    ) -> dict[str, Any]:
         sys_parts: list[str] = []
         rest: list[dict[str, Any]] = []
         for m in messages:
@@ -152,6 +153,32 @@ class OpenAICompatibleTransport:
         }
         if tools:
             payload["tools"] = tools
+        if num_ctx is not None and int(num_ctx) > 0:
+            payload["options"] = {"num_ctx": int(num_ctx)}
+        return payload
+
+    async def chat_completion(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: Optional[list[dict[str, Any]]] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+        think: bool = False,
+        stream: bool = False,
+        num_ctx: Optional[int] = None,
+    ) -> ChatCompletionResult | AsyncIterator[str]:
+        payload = self._build_chat_completions_payload(
+            model,
+            messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            think=think,
+            stream=stream,
+            num_ctx=num_ctx,
+        )
 
         if stream:
             return self._chat_stream(payload)

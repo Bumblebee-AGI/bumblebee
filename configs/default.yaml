@@ -11,6 +11,8 @@ inference:
   api_key_env: BUMBLEBEE_INFERENCE_GATEWAY_TOKEN
   model: ""
   timeout: 120
+  # Ollama OpenAI /v1/chat/completions: send options.num_ctx from entity cognition.max_context_tokens
+  pass_num_ctx: true
 
 attachments:
   backend: local_disk # local_disk | object_s3_compat

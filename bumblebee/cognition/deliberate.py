@@ -14,8 +14,35 @@ from bumblebee.cognition import gemma
 from bumblebee.models import Input
 from bumblebee.inference.protocol import InferenceProvider
 from bumblebee.inference.types import ChatCompletionResult, ToolCallSpec
+from bumblebee.presence.tools.registry import (
+    TOOL_SYSTEM_PROMPT_PREFIX,
+    TOOL_SYSTEM_PROMPT_PREFIX_COMPACT,
+)
 
 log = structlog.get_logger("bumblebee.cognition.deliberate")
+
+
+def fit_system_prompt_to_budget(system_prompt: str, cap: int) -> str:
+    """
+    Apply ``cap`` without dropping the trailing tools appendix: the naive ``[:cap]`` cut
+    removes everything after the identity/knowledge prefix, so the model never sees tool cues.
+    """
+    s = system_prompt or ""
+    if len(s) <= cap:
+        return s
+    suffix_start = -1
+    for marker in (TOOL_SYSTEM_PROMPT_PREFIX, TOOL_SYSTEM_PROMPT_PREFIX_COMPACT):
+        idx = s.find(marker)
+        if idx != -1 and (suffix_start == -1 or idx < suffix_start):
+            suffix_start = idx
+    if suffix_start == -1:
+        return s[:cap]
+    suffix = s[suffix_start:]
+    if len(suffix) >= cap:
+        return s[:cap]
+    room = cap - len(suffix)
+    return s[:suffix_start][:room] + suffix
+
 
 # After tool results, if the model answers with text only but clearly still intends another tool
 # (or hit max_tokens before emitting tool calls), inject a user nudge and continue the loop.
@@ -25,7 +52,8 @@ _TOOL_CONTINUATION_USER = (
     "Continue in this same turn: if you still need to call a tool to finish what you started "
     "(retry after an error, install a missing dependency, run a shell command, etc.), "
     "invoke the tool now. Do not only say you will do it later. "
-    "If you are fully done with what the user asked, reply briefly with plain text only."
+    "Otherwise answer in plain text for the user—stay in character. "
+    "Do not add meta lines about being finished or the task completing."
 )
 
 
@@ -36,11 +64,15 @@ def _finish_reason_hits_limit(finish_reason: str | None) -> bool:
     return fr in ("length", "maxtokens", "maxlength")
 
 
-_INTENDS_FURTHER_TOOL = re.compile(
+# Tight phrases only: bare "try to" / "going to" / "i'll" match normal prose (e.g. "try to land")
+# and spuriously trigger continuation → models echo the nudge as "I'm done."
+_INTENTS_FURTHER_TOOL = re.compile(
     r"\b("
-    r"lemme\b|hang on|hold on|one sec|give me a sec|real quick|try to\b|trying to\b|"
-    r"gonna |going to |need to |i'?ll |i will |"
-    r"install|pip install|pip3 install|run_command|run command|"
+    r"lemme\b|hang on|hold on|one sec|give me a sec|real quick|"
+    r"(i'?ll|i will)\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch)\b|"
+    r"(gonna|going\s+to)\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch)\b|"
+    r"need\s+to\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch)\b|"
+    r"pip3?\s+install|run_command|run command|"
     r"fix that|sort that|sort this|be right back|brb|"
     r"let me (try|install|run|check|see|grab|get|do)\b"
     r")",
@@ -84,7 +116,7 @@ def should_inject_tool_continuation(msgs: list[dict[str, Any]], res: ChatComplet
         return True
     if not visible:
         return False
-    assistant_intends = bool(_INTENDS_FURTHER_TOOL.search(visible))
+    assistant_intends = bool(_INTENTS_FURTHER_TOOL.search(visible))
     if _finish_reason_hits_limit(res.finish_reason):
         return True
     return tool_suggests_retry or assistant_intends
@@ -116,7 +148,9 @@ class DeliberateCognition:
         messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         cap = max(2000, int(self.entity.cognition.system_prompt_char_limit or 12000))
-        msgs: list[dict[str, Any]] = [{"role": "system", "content": system_prompt[:cap]}]
+        msgs: list[dict[str, Any]] = [
+            {"role": "system", "content": fit_system_prompt_to_budget(system_prompt, cap)},
+        ]
         for m in messages:
             role = m.get("role", "user")
             content = m.get("content", "")
@@ -162,6 +196,7 @@ class DeliberateCognition:
         last: ChatCompletionResult | None = None
         continuation_remaining = MAX_TOOL_CONTINUATION_ROUNDS
 
+        num_ctx = self.entity.effective_ollama_num_ctx()
         for _ in range(8):
             res = await self.client.chat_completion(
                 self.entity.cognition.deliberate_model,
@@ -170,6 +205,7 @@ class DeliberateCognition:
                 temperature=h.temperature,
                 max_tokens=max_toks,
                 think=h.thinking_mode,
+                num_ctx=num_ctx,
             )
             last = res
             if res.thinking:

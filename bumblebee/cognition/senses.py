@@ -95,6 +95,7 @@ async def transcribe_audio_attachment(
     base64_audio: str,
     audio_format: str = "ogg",
     max_tokens: int = 512,
+    num_ctx: int | None = None,
 ) -> str:
     """
     Best-effort speech-to-text via the reflex-sized model with native audio, if the backend supports it.
@@ -120,6 +121,7 @@ async def transcribe_audio_attachment(
             temperature=0.2,
             max_tokens=max_tokens,
             think=False,
+            num_ctx=num_ctx,
         )
         if not isinstance(res, ChatCompletionResult):
             return ""

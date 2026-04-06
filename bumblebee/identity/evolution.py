@@ -95,6 +95,7 @@ class EvolutionEngine:
                 temperature=0.35,
                 max_tokens=700,
                 think=False,
+                num_ctx=self.entity.effective_ollama_num_ctx(),
             )
             text = (getattr(res, "content", None) or "").strip()
             start = text.find("{")

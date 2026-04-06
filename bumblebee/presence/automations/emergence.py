@@ -103,6 +103,7 @@ class AutomationEmergence:
                 temperature=0.55,
                 max_tokens=700,
                 think=False,
+                num_ctx=entity.config.effective_ollama_num_ctx(),
             )
             raw = (res.content or "").strip()
         except Exception:

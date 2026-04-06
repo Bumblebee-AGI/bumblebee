@@ -48,6 +48,25 @@ def _identity_or_self_question(low: str) -> bool:
     return any(p in low for p in phrases)
 
 
+def _capability_question(low: str) -> bool:
+    """Needs deliberate + tools; short phrasing was reflex-routed without tool context."""
+    phrases = (
+        "what can you do",
+        "what you can do",
+        "what do you do",
+        "what are you able",
+        "what can u do",
+        "what u can do",
+        "your capabilities",
+        "list your tools",
+        "what tools",
+        "do you have tools",
+        "can you search the web",
+        "can you browse",
+    )
+    return any(p in low for p in phrases)
+
+
 def _short_casual_vibe(low: str, char_len: int) -> bool:
     """Keep small talk on reflex; classifier often wrongly picks DELIBERATE for slang."""
     if char_len > 120:
@@ -100,7 +119,7 @@ class CognitionRouter:
             return "reflex"
         if low in ("hi", "hello", "hey", "thanks", "thank you", "ok", "okay", "bye"):
             return "reflex"
-        if _identity_or_self_question(low):
+        if _identity_or_self_question(low) or _capability_question(low):
             return "deliberate"
         if "?" in t and len(t) < 80 and emotional.intensity < 0.6:
             return "reflex"
@@ -147,6 +166,7 @@ class CognitionRouter:
                 temperature=0.2,
                 max_tokens=8,
                 think=False,
+                num_ctx=self.entity.effective_ollama_num_ctx(),
             )
             word = (res.content or "").strip().upper()
             if "DELIBERATE" in word:

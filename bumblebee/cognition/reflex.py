@@ -28,12 +28,14 @@ class ReflexCognition:
         msgs: list[dict] = [{"role": "system", "content": system_prompt[:6000]}]
         for m in recent_messages[-6:]:
             msgs.append(m)
+        num_ctx = self.entity.effective_ollama_num_ctx()
         res = await self.client.chat_completion(
             self.entity.cognition.reflex_model,
             msgs,
             temperature=min(0.9, h.temperature),
             max_tokens=h.reflex_max_tokens,
             think=False,
+            num_ctx=num_ctx,
         )
         mood = "neutral"
         low = (res.content or "").lower()
@@ -55,6 +57,7 @@ class ReflexCognition:
         msgs: list[dict] = [{"role": "system", "content": system_prompt[:6000]}]
         for m in recent_messages[-6:]:
             msgs.append(m)
+        num_ctx = self.entity.effective_ollama_num_ctx()
         gen = await self.client.chat_completion(
             self.entity.cognition.reflex_model,
             msgs,
@@ -62,6 +65,7 @@ class ReflexCognition:
             max_tokens=h.reflex_max_tokens,
             think=False,
             stream=True,
+            num_ctx=num_ctx,
         )
         buf = ""
         prev_visible = ""

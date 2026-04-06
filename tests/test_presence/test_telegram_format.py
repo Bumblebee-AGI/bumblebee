@@ -1,10 +1,23 @@
+from bumblebee.presence.automations.models import Automation, AutomationOrigin
 from bumblebee.presence.platforms.telegram_format import (
+    _relative_time,
     command_menu_items,
     format_commands_page,
+    format_routines_html,
     format_start_html,
     format_tools_html,
     split_telegram_chunks,
 )
+
+
+def test_relative_time_short_forms():
+    now = __import__("time").time()
+    assert _relative_time(None) == "—"
+    assert _relative_time(now - 30) == "just now"
+    assert _relative_time(now - 120).endswith("m ago")
+    assert _relative_time(now - 7200).endswith("h ago")
+    assert _relative_time(now - 3 * 86400).endswith("d ago")
+    assert _relative_time(now - 14 * 86400).endswith("w ago")
 
 
 def test_split_telegram_chunks_respects_limit():
@@ -36,7 +49,99 @@ def test_command_menu_items_are_short():
     assert items
     assert any(name == "start" for name, _ in items)
     assert any(name == "tools" for name, _ in items)
+    assert any(name == "routines" for name, _ in items)
     assert all(len(desc) <= 256 for _, desc in items)
+
+
+def test_routines_html_lists_automations():
+    a = Automation(
+        name="Morning check-in",
+        description="Brief scan",
+        schedule_natural="every day at 9am",
+        cron_expression="0 9 * * *",
+        origin=AutomationOrigin.SELF,
+        enabled=True,
+        run_count=2,
+        last_result_summary="done",
+        deliver_to="telegram:1",
+        last_run=__import__("time").time() - 7200,
+    )
+    out = format_routines_html(
+        "Bee",
+        [a],
+        automations_enabled=True,
+        scheduler_ready=True,
+    )
+    assert "Bee's Routines" in out
+    assert "1 active · 0 paused" in out
+    assert "Morning check-in" in out
+    assert "every day at 9am" in out
+    assert "→ Telegram" in out
+    assert "Ran 2 times" in out
+    assert "2h ago" in out
+    assert '"Brief scan"' in out
+    assert "0 9 * * *" not in out
+
+
+def test_routines_html_empty_and_notes():
+    out = format_routines_html(
+        "Bee",
+        [],
+        automations_enabled=False,
+        scheduler_ready=False,
+    )
+    assert "No routines yet" in out
+    assert "scheduling" in out and "disabled" in out
+    assert "daemon is running" in out
+
+
+def test_routines_html_internal_skips_description():
+    a = Automation(
+        name="Nightly reflection",
+        description="Write in journal",
+        schedule_natural="every night at 11pm",
+        cron_expression="0 23 * * *",
+        origin=AutomationOrigin.INTERNAL,
+        enabled=True,
+        run_count=1,
+        last_run=__import__("time").time() - 3600,
+    )
+    out = format_routines_html("Canary", [a], automations_enabled=True, scheduler_ready=True)
+    assert "📓" in out
+    assert "Internal" in out
+    assert "Write in journal" not in out
+
+
+def test_routines_html_sorts_active_before_paused():
+    newer = Automation(
+        name="A",
+        schedule_natural="daily",
+        origin=AutomationOrigin.USER,
+        enabled=True,
+        next_run=200.0,
+        run_count=0,
+    )
+    older = Automation(
+        name="B",
+        schedule_natural="daily",
+        origin=AutomationOrigin.USER,
+        enabled=True,
+        next_run=100.0,
+        run_count=0,
+    )
+    paused = Automation(
+        name="Z",
+        schedule_natural="daily",
+        origin=AutomationOrigin.USER,
+        enabled=False,
+        next_run=50.0,
+        run_count=0,
+    )
+    out = format_routines_html("E", [newer, older, paused], automations_enabled=True, scheduler_ready=True)
+    pos_b = out.find("<b>⏰  B</b>")
+    pos_a = out.find("<b>⏰  A</b>")
+    pos_z = out.find("<b>⏸  Z</b>")
+    assert pos_b < pos_a < pos_z
 
 
 def test_tools_html_lists_registered_tools():

@@ -109,6 +109,12 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         category="Runtime",
     ),
     TelegramCommandSpec(
+        name="routines",
+        summary="Saved scheduled routines (automations) and their status",
+        usage="/routines",
+        category="Runtime",
+    ),
+    TelegramCommandSpec(
         name="ping",
         summary="Quick liveness check",
         usage="/ping",
@@ -132,7 +138,7 @@ def format_start_html(entity_name: str, app_version: str, *, first_name: str | N
     en = html.escape(entity_name)
     who = html.escape((first_name or "there").strip() or "there")
     return (
-        f"◈ <b>{en}</b> · bumblebee v{html.escape(app_version)}\n\n"
+        f"🐝 <b>{en}</b> · bumblebee v{html.escape(app_version)}\n\n"
         f"Hey, {who}. I'm not a task bot; I'm a persistent presence that keeps context and memory over time.\n\n"
         "<b>Best ways to use me</b>\n"
         "• Talk naturally, like a real ongoing conversation.\n"
@@ -157,7 +163,7 @@ def format_help_html(entity_name: str) -> str:
         "<b>Useful commands</b>\n"
         "• <code>/status</code>, <code>/feelings</code>, <code>/memories [count]</code>\n"
         "• <code>/me</code> to inspect relationship state\n"
-        "• <code>/models</code>, <code>/tools</code>, and <code>/ping</code> for runtime checks\n"
+        "• <code>/models</code>, <code>/tools</code>, <code>/routines</code>, and <code>/ping</code> for runtime checks\n"
         "• <code>/reset</code> to clear rolling chat turns only\n\n"
         "<b>Important</b>\n"
         "• <code>/reset</code> does <i>not</i> wipe SQLite memories.\n"
@@ -250,7 +256,7 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
     )
     en = html.escape(snap.entity_name)
     return (
-        f"◈ <b>{en}</b> · v{html.escape(app_version)}\n"
+        f"🐝 <b>{en}</b> · v{html.escape(app_version)}\n"
         f"mood · {html.escape(snap.mood_label)} · {html.escape(snap.drive_line)}\n"
         f"memory · {snap.episode_count} episodes · knows {snap.people_count} people\n"
         f"model · {html.escape(snap.reflex_model)} · context · {snap.max_context_tokens // 1000}k\n"
@@ -319,6 +325,190 @@ def format_models_html(entity: "Entity") -> str:
     )
 
 
+def _relative_time(ts: float | None) -> str:
+    """Unix time (seconds) → shortest relative label for a past instant."""
+    if ts is None or ts <= 0:
+        return "—"
+    delta = max(0.0, time.time() - float(ts))
+    if delta < 45:
+        return "just now"
+    if delta < 3600:
+        m = max(1, int(delta // 60))
+        return f"{m}m ago"
+    if delta < 86400:
+        h = max(1, int(delta // 3600))
+        return f"{h}h ago"
+    if delta < 7 * 86400:
+        d = max(1, int(delta // 86400))
+        return f"{d}d ago"
+    w = max(1, int(delta // (7 * 86400)))
+    return f"{w}w ago"
+
+
+def _routine_emoji(automation: dict[str, Any], is_paused: bool) -> str:
+    if is_paused:
+        return "⏸"
+    origin = str(automation.get("origin", "") or "").strip().lower()
+    name = str(automation.get("name", "") or "")
+    desc = str(automation.get("description", "") or "")
+    text = f"{name} {desc}".lower()
+    if origin == "internal":
+        return "📓"
+    if origin == "user":
+        return "⏰"
+    # self-created
+    if any(k in text for k in ("check in", "check-in", "reach out", "how they", "deadline")):
+        return "💬"
+    if any(k in text for k in ("reddit", "browse", "subreddit", "r/")):
+        return "🔶"
+    if any(k in text for k in ("watch", "monitor")):
+        return "👀"
+    if any(k in text for k in ("news", "headline")):
+        return "⏰"
+    if any(k in text for k in ("reflect", "journal")):
+        return "📓"
+    return "⏰"
+
+
+def _possessive_entity_title(entity_name: str) -> str:
+    n = (entity_name or "").strip() or "Entity"
+    esc = html.escape(n)
+    if n.lower().endswith("s"):
+        return f"{esc}'"
+    return f"{esc}'s"
+
+
+def _origin_display_label(r: Any) -> str:
+    o = getattr(r, "origin", None)
+    v = o.value if o is not None and hasattr(o, "value") else str(o or "").strip().lower()
+    if v == "internal":
+        return "Internal"
+    if v == "self":
+        return "Self-created"
+    if v == "user":
+        return "User-created"
+    return v[:1].upper() + v[1:] if v else "Unknown"
+
+
+def _delivery_platform_label(r: Any) -> str | None:
+    raw = getattr(r, "deliver_to", None)
+    plat_attr = getattr(r, "deliver_platform", None)
+    s = (str(raw).strip() if raw else "") or ""
+    plat = ""
+    if ":" in s:
+        plat = s.split(":", 1)[0].strip().lower()
+    elif plat_attr:
+        plat = str(plat_attr).strip().lower()
+    if plat == "telegram":
+        return "Telegram"
+    if plat == "discord":
+        return "Discord"
+    if plat == "cli":
+        return "CLI"
+    return None
+
+
+def _automation_to_emoji_dict(r: Any) -> dict[str, Any]:
+    o = getattr(r, "origin", None)
+    ov = o.value if o is not None and hasattr(o, "value") else str(o or "")
+    return {
+        "origin": ov,
+        "name": str(getattr(r, "name", "") or ""),
+        "description": str(getattr(r, "description", "") or ""),
+    }
+
+
+def _format_one_routine_html(r: Any) -> str:
+    enabled = bool(getattr(r, "enabled", False))
+    is_paused = not enabled
+    name_raw = str(getattr(r, "name", "") or "").strip() or "Untitled routine"
+    natural = (getattr(r, "schedule_natural", None) or "").strip() or "Schedule not set"
+    desc = (getattr(r, "description", None) or "").strip()
+    runs = int(getattr(r, "run_count", 0) or 0)
+    last_run = getattr(r, "last_run", None)
+    lr = float(last_run) if last_run is not None else None
+
+    emoji = _routine_emoji(_automation_to_emoji_dict(r), is_paused)
+    title = f"<b>{emoji}  {html.escape(name_raw)}</b>"
+
+    delivery = _delivery_platform_label(r)
+    origin_lbl = _origin_display_label(r)
+    if delivery:
+        sched_line = f"    {html.escape(natural)} → {delivery}"
+    else:
+        sched_line = f"    {html.escape(natural)} · {origin_lbl}"
+    if is_paused:
+        sched_line = f"{sched_line} · Paused"
+
+    if runs == 0:
+        stats_line = "    Never run"
+    else:
+        last_part = _relative_time(lr) if lr else "—"
+        ran_what = "Ran 1 time" if runs == 1 else f"Ran {runs} times"
+        stats_line = f"    {ran_what} · Last: {last_part}"
+
+    o = getattr(r, "origin", None)
+    ov = o.value if o is not None and hasattr(o, "value") else str(o or "")
+    show_desc = bool(desc) and ov in ("user", "self")
+    desc_block = ""
+    if show_desc:
+        short = desc if len(desc) <= 80 else desc[:77] + "…"
+        desc_block = f"\n\n    \"{html.escape(short)}\""
+
+    return f"{title}\n{sched_line}\n{stats_line}{desc_block}"
+
+
+def format_routines_html(
+    entity_name: str,
+    routines: list[Any],
+    *,
+    automations_enabled: bool,
+    scheduler_ready: bool,
+) -> str:
+    """Render saved automations (routines) for Telegram HTML — scannable, no raw cron."""
+    poss = _possessive_entity_title(entity_name)
+    header = f"🐝 {poss} Routines"
+
+    if not routines:
+        body = (
+            f"{header}\n\n"
+            "No routines yet.\n\n"
+            "Your entity can create its own — or ask it\n"
+            "to set one up for you."
+        )
+    else:
+        n_active = sum(1 for r in routines if getattr(r, "enabled", False))
+        n_paused = len(routines) - n_active
+
+        def _sort_key(r: Any) -> tuple[int, float]:
+            en = bool(getattr(r, "enabled", False))
+            nxt = getattr(r, "next_run", None)
+            try:
+                nxt_f = float(nxt) if nxt is not None else float("inf")
+            except (TypeError, ValueError):
+                nxt_f = float("inf")
+            return (0 if en else 1, nxt_f)
+
+        ordered = sorted(routines, key=_sort_key)
+        blocks = [_format_one_routine_html(r) for r in ordered]
+        body = f"{header}\n\n{n_active} active · {n_paused} paused\n\n" + "\n\n".join(blocks)
+
+    footers: list[str] = []
+    if not automations_enabled:
+        footers.append(
+            "ℹ️ Automations are configured but scheduling\n"
+            "   is disabled in this entity's config."
+        )
+    if not scheduler_ready:
+        footers.append(
+            "ℹ️ Routines are saved but won't fire until\n"
+            "   the daemon is running (bumblebee run)."
+        )
+    if footers:
+        body = body + "\n\n" + "\n\n".join(footers)
+    return body
+
+
 def format_tools_html(entity: "Entity") -> str:
     """Render active runtime tools for this entity, including dynamic MCP tools."""
     rows: list[tuple[str, str]] = []
@@ -384,6 +574,6 @@ def format_media_unavailable(kind: str) -> str:
 
 def format_access_denied() -> str:
     return (
-        "◈ This instance is locked to approved people.\n"
+        "🐝 This instance is locked to approved people.\n"
         "If you should have access, ask the operator to add your Telegram user id."
     )

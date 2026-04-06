@@ -107,6 +107,7 @@ class NarrativeSynthesizer:
                 temperature=0.72,
                 max_tokens=1200,
                 think=self.entity.harness.cognition.thinking_mode,
+                num_ctx=self.entity.effective_ollama_num_ctx(),
             )
         except Exception:
             return None

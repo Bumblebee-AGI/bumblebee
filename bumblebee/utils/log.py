@@ -15,6 +15,8 @@ def setup_logging(
     level: str = "INFO",
     log_file: str | None = None,
     log_format: str = "json",
+    *,
+    immersive: bool = False,
 ) -> None:
     # log_format: reserved for file sink; console is always human-readable.
     expanded_file: str | None = None
@@ -42,21 +44,25 @@ def setup_logging(
     )
 
     # Console: always readable (JSON in the terminal breaks REPL / Telegram-only runs).
+    cfg_level = getattr(logging, level.upper(), logging.INFO)
     handler_console = logging.StreamHandler(sys.stdout)
     handler_console.setFormatter(
         structlog.stdlib.ProcessorFormatter(
-            processor=structlog.dev.ConsoleRenderer(colors=True),
+            processor=structlog.dev.ConsoleRenderer(colors=not immersive),
             foreign_pre_chain=shared,
         )
     )
+    # Immersive CLI: keep INFO+ in the log file but only WARNING+ on stdout so Rich UI stays clean.
+    handler_console.setLevel(logging.WARNING if immersive else cfg_level)
 
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler_console)
-    root.setLevel(getattr(logging, level.upper(), logging.INFO))
+    root.setLevel(logging.DEBUG)
 
     if expanded_file:
         fh = logging.FileHandler(expanded_file, encoding="utf-8")
+        fh.setLevel(cfg_level)
         fh.setFormatter(
             structlog.stdlib.ProcessorFormatter(
                 processor=structlog.processors.JSONRenderer(),
@@ -64,6 +70,9 @@ def setup_logging(
             )
         )
         root.addHandler(fh)
+    elif immersive:
+        # No file: still avoid spamming the REPL; errors/warnings only on console.
+        pass
 
 
 def _entity_processor(entity_name: str):

@@ -43,6 +43,9 @@ class InferenceSettings:
     api_key_env: str = "BUMBLEBEE_INFERENCE_GATEWAY_TOKEN"
     model: str = ""  # optional documentation default / operator hint
     timeout: float = 120.0
+    # When True, chat requests include Ollama-style ``options.num_ctx`` from entity cognition.
+    # Set False if your /v1/chat/completions server rejects unknown top-level fields.
+    pass_num_ctx: bool = True
 
 
 @dataclass
@@ -236,6 +239,10 @@ class EntityCognition:
     thinking_budget: int = 4096
     history_compression: HistoryCompressionSettings = field(default_factory=HistoryCompressionSettings)
 
+    def ollama_num_ctx(self) -> int | None:
+        n = int(self.max_context_tokens or 0)
+        return n if n > 0 else None
+
 
 @dataclass
 class AutomationsEmergenceSettings:
@@ -295,6 +302,12 @@ class EntityConfig:
 
     def log_path(self) -> str:
         return _expand(self.harness.logging.file, self.name)
+
+    def effective_ollama_num_ctx(self) -> int | None:
+        """Ollama OpenAI-compat ``options.num_ctx`` when enabled and entity sets a positive window."""
+        if not self.harness.inference.pass_num_ctx:
+            return None
+        return self.cognition.ollama_num_ctx()
 
     def journal_path(self) -> str:
         return _expand("~/.bumblebee/entities/{entity_name}/journal.md", self.name)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sqlite3
 import time
 from collections.abc import Awaitable, Callable
@@ -10,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style as PTStyle
 from rich.console import Console
@@ -105,7 +105,10 @@ class CLIPlatform(Platform):
         self.immersive = immersive
         self._cb: Callable[[Input], Awaitable[Any]] | None = None
         self._connected = False
-        self.console = Console(highlight=False, soft_wrap=True)
+        cols, _rows = shutil.get_terminal_size(fallback=(88, 24))
+        # Cap width so Rich rules/panels don't stretch across huge IDE terminals.
+        tw = max(52, min(int(cols), 90))
+        self.console = Console(highlight=False, soft_wrap=True, width=tw)
 
         self._session_t0: float = 0.0
         self._exchange_count = 0
@@ -212,20 +215,11 @@ class CLIPlatform(Platform):
         self.console.print(Text(f"{self.entity_name} ", style=STYLE_ENTITY), end="")
 
     async def _thinking_loop(self) -> None:
-        name = self.entity_name
-        i = 0
+        # Avoid \r spinners: they smear horizontally under prompt_toolkit's patched stdout.
         try:
             while True:
-                dots = "." * (i % 4)
-                pad = "   "
-                self.console.print(
-                    f"\r[dim]{name} is thinking{dots.ljust(3)}[/dim]{pad}",
-                    end="",
-                )
-                i += 1
-                await asyncio.sleep(0.38)
+                await asyncio.sleep(3600.0)
         except asyncio.CancelledError:
-            self.console.print("\r" + " " * (len(name) + 22) + "\r", end="")
             raise
 
     async def _cancel_thinking(self) -> None:
@@ -283,10 +277,12 @@ class CLIPlatform(Platform):
         self._emitted_this_turn = False
         self._chunk_acc = ""
         self._turn_visible = ""
-        if self.immersive:
-            render_side_panel(self.console, self.entity)
         self._sync_toolbar_state()
         self._invalidate_app()
+
+    def _slash_self(self) -> None:
+        self.console.print()
+        render_side_panel(self.console, self.entity)
 
     async def _slash_status(self) -> None:
         snap = await self._build_header_snapshot()
@@ -360,17 +356,20 @@ class CLIPlatform(Platform):
             else:
                 self._episodes_start = (await self.entity.fetch_cli_header_counts())[0]
 
-        def bottom_toolbar():
-            return FormattedText(
-                [
-                    ("#6b6b6b", f"◈ {self._tb_mood} · {self._tb_drive}    "),
-                    ("#4a4a4a", "/bye to exit"),
-                ]
-            )
+        # noreverse: default toolbar is reverse-video and clashes with Rich / many themes.
+        _repl_style = PTStyle.from_dict(
+            {
+                "bottom-toolbar": "noreverse fg:#8a8a8a",
+                "prompt": "#707070",
+            }
+        )
+
+        def bottom_toolbar() -> str:
+            return f"{self._tb_mood} · {self._tb_drive}     /self   /bye"
 
         session = PromptSession(
             message=[("class:prompt", "› ")],
-            style=PTStyle.from_dict({"prompt": "#707070"}),
+            style=_repl_style,
             bottom_toolbar=bottom_toolbar,
         )
 
@@ -386,7 +385,8 @@ class CLIPlatform(Platform):
                 self._connected = False
                 self.console.print(f"\n[dim]bye ({e})[/dim]\n")
 
-        with patch_stdout():
+        # raw=True: keep Rich's ANSI intact; default False strips VT sequences → garbled `?[2m` output.
+        with patch_stdout(raw=True):
             while self._connected:
                 try:
                     line = await _prompt_line()
@@ -401,6 +401,9 @@ class CLIPlatform(Platform):
                     break
                 if line == "/status":
                     await self._slash_status()
+                    continue
+                if line == "/self":
+                    self._slash_self()
                     continue
                 if line == "/memories":
                     await self._slash_memories()

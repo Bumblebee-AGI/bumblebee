@@ -26,6 +26,7 @@ class LocalRuntimeProvider:
         max_tokens: int = 1024,
         think: bool = False,
         stream: bool = False,
+        num_ctx: int | None = None,
     ) -> ChatCompletionResult | AsyncIterator[str]:
         return await self._t.chat_completion(
             model,
@@ -35,6 +36,7 @@ class LocalRuntimeProvider:
             max_tokens=max_tokens,
             think=think,
             stream=stream,
+            num_ctx=num_ctx,
         )
 
     async def embed(self, model: str, text: str) -> list[float]:
@@ -83,6 +85,7 @@ class RemoteGatewayProvider:
         max_tokens: int = 1024,
         think: bool = False,
         stream: bool = False,
+        num_ctx: int | None = None,
     ) -> ChatCompletionResult | AsyncIterator[str]:
         return await self._t.chat_completion(
             model,
@@ -92,6 +95,7 @@ class RemoteGatewayProvider:
             max_tokens=max_tokens,
             think=think,
             stream=stream,
+            num_ctx=num_ctx,
         )
 
     async def embed(self, model: str, text: str) -> list[float]:

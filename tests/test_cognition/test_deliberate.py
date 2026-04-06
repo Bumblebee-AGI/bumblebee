@@ -1,6 +1,11 @@
 from bumblebee.config import HarnessConfig, entity_from_dict
 from bumblebee.cognition import gemma
-from bumblebee.cognition.deliberate import DeliberateCognition, should_inject_tool_continuation
+from bumblebee.cognition.deliberate import (
+    DeliberateCognition,
+    fit_system_prompt_to_budget,
+    should_inject_tool_continuation,
+)
+from bumblebee.presence.tools.registry import TOOL_SYSTEM_PROMPT_PREFIX
 from bumblebee.inference.types import ChatCompletionResult, ToolCallSpec
 
 
@@ -35,6 +40,30 @@ def _entity_config():
         "presence": {"platforms": [{"type": "cli"}], "daemon": {}},
     }
     return entity_from_dict(h, data)
+
+
+def test_fit_system_prompt_keeps_tools_suffix_when_truncating():
+    prefix = "A" * 500
+    suffix = f"{TOOL_SYSTEM_PROMPT_PREFIX} — rest of tools block here."
+    full = prefix + suffix
+    cap = 400
+    out = fit_system_prompt_to_budget(full, cap)
+    assert suffix in out
+    assert out.endswith("rest of tools block here.")
+
+
+def test_build_messages_truncation_preserves_tool_appendix():
+    ec = _entity_config()
+    # _build_messages uses max(2000, cognition.system_prompt_char_limit)
+    ec.cognition.system_prompt_char_limit = 2000
+    d = DeliberateCognition(ec, client=object())  # type: ignore[arg-type]
+    long_prefix = "P" * 3500
+    sys_full = long_prefix + f"{TOOL_SYSTEM_PROMPT_PREFIX}\nYou may call: x."
+    msgs = d._build_messages(sys_full, [{"role": "user", "content": "hi"}])
+    body = msgs[0]["content"]
+    assert TOOL_SYSTEM_PROMPT_PREFIX in body
+    assert "You may call: x." in body
+    assert len(body) <= 2000
 
 
 def test_build_messages_preserves_user_multimodal_content():
@@ -98,6 +127,23 @@ def test_should_not_inject_when_model_emits_tools():
     res = ChatCompletionResult(
         content="",
         tool_calls=[ToolCallSpec(name="run_command", arguments={}, id="1")],
+    )
+    assert should_inject_tool_continuation(msgs, res) is False
+
+
+def test_should_not_inject_on_try_to_in_normal_prose_after_tool():
+    """'try to land' etc. must not match — spurious continuation produced 'I'm done' replies."""
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "tool", "content": '{"ok": true, "title": "Artemis"}'},
+    ]
+    res = ChatCompletionResult(
+        content=(
+            "before they actually try to land people on the moon later on. "
+            "it's basically the test run."
+        ),
+        tool_calls=[],
+        finish_reason="stop",
     )
     assert should_inject_tool_continuation(msgs, res) is False
 

@@ -19,6 +19,7 @@ class InferenceProvider(Protocol):
         max_tokens: int = 1024,
         think: bool = False,
         stream: bool = False,
+        num_ctx: int | None = None,
     ) -> ChatCompletionResult | AsyncIterator[str]:
         ...
 

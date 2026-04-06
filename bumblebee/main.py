@@ -350,6 +350,7 @@ async def _talk(entity_name: str) -> None:
         ec.harness.logging.level,
         ec.log_path(),
         ec.harness.logging.format,
+        immersive=True,
     )
     ent = Entity(ec)
     cli_p = CLIPlatform(ent, app_version=_app_version(), immersive=True)

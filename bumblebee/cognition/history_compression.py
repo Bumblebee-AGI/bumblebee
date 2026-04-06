@@ -62,6 +62,7 @@ async def merge_rolling_summary(
     max_merge_input_chars: int,
     merge_max_tokens: int,
     summary_max_chars: int,
+    num_ctx: int | None = None,
 ) -> str:
     """Call the model once to fold ``dropped_messages`` into ``prior_summary``."""
     dropped_fmt = format_history_messages_for_summary(dropped_messages, per_msg_cap=per_msg_cap)
@@ -83,6 +84,7 @@ async def merge_rolling_summary(
             temperature=0.25,
             max_tokens=max(200, min(int(merge_max_tokens), 2048)),
             think=False,
+            num_ctx=num_ctx,
         )
         out = (getattr(res, "content", None) or "").strip()
     except Exception as e:

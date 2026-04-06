@@ -5,6 +5,9 @@
 # Maintainer / local-only trees (not shipped in this repo)
 onboarding/
 docs/
+bumbleweb/
+bumbleAR/
+bee-model/
 
 # Python
 __pycache__/
@@ -30,6 +33,9 @@ ENV/
 *.db
 *.sqlite
 *.sqlite3
+
+# Node
+node_modules/
 
 # IDE / OS
 .cursorrules

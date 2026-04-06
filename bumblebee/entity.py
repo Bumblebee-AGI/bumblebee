@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import os
+import re
 import time
 from pathlib import Path
 from collections.abc import Awaitable, Callable
@@ -14,7 +15,7 @@ from typing import Any
 
 import structlog
 
-from bumblebee.cognition.deliberate import DeliberateCognition
+from bumblebee.cognition.deliberate import DeliberateCognition, fit_system_prompt_to_budget
 from bumblebee.cognition.inner_voice import InnerVoiceProcessor
 from bumblebee.cognition.reflex import ReflexCognition
 from bumblebee.cognition.router import CognitionRouter, ContextPackage
@@ -100,6 +101,76 @@ def _reply_too_thin(text: str) -> bool:
     if t in ("…", "...", "—", "-"):
         return True
     return gemma.visible_reply_looks_truncated_stub(t)
+
+
+# After tool calls, models often emit a one-token ack; we already shipped the visible line pre-tool.
+_PRO_FORMA_TOOL_FOLLOWUPS = frozenset(
+    {
+        "done",
+        "done.",
+        "ok",
+        "ok.",
+        "k",
+        "k.",
+        "yep",
+        "yep.",
+        "yeah",
+        "yeah.",
+        "there",
+        "there.",
+        "got it",
+        "got it.",
+        "sorted",
+        "sorted.",
+        "cool",
+        "cool.",
+        "all set",
+        "all set.",
+        "finished",
+        "finished.",
+        "i'm done",
+        "i'm done.",
+        "im done",
+        "im done.",
+        "i am done",
+        "i am done.",
+        "great",
+        "great.",
+        "nice",
+        "nice.",
+        "bet",
+        "bet.",
+        "alright",
+        "aight",
+    }
+)
+
+
+def _pro_forma_tool_followup(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    if re.fullmatch(r"i['\u2019]?m\s+done\.?", t):
+        return True
+    if t in _PRO_FORMA_TOOL_FOLLOWUPS:
+        return True
+    base = t.rstrip(".!?")
+    if len(t) <= 20 and " " not in t:
+        return base in {
+            "done",
+            "ok",
+            "k",
+            "yep",
+            "yeah",
+            "there",
+            "cool",
+            "nice",
+            "great",
+            "bet",
+            "alright",
+            "aight",
+        }
+    return False
 
 
 async def _emit_text_stream(
@@ -541,6 +612,7 @@ class Entity:
             max_merge_input_chars=hc.max_merge_input_chars,
             merge_max_tokens=hc.merge_max_tokens,
             summary_max_chars=hc.summary_max_chars,
+            num_ctx=self.config.effective_ollama_num_ctx(),
         )
 
     def _history_user_turn_text(self, inp: Input) -> str:
@@ -589,6 +661,21 @@ class Entity:
             self.drives.satisfy("curiosity", 0.22)
         return out
 
+    def _fallback_user_turn_text(self, inp: Input) -> str:
+        """User line for fallback completion; includes rolling summary when compression is on."""
+        fb_line = speaker_label_for_model(inp) + (inp.text or "")[:4000]
+        hc = self.config.cognition.history_compression
+        s = (self._history_rolling_summary or "").strip()
+        if not s or not hc.enabled:
+            return fb_line
+        cap = min(int(hc.summary_max_chars), 4000)
+        body = s[:cap]
+        prefix = (
+            "[Earlier conversation summary — same ongoing chat; continue naturally; "
+            "do not reset with a generic greeting unless it genuinely fits]\n\n" + body
+        )
+        return prefix + "\n\n---\n\nCurrent message:\n" + fb_line
+
     async def _fallback_plain_reply(self, inp: Input) -> str:
         """When the main path yields no visible text (parsing/Ollama quirks), one short no-thinking completion."""
         name = self.config.name
@@ -598,7 +685,7 @@ class Entity:
             "No stage directions: do not describe pauses, actions, or parenthetical asides—only words you say."
         )
         try:
-            fb_user = speaker_label_for_model(inp) + (inp.text or "")[:4000]
+            fb_user = self._fallback_user_turn_text(inp)
             res = await self.client.chat_completion(
                 self.config.cognition.reflex_model,
                 [
@@ -608,6 +695,7 @@ class Entity:
                 temperature=min(0.9, self.config.harness.cognition.temperature),
                 max_tokens=min(384, self.config.harness.cognition.reflex_max_tokens + 128),
                 think=False,
+                num_ctx=self.config.effective_ollama_num_ctx(),
             )
             out = (res.content or "").strip()
             if not _reply_too_thin(out):
@@ -634,7 +722,9 @@ class Entity:
         sys_cap: int,
     ) -> str:
         h = self.config.harness.cognition
-        msgs: list[dict] = [{"role": "system", "content": sys_prompt[:sys_cap]}]
+        msgs: list[dict] = [
+            {"role": "system", "content": fit_system_prompt_to_budget(sys_prompt, sys_cap)},
+        ]
         for m in recent_messages[-4:]:
             msgs.append(m)
         msgs.append({"role": "assistant", "content": partial_assistant[:7000]})
@@ -654,6 +744,7 @@ class Entity:
                 temperature=min(0.9, h.temperature),
                 max_tokens=max_tokens,
                 think=False,
+                num_ctx=self.config.effective_ollama_num_ctx(),
             )
             extra = (cont.content or "").strip()
             if extra:
@@ -800,6 +891,7 @@ class Entity:
                 self.config.cognition.reflex_model,
                 base64_audio=str(aud0.get("base64", "")),
                 audio_format=str(aud0.get("format", "ogg")),
+                num_ctx=self.config.effective_ollama_num_ctx(),
             )
             base = (inp.text or "").strip()
             if transcript:
@@ -898,7 +990,14 @@ class Entity:
                 )
 
             if route == "deliberate":
-                sys_prompt = sys_prompt + self.tools.system_tool_instruction_block()
+                cap = max(2000, int(self.config.cognition.system_prompt_char_limit or 12000))
+                full_tools = self.tools.system_tool_instruction_block()
+                tools_block = (
+                    self.tools.compact_system_tool_instruction()
+                    if full_tools and len(sys_prompt) + len(full_tools) > cap
+                    else full_tools
+                )
+                sys_prompt = sys_prompt + tools_block
                 cur = next(
                     (d for d in self.drives.all_drives() if d.name == "curiosity"),
                     None,
@@ -955,6 +1054,8 @@ class Entity:
                     )
             else:
                 tool_state: dict[str, Any] = {}
+                intermediate_visible_to_chat = False
+                last_intermediate_chat_segment = ""
 
                 async def _tool_with_activity(spec: ToolCallSpec) -> str:
                     if tool_names_log is not None:
@@ -993,6 +1094,9 @@ class Entity:
                                     stream=stream,
                                     cli_stream_final=False,
                                 )
+                                if inp.platform in ("discord", "telegram"):
+                                    intermediate_visible_to_chat = True
+                                    last_intermediate_chat_segment = seg
                     elif ev.kind == "final":
                         reply_text = (ev.display_text or "").strip()
                         thinking = ev.merged_thinking
@@ -1014,6 +1118,17 @@ class Entity:
                 reply_text = self.voice_ctl.sanitize_reply(await self._fallback_plain_reply(inp))
 
             if route == "deliberate":
+                skip_final_chat = (
+                    intermediate_visible_to_chat
+                    and inp.platform in ("discord", "telegram")
+                    and bool((reply_text or "").strip())
+                    and (
+                        _reply_too_thin(reply_text)
+                        or _pro_forma_tool_followup(reply_text)
+                    )
+                )
+                if skip_final_chat and last_intermediate_chat_segment.strip():
+                    reply_text = last_intermediate_chat_segment.strip()
                 slice_ = self.inner_voice.process(thinking, reply_text)
                 await self.inner_voice.persist_summary(
                     db,
@@ -1029,7 +1144,7 @@ class Entity:
                             stream=stream,
                             cli_stream_final=True,
                         )
-                    elif inp.platform in ("discord", "telegram"):
+                    elif inp.platform in ("discord", "telegram") and not skip_final_chat:
                         await _deliver_embodied_deliberate_segment(
                             self,
                             inp,

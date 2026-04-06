@@ -12,6 +12,10 @@ from urllib.parse import urlparse
 from bumblebee.cognition import gemma
 from bumblebee.utils.ollama_client import ToolCallSpec
 
+# Used to split system prompt from the tools appendix (see DeliberateCognition._build_messages).
+TOOL_SYSTEM_PROMPT_PREFIX = "\n\n[Tools available to you"
+TOOL_SYSTEM_PROMPT_PREFIX_COMPACT = "\n\n[Tools — callable via"
+
 
 def extract_domain(url: str) -> str:
     s = (url or "").strip()
@@ -321,6 +325,25 @@ class ToolRegistry:
             f"You may call: {names}.\n"
             "When you invoke a tool, wait for its result before finishing your reply.\n\n"
             f"{decl}"
+        )
+
+    def compact_system_tool_instruction(self) -> str:
+        """
+        Short tools appendix when the full Gemma declaration block would overflow
+        ``system_prompt_char_limit``. OpenAI-compatible backends already receive
+        full schemas via the ``tools`` request field; this keeps behavioral cues
+        and the name list in the system string.
+        """
+        if not self._tools:
+            return ""
+        names = ", ".join(sorted(self._tools.keys()))
+        return (
+            "\n\n[Tools — callable via the tool channel; full parameter schemas are in the API]\n"
+            f"You may call: {names}.\n"
+            "If they ask what you can do or what you're capable of, call search_tools with an "
+            "empty query first, then answer from that in your voice — casual, not a feature list "
+            "unless they want detail.\n"
+            "When you invoke a tool, wait for its result before finishing your reply.\n"
         )
 
     def usage_snapshot(self) -> dict[str, int]:

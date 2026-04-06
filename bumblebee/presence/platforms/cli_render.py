@@ -140,7 +140,7 @@ def dominant_drive_toolbar(drives: list[Drive]) -> str:
 
 
 def render_startup(console: Console, snap: CLIHeaderSnapshot) -> None:
-    mark = Text("◈", style=STYLE_MARK)
+    mark = Text("🐝", style=STYLE_MARK)
     title = Text.assemble(
         mark,
         Text(" bumblebee ", style=STYLE_LABEL),
@@ -209,7 +209,7 @@ def render_shutdown(console: Console, summary: SessionShutdownSummary) -> None:
     )
     console.print(mem)
     console.print()
-    console.print(Text("◈", style=STYLE_MARK))
+    console.print(Text("🐝", style=STYLE_MARK))
     console.print()
 
 
@@ -301,8 +301,9 @@ def render_side_panel(console: Console, entity: object) -> None:
         f"mood · {st.primary.value} ({st.intensity:.1f})\n"
         f"drives · {dline}\n\ninner voice\n{inner}\n\nrecent memories\n{mem_preview}"
     )
-    w = console.width or 88
-    panel_w = max(28, min(44, w // 3))
+    w = int(console.width or 80)
+    # Use most of the terminal; old w//3 sidebar was too narrow on wide consoles.
+    panel_w = max(40, min(76, w - 4))
     console.print(
         Panel(
             Text(body, style=STYLE_VALUE),

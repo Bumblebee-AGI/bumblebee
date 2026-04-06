@@ -1,0 +1,4 @@
+# Excluded from `railway up` archives (in addition to .gitignore). See https://docs.railway.com/cli/up
+bumbleweb/
+bumbleAR/
+bee-model/

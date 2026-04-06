@@ -71,7 +71,14 @@ def _cron_next_unix(cron_expr: str, start: float | None = None) -> float | None:
     return nxt.timestamp()
 
 
-async def _yes_no_model(client: Any, model: str, system: str, user: str) -> bool:
+async def _yes_no_model(
+    client: Any,
+    model: str,
+    system: str,
+    user: str,
+    *,
+    num_ctx: int | None = None,
+) -> bool:
     try:
         res = await client.chat_completion(
             model,
@@ -82,6 +89,7 @@ async def _yes_no_model(client: Any, model: str, system: str, user: str) -> bool
             temperature=0.2,
             max_tokens=16,
             think=False,
+            num_ctx=num_ctx,
         )
         t = (res.content or "").strip().upper()
         if not t:
@@ -266,6 +274,15 @@ class AutomationEngine:
             plat = (auto.deliver_platform or "").strip().lower()
             raw = str(auto.deliver_to)
             tgt = raw.split(":", 1)[-1].strip() if ":" in raw else raw.strip()
+        if (not plat or not tgt) and auto.origin in (
+            AutomationOrigin.SELF,
+            AutomationOrigin.USER,
+        ):
+            lc = getattr(self.entity, "_last_conversation", None) or {}
+            p = str(lc.get("platform") or "").strip().lower()
+            ch = str(lc.get("channel") or "").strip()
+            if p in ("telegram", "discord") and ch:
+                plat, tgt = p, ch
         if success and plat and tgt:
             try:
                 sender = getattr(self.entity, "send_message_to_platform", None)
@@ -385,6 +402,7 @@ class AutomationEngine:
             model,
             "You answer only YES or NO.",
             user,
+            num_ctx=self.entity.config.effective_ollama_num_ctx(),
         )
 
     async def self_modify_check(self, automation: Automation, result: str) -> tuple[bool, str | None]:
@@ -406,6 +424,7 @@ class AutomationEngine:
                 temperature=0.3,
                 max_tokens=120,
                 think=False,
+                num_ctx=self.entity.config.effective_ollama_num_ctx(),
             )
             line = (res.content or "").strip()
         except Exception:

@@ -36,8 +36,10 @@ class InitiativeEngine:
                 temperature=self.entity.harness.cognition.temperature,
                 max_tokens=400,
                 think=False,
+                num_ctx=self.entity.effective_ollama_num_ctx(),
             )
-            return (res.content or "").strip() or "…"
+            # Empty completion: do not broadcast a placeholder (was "…" and looked like a broken routine).
+            return (res.content or "").strip()
         except Exception as e:
             log.warning("initiative_failed", module="presence", error=str(e))
             return ""

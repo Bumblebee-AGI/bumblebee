@@ -1,0 +1,23 @@
+# Slim build context (Railway / docker build). Keep in sync with local-only trees in .gitignore.
+bumbleweb/
+bumbleAR/
+bee-model/
+onboarding/
+docs/
+
+.git
+.gitignore
+.dockerignore
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+.venv
+venv
+node_modules
+*.egg-info
+.eggs
+dist
+htmlcov
+.coverage
+.mypy_cache
+.ruff_cache
