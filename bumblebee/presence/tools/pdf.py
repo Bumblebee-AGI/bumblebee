@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from bumblebee.presence.tools.execution_rpc import (
+    HYBRID_OFF_RAILWAY_TOOL_BLOCK,
+    local_body_host_permitted,
+)
 from bumblebee.presence.tools.registry import tool
+from bumblebee.presence.tools.runtime import require_tool_runtime
 
 
 def _parse_pages(pages: str, page_count: int) -> list[int]:
@@ -35,6 +40,9 @@ def _parse_pages(pages: str, page_count: int) -> list[int]:
     description="Read and extract text from a PDF file",
 )
 async def read_pdf(path: str, pages: str = "") -> str:
+    ctx = require_tool_runtime()
+    if not local_body_host_permitted(ctx.entity):
+        return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
     p = Path(path).expanduser()
     try:
         p = p.resolve()

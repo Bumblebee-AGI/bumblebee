@@ -5,8 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from bumblebee.presence.tools.execution_rpc import get_execution_client
+from bumblebee.presence.tools.execution_rpc import (
+    HYBRID_OFF_RAILWAY_TOOL_BLOCK,
+    get_execution_client,
+    local_body_host_permitted,
+)
 from bumblebee.presence.tools.registry import tool
+from bumblebee.presence.tools.runtime import require_tool_runtime
 
 
 @tool(
@@ -17,6 +22,9 @@ from bumblebee.presence.tools.registry import tool
     ),
 )
 async def read_file(path: str, max_bytes: int = 48000) -> str:
+    ctx = require_tool_runtime()
+    if not local_body_host_permitted(ctx.entity):
+        return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
     p = Path(path).expanduser()
     try:
         p = p.resolve()
@@ -34,6 +42,9 @@ async def read_file(path: str, max_bytes: int = 48000) -> str:
     description="See what files and folders are in a directory.",
 )
 async def list_directory(path: str = ".") -> str:
+    ctx = require_tool_runtime()
+    if not local_body_host_permitted(ctx.entity):
+        return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
     p = Path(path).expanduser()
     try:
         p = p.resolve()
@@ -59,6 +70,9 @@ async def list_directory(path: str = ".") -> str:
     description="Search for files matching a pattern.",
 )
 async def search_files(directory: str, pattern: str) -> str:
+    ctx = require_tool_runtime()
+    if not local_body_host_permitted(ctx.entity):
+        return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
     d = Path(directory).expanduser()
     try:
         d = d.resolve()

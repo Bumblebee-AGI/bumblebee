@@ -8,7 +8,12 @@ import platform
 import shutil
 import subprocess
 
+from bumblebee.presence.tools.execution_rpc import (
+    HYBRID_OFF_RAILWAY_TOOL_BLOCK,
+    local_body_host_permitted,
+)
 from bumblebee.presence.tools.registry import tool
+from bumblebee.presence.tools.runtime import require_tool_runtime
 
 
 def _gpu_info() -> str:
@@ -36,6 +41,9 @@ def _gpu_info() -> str:
     description="Check what machine you're running on — CPU, memory, GPU, disk space",
 )
 async def get_system_info() -> str:
+    ctx = require_tool_runtime()
+    if not local_body_host_permitted(ctx.entity):
+        return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
     try:
         import psutil  # type: ignore[import-not-found]
     except ImportError:

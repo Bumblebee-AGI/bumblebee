@@ -3,6 +3,10 @@
 Hybrid (`hybrid_railway`) is meant to run the **body** on Railway. Local subprocess/file
 fallback is only allowed there (``RAILWAY_ENVIRONMENT``) or when ``tools.execution.allow_local``
 is true — so a home workstation with hybrid env vars does not silently become the execution host.
+
+The same rule applies to **direct** filesystem reads (``read_file``, ``list_directory``, ``search_files``),
+``read_pdf``, and ``get_system_info`` — they are not routed through RPC today, so they are blocked
+off-Railway for ``hybrid_railway`` unless ``allow_local`` is set.
 """
 
 from __future__ import annotations
@@ -300,6 +304,30 @@ class ExecutionRPCClient:
             return {"ok": False, "error": str(e)}
 
 
+HYBRID_OFF_RAILWAY_TOOL_BLOCK = (
+    "Tool disabled: hybrid_railway on a host without RAILWAY_ENVIRONMENT (this Python process is not "
+    "the Railway container). Run the worker on Railway, or set tools.execution.allow_local in entity YAML "
+    "for local debugging. If you use Telegram and only wanted the cloud bot, stop any local "
+    "`bumblebee run` that uses the same TELEGRAM_TOKEN."
+)
+
+
+def local_body_host_permitted(entity: Any) -> bool:
+    """True if this process may use local disk/shell for tools (not RPC-only hybrid on a dev PC)."""
+    tools_cfg = _effective_tools_config(entity)
+    exec_cfg = tools_cfg.get("execution") if isinstance(tools_cfg.get("execution"), dict) else {}
+    if not isinstance(exec_cfg, dict):
+        exec_cfg = {}
+    mode = (entity.config.harness.deployment.mode or "local").strip().lower()
+    allow_local = bool(exec_cfg.get("allow_local", False))
+    on_railway = bool((os.environ.get("RAILWAY_ENVIRONMENT") or "").strip())
+    return (
+        allow_local
+        or mode == "local"
+        or (mode == "hybrid_railway" and on_railway)
+    )
+
+
 def get_execution_client() -> ExecutionRPCClient:
     ctx = require_tool_runtime()
     entity = ctx.entity
@@ -326,14 +354,7 @@ def get_execution_client() -> ExecutionRPCClient:
         if workspace_dir
         else Path.cwd().resolve()
     )
-    mode = (entity.config.harness.deployment.mode or "local").strip().lower()
-    allow_local = bool(exec_cfg.get("allow_local", False))
-    on_railway = bool((os.environ.get("RAILWAY_ENVIRONMENT") or "").strip())
-    allow_local_backend = (
-        allow_local
-        or mode == "local"
-        or (mode == "hybrid_railway" and on_railway)
-    )
+    allow_local_backend = local_body_host_permitted(entity)
 
     client = ExecutionRPCClient(
         base_url=base_url,
