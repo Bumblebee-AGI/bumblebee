@@ -2,8 +2,11 @@
 # Entity-specific overrides go in configs/entities/<name>.yaml
 #
 # Deployment / inference (see .env.example and BUMBLEBEE_* vars)
+# "local" here is the repo default for a fresh clone (Ollama on one machine). Hybrid is selected
+# at runtime when BUMBLEBEE_DEPLOYMENT_MODE=hybrid_railway (e.g. .env after setup, or Railway) —
+# that env value overrides this file (see apply_harness_env_overrides in bumblebee/config.py).
 deployment:
-  mode: local # local | hybrid_railway
+  mode: local # local | hybrid_railway — overridden by BUMBLEBEE_DEPLOYMENT_MODE when set
 
 inference:
   provider: "" # local | remote_gateway — empty derives from deployment.mode
