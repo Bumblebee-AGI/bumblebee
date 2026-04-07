@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -46,6 +47,19 @@ def _identity_or_self_question(low: str) -> bool:
         "are you a person",
     )
     return any(p in low for p in phrases)
+
+
+def _file_or_workspace_question(low: str) -> bool:
+    """Needs deliberate + tools (read_file, list_directory); reflex has no tool API."""
+    if "readme" in low:
+        return True
+    if ".md" in low or ".txt" in low or ".yaml" in low or ".yml" in low:
+        return True
+    if re.search(r"\bline\s+\d+", low):
+        return True
+    if "what's on line" in low or "whats on line" in low or "what is on line" in low:
+        return True
+    return False
 
 
 def _capability_question(low: str) -> bool:
@@ -120,6 +134,8 @@ class CognitionRouter:
         if low in ("hi", "hello", "hey", "thanks", "thank you", "ok", "okay", "bye"):
             return "reflex"
         if _identity_or_self_question(low) or _capability_question(low):
+            return "deliberate"
+        if _file_or_workspace_question(low):
             return "deliberate"
         if "?" in t and len(t) < 80 and emotional.intensity < 0.6:
             return "reflex"

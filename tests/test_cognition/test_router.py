@@ -57,6 +57,18 @@ def test_heuristic_capability_questions_use_deliberate(entity_config):
     assert r.heuristic_route(inp, emo) == "deliberate"
 
 
+def test_heuristic_readme_line_file_questions_use_deliberate(entity_config):
+    r = CognitionRouter(entity_config, OllamaClient())
+    emo = EmotionalState()
+    for text in (
+        "whats the readme about?",
+        "what's on line 35?",
+        "read config.yaml for me",
+    ):
+        inp = Input(text=text, person_id="u", person_name="U")
+        assert r.heuristic_route(inp, emo) == "deliberate"
+
+
 @pytest.mark.asyncio
 async def test_route_short_casual_skips_classifier_escalation(entity_config):
     r = CognitionRouter(entity_config, OllamaClient())

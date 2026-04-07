@@ -172,9 +172,9 @@ def render_startup(console: Console, snap: CLIHeaderSnapshot) -> None:
         Text("awake for ", style=STYLE_LABEL),
         Text(snap.awake_summary, style=STYLE_VALUE),
         Text(" · ", style=STYLE_LABEL),
-        Text("knows ", style=STYLE_LABEL),
+        Text("relationship profiles ", style=STYLE_LABEL),
         Text(str(snap.people_count), style=STYLE_VALUE),
-        Text(" people", style=STYLE_LABEL),
+        Text(" (relational memory)", style=STYLE_LABEL),
     )
     console.print(line1)
     console.print(line2)

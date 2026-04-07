@@ -43,6 +43,12 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return f"🌐 reading something on {domain}..." if domain else "🌐 reading that page..."
     if tool_name == "read_file":
         filename = Path(str(args.get("path", "") or "")).name
+        sl = int(args.get("start_line") or 0)
+        el = int(args.get("end_line") or 0)
+        if sl > 0 and el > 0 and el != sl:
+            return f"📄 reading {filename} lines {sl}–{el}..."
+        if sl > 0:
+            return f"📄 reading {filename} line {sl}..."
         return f"📄 checking {filename}..."
     if tool_name == "get_current_time":
         return "🕐 checking the time..."

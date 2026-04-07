@@ -287,7 +287,7 @@ Bumblebee has four pillars:
 
 ### Cognition — dual-model brain
 
-The entity can use a fast **reflex** model for quick reactions, routing, and light processing, and a **deliberate** model for deeper reasoning and expression. Defaults use the same Gemma 4 weights for both, with different token budgets; you can point reflex at a smaller tag (for example `gemma4:e4b`) in entity YAML when your hardware allows split setups.
+The entity can use a fast **reflex** model for quick reactions and light processing, and a **deliberate** model for deeper reasoning, thinking mode, and longer replies. **Tools are available on both paths** (same registry; reflex uses the reflex model and token cap). Defaults use the same Gemma 4 weights for both, with different token budgets; you can point reflex at a smaller tag (for example `gemma4:e4b`) in entity YAML when your hardware allows split setups.
 
 Gemma 4’s **thinking mode** is repurposed as inner experience — private monologue that shapes responses without being shown to users verbatim. The harness captures and summarizes that thread and feeds it back into future context.
 
@@ -333,10 +333,11 @@ In **`hybrid_railway`**, **chat and embeddings** go to your **home inference gat
 
 Tools such as **`run_command`**, **`run_background`**, **`write_file`**, **`execute_python`**, and **`execute_javascript`** use the shared execution layer (`tools.execution` in YAML, or **`BUMBLEBEE_EXECUTION_RPC_URL`** / **`BUMBLEBEE_EXECUTION_RPC_TOKEN`** in `.env`). Unless a remote RPC URL is set, commands run **in the same OS environment as the Bumblebee worker process**.
 
-**Read-only path tools** (**`read_file`**, **`list_directory`**, **`search_files`**, **`read_pdf`**, **`get_system_info`**) talk to the local OS directly (they are not sent over that RPC). The same **hybrid off-Railway** rule applies: on your laptop with **`hybrid_railway`**, they are **disabled** unless **`tools.execution.allow_local`** is true, so a stray local process cannot scan your disk while the “real” bot is supposed to live on Railway.
+**Workspace read tools** (**`read_file`**, **`list_directory`**, **`search_files`**) use the **same execution layer** as **`write_file`** / **`run_command`**: RPC first when **`BUMBLEBEE_EXECUTION_RPC_URL`** (or **`tools.execution.base_url`**) is set, otherwise the local backend when permitted. Paths are resolved under **`tools.execution.workspace_dir`** (or the process cwd), not arbitrary absolute paths outside that root. **`read_pdf`** and **`get_system_info`** still hit the local OS directly and follow the stricter hybrid rule below.
 
-- **Worker on Railway** — Railway injects **`RAILWAY_ENVIRONMENT`**, so those tools use the **container filesystem** and process space (not your laptop), which is what you want for an always-on cloud body.
-- **Hybrid env on your home PC** — If you run **`bumblebee run`** locally with **`deployment.mode: hybrid_railway`** but **without** an execution RPC URL, the harness **does not** fall back to running shell/file tools on your PC. Tools then return a clear “execution backend unavailable” style error unless you either set **`tools.execution.allow_local: true`** on the entity (explicit opt-in for local debugging) or point **`BUMBLEBEE_EXECUTION_RPC_URL`** at a reachable RPC host. **Prefer running the live worker on Railway** and keeping Telegram/Discord tokens only there so the body has a single home.
+- **Hybrid off your laptop without RPC** — With **`hybrid_railway`** and no **`RAILWAY_ENVIRONMENT`**, workspace file tools are **disabled** unless **`tools.execution.allow_local`** is true **or** an execution RPC URL is set (so listing can target a remote “hands” host instead of your PC).
+- **Worker on Railway** — Railway injects **`RAILWAY_ENVIRONMENT`**, so execution (including **`list_directory`**) uses the **container** filesystem unless RPC points elsewhere.
+- **Hybrid env on your home PC** — If you run **`bumblebee run`** locally with **`deployment.mode: hybrid_railway`** but **without** an execution RPC URL, shell/write tools **do not** run on your PC unless **`allow_local`** is true. **`list_directory`** follows the same rule: no RPC and no **`allow_local`** means a clear error, not a silent scan of your disk. **Prefer running the live worker on Railway** and keeping Telegram/Discord tokens only there so Telegram always talks to the cloud body.
 - **Optional RPC** — When **`BUMBLEBEE_EXECUTION_RPC_URL`** is set, execution tries that HTTP endpoint first (for example a dedicated “hands” host). If the URL is **down or wrong** (common when a tunnel URL was copied onto Railway but the tunnel is off), the worker **falls back to in-container execution** when **`RAILWAY_ENVIRONMENT`** is set, so **`run_command`** still works. Prefer **unsetting** the RPC URL on Railway if you are not running a real RPC server. **`browser_*`** and **`generate_image`** still expect an RPC backend with the right capabilities when you are not on a full local stack.
 
 Deeper design (inference gateway, harness defaults) is reflected in **`configs/default.yaml`**, code under **`bumblebee/inference_gateway/`**, **`bumblebee/presence/tools/execution_rpc.py`**, and **`.env.example`**.
@@ -416,7 +417,7 @@ presence:
 
 ## Tools
 
-Tools are how the entity interacts with the world — not “services for the user,” but **senses and reach**. When `presence.tool_activity` is on, tool use can surface in chat with short status lines. Unless noted, tools run on the **deliberate** path only. **Shell, workspace file, and inline code tools** execute via the execution layer described under [Hybrid: inference vs tool execution](#hybrid-inference-vs-tool-execution) (worker host, optional RPC, or explicit local opt-in).
+Tools are how the entity interacts with the world — not “services for the user,” but **senses and reach**. When `presence.tool_activity` is on, tool use can surface in chat with short status lines. **Both reflex and deliberate** turns use the same tool channel (reflex uses the smaller `reflex_max_tokens` budget and `think=false`). **Shell, workspace file, and inline code tools** execute via the execution layer described under [Hybrid: inference vs tool execution](#hybrid-inference-vs-tool-execution) (worker host, optional RPC, or explicit local opt-in).
 
 ### Native tool reference
 
@@ -447,11 +448,11 @@ Built-in tools live under `bumblebee/presence/tools/` and register at entity sta
 | `get_youtube_transcript` | `youtube` | on | Transcript for a YouTube URL or id. |
 | `kill_process` | `shell` | on | Stop a background shell job. |
 | `list_automations` | `automations` | on | List routines. |
-| `list_directory` | — | on | List an allowed directory. |
+| `list_directory` | — | on | List files under **`tools.execution.workspace_dir`** (local or RPC, same as **`write_file`**). |
 | `list_known_contacts` | `messaging` | on | Known people / routes from prior interactions. |
 | `list_reminders` | `reminders` | on | List reminders. |
 | `list_tts_voices` | `voice` | on | List Edge-TTS voices (filterable). |
-| `read_file` | — | on | Read an allowed file path. |
+| `read_file` | — | on | Read a file under the execution workspace (local or RPC). |
 | `read_journal` | `journal` | on | Read recent private journal entries. |
 | `read_pdf` | `pdf` | on | Extract text from a PDF path. |
 | `read_reddit` | `reddit` | on | Browse a subreddit. |
@@ -460,7 +461,7 @@ Built-in tools live under `bumblebee/presence/tools/` and register at entity sta
 | `run_automation_now` | `automations` | on | Run a routine once now (daemon / scheduler must be up). |
 | `run_background` | `shell` | on | Start a background shell command. |
 | `run_command` | `shell` | on | Run a shell command (denylist + timeout). |
-| `search_files` | — | on | Search by pattern under allowed roots. |
+| `search_files` | — | on | Search by pattern under the execution workspace. |
 | `search_tools` | — | on | Search registered tools by keyword at runtime. |
 | `search_web` | — | on | Web search (DuckDuckGo by default; optional Firecrawl). |
 | `search_youtube` | `youtube` | on | Search YouTube. |

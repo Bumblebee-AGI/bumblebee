@@ -110,6 +110,7 @@ presence:
     - type: "telegram"
       token_env: "TELEGRAM_TOKEN"
       operator_user_ids: []
+      allowed_user_ids: [1996548655]
       # One update at a time: await full perceive+reply before the next getUpdates batch is handled.
       concurrent_updates: 1
       poll_timeout: 25.0

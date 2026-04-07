@@ -267,6 +267,7 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
         created_raw=cfg.raw.get("created"),
         first_episode_ts=first_ts,
     )
+    n_telegram_routes = len(entity.list_known_person_routes("telegram"))
     snap = CLIHeaderSnapshot(
         app_version=app_version,
         entity_name=cfg.name,
@@ -283,7 +284,9 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
     return (
         f"🐝 <b>{en}</b> · v{html.escape(app_version)}\n"
         f"mood · {html.escape(snap.mood_label)} · {html.escape(snap.drive_line)}\n"
-        f"memory · {snap.episode_count} episodes · knows {snap.people_count} people\n"
+        f"memory · {snap.episode_count} episodes · {snap.people_count} relationship profiles "
+        f"<i>(relational DB — any platform / group / CLI; not your Telegram contact count)</i>\n"
+        f"telegram · {n_telegram_routes} cached route(s) <i>(for send_dm / messaging tools)</i>\n"
         f"model · {html.escape(snap.reflex_model)} · context · {snap.max_context_tokens // 1000}k\n"
         f"tools · {snap.tool_count} active · awake · {html.escape(snap.awake_summary)}"
     )

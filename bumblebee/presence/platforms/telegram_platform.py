@@ -61,6 +61,8 @@ log = structlog.get_logger("bumblebee.presence.telegram")
 
 # Telegram may redeliver the same update; bounded memory for seen update_id values.
 _UPDATE_DEDUP_CAP = 8192
+# (chat_id, message_id) — skip re-entrancy / redelivery before or during LLM work.
+_MESSAGE_DEDUP_CAP = 8192
 
 
 def merge_telegram_operator_user_ids(yaml_ids: object) -> set[int] | None:
@@ -159,6 +161,10 @@ class TelegramPlatform(Platform):
         self._denied_notified_chat_ids: set[int] = set()
         self._seen_update_ids: OrderedDict[int, None] = OrderedDict()
         self._update_dedup_lock = asyncio.Lock()
+        self._processed_message_ids: OrderedDict[tuple[int, int], None] = OrderedDict()
+        self._message_id_dedup_lock = asyncio.Lock()
+        self._chat_reply_locks: dict[int, asyncio.Lock] = {}
+        self._chat_reply_locks_init = asyncio.Lock()
 
         self._register_handlers()
 
@@ -268,13 +274,75 @@ class TelegramPlatform(Platform):
                 self._seen_update_ids.popitem(last=False)
             return True
 
+    @staticmethod
+    def _telegram_msg_meta(msg: Any) -> dict[str, Any]:
+        return {
+            "chat_type": str(getattr(msg.chat, "type", "") or "").lower(),
+            "telegram_message_id": int(msg.message_id),
+        }
+
+    async def _ensure_chat_reply_lock(self, chat_id: int) -> asyncio.Lock:
+        async with self._chat_reply_locks_init:
+            if chat_id not in self._chat_reply_locks:
+                self._chat_reply_locks[chat_id] = asyncio.Lock()
+            return self._chat_reply_locks[chat_id]
+
+    async def _claim_telegram_message(self, chat_id: int, message_id: int) -> bool:
+        key = (chat_id, message_id)
+        async with self._message_id_dedup_lock:
+            if key in self._processed_message_ids:
+                log.info(
+                    "telegram_duplicate_message_skipped",
+                    chat_id=chat_id,
+                    message_id=message_id,
+                )
+                return False
+            self._processed_message_ids[key] = None
+            while len(self._processed_message_ids) > _MESSAGE_DEDUP_CAP:
+                self._processed_message_ids.popitem(last=False)
+            return True
+
+    async def _release_telegram_message_claim(self, chat_id: int, message_id: int) -> None:
+        key = (chat_id, message_id)
+        async with self._message_id_dedup_lock:
+            self._processed_message_ids.pop(key, None)
+
     async def _run_callback(self, inp: Input) -> None:
         if not self._cb:
             return
-        try:
-            await self._cb(inp)
-        except Exception as e:
-            log.warning("telegram_callback_failed", error=str(e))
+        meta = inp.metadata if isinstance(inp.metadata, dict) else {}
+        mid_raw = meta.get("telegram_message_id")
+        cid_raw = (inp.channel or "").strip()
+        key: tuple[int, int] | None = None
+        if mid_raw is not None and cid_raw:
+            try:
+                key = (int(cid_raw), int(mid_raw))
+            except (TypeError, ValueError):
+                key = None
+
+        if key is not None and not await self._claim_telegram_message(key[0], key[1]):
+            return
+
+        chat_lock: asyncio.Lock | None = None
+        if cid_raw:
+            try:
+                chat_lock = await self._ensure_chat_reply_lock(int(cid_raw))
+            except (TypeError, ValueError):
+                chat_lock = None
+
+        async def _invoke() -> None:
+            try:
+                await self._cb(inp)
+            except Exception as e:
+                if key is not None:
+                    await self._release_telegram_message_claim(key[0], key[1])
+                log.warning("telegram_callback_failed", error=str(e))
+
+        if chat_lock is not None:
+            async with chat_lock:
+                await _invoke()
+        else:
+            await _invoke()
 
     async def _send_html_chunks(self, chat_id: int, html_text: str, *, pause: float = 0.0) -> None:
         chunks = split_telegram_chunks(html_text, limit=3900)
@@ -624,7 +692,7 @@ class TelegramPlatform(Platform):
             person_name=_telegram_display_name(u),
             channel=str(msg.chat_id),
             platform="telegram",
-            metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
+            metadata=self._telegram_msg_meta(msg),
         )
         await self._run_callback(inp)
 
@@ -652,7 +720,7 @@ class TelegramPlatform(Platform):
                 channel=str(msg.chat_id),
                 platform="telegram",
                 images=[{"base64": b64, "mime": "image/jpeg"}],
-                metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
+                metadata=self._telegram_msg_meta(msg),
             )
             await self._run_callback(inp)
         except Exception as e:
@@ -690,7 +758,7 @@ class TelegramPlatform(Platform):
                 channel=str(msg.chat_id),
                 platform="telegram",
                 audio=[{"base64": b64, "format": "ogg"}],
-                metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
+                metadata=self._telegram_msg_meta(msg),
             )
             await self._run_callback(inp)
         except Exception as e:
@@ -727,7 +795,7 @@ class TelegramPlatform(Platform):
                 channel=str(msg.chat_id),
                 platform="telegram",
                 images=[{"base64": b64, "mime": mime or "image/jpeg"}],
-                metadata={"chat_type": str(getattr(msg.chat, "type", "") or "").lower()},
+                metadata=self._telegram_msg_meta(msg),
             )
             await self._run_callback(inp)
         except Exception as e:

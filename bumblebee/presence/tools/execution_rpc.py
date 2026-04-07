@@ -4,9 +4,13 @@ Hybrid (`hybrid_railway`) is meant to run the **body** on Railway. Local subproc
 fallback is only allowed there (``RAILWAY_ENVIRONMENT``) or when ``tools.execution.allow_local``
 is true — so a home workstation with hybrid env vars does not silently become the execution host.
 
-The same rule applies to **direct** filesystem reads (``read_file``, ``list_directory``, ``search_files``),
-``read_pdf``, and ``get_system_info`` — they are not routed through RPC today, so they are blocked
-off-Railway for ``hybrid_railway`` unless ``allow_local`` is set.
+Read-only workspace tools (``read_file``, ``list_directory``, ``search_files``) use the same
+``ExecutionRPCClient`` as writes: **RPC first** when ``BUMBLEBEE_EXECUTION_RPC_URL`` /
+``tools.execution.base_url`` is set, otherwise local execution under ``tools.execution.workspace_dir``
+when ``local_body_host_permitted`` is true. Paths are resolved under the configured workspace root
+(like ``write_file``), not arbitrary absolute paths outside it.
+
+``read_pdf`` and ``get_system_info`` still use direct local OS access with the hybrid guard only.
 """
 
 from __future__ import annotations
@@ -33,6 +37,12 @@ log = structlog.get_logger("bumblebee.presence.tools.execution")
 
 _CLIENTS: dict[str, "ExecutionRPCClient"] = {}
 _BG_PROCS: dict[str, dict[str, Any]] = {}
+
+
+def _rpc_error_suggests_unknown_action(res: dict[str, Any]) -> bool:
+    """True when the remote execution service does not implement this action (older hands build)."""
+    err = str(res.get("error") or "").lower()
+    return "unknown action" in err or "unknown_action" in err
 
 
 def should_fallback_rpc_to_local(res: dict[str, Any]) -> bool:
@@ -112,7 +122,9 @@ class ExecutionRPCClient:
             res = await self._call_http(action, payload)
             if res.get("ok"):
                 return res
-            if self.allow_local_backend and should_fallback_rpc_to_local(res):
+            if self.allow_local_backend and (
+                should_fallback_rpc_to_local(res) or _rpc_error_suggests_unknown_action(res)
+            ):
                 log.warning(
                     "execution_rpc_unreachable_fallback_local",
                     action=action,
@@ -252,6 +264,97 @@ class ExecutionRPCClient:
                     "exit_code": None if proc.poll() is None else int(proc.poll()),
                 }
 
+            if action == "list_directory":
+                raw_path = str(payload.get("path") or ".").strip() or "."
+                target = self._resolve_workspace_path(raw_path)
+                if not target.exists():
+                    return {"ok": False, "error": f"path not found: {target}"}
+                if not target.is_dir():
+                    return {"ok": False, "error": f"not a directory: {target}"}
+                try:
+                    out: list[dict[str, str | int]] = []
+                    for child in sorted(target.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower()))[:500]:
+                        kind = "dir" if child.is_dir() else "file"
+                        size = child.stat().st_size if child.is_file() else 0
+                        out.append({"name": child.name, "kind": kind, "size": int(size)})
+                    return {"ok": True, "path": str(target), "entries": out}
+                except OSError as e:
+                    return {"ok": False, "error": str(e)}
+
+            if action == "read_file":
+                max_bytes = int(payload.get("max_bytes") or 48000)
+                max_bytes = max(1024, min(max_bytes, 256_000))
+                raw_path = str(payload.get("path") or ".").strip() or "."
+                target = self._resolve_workspace_path(raw_path)
+                if not target.exists():
+                    return {"ok": False, "error": f"path not found: {target}"}
+                if not target.is_file():
+                    return {"ok": False, "error": f"not a file: {target}"}
+                try:
+                    def _int_field(key: str) -> int:
+                        v = payload.get(key)
+                        if v is None or v == "":
+                            return 0
+                        try:
+                            return int(v)
+                        except (TypeError, ValueError):
+                            return 0
+
+                    start_line = _int_field("start_line")
+                    end_line = _int_field("end_line")
+                    if start_line > 0:
+                        if end_line > 0 and end_line < start_line:
+                            return {"ok": False, "error": "end_line must be >= start_line"}
+                        end_eff = end_line if end_line >= start_line else start_line
+                        max_span = 400
+                        if end_eff - start_line + 1 > max_span:
+                            return {
+                                "ok": False,
+                                "error": f"line range too wide (max {max_span} lines per call)",
+                            }
+                        lines_out: list[tuple[int, str]] = []
+                        with target.open("r", encoding="utf-8", errors="replace") as f:
+                            for i, line in enumerate(f, start=1):
+                                if i > end_eff:
+                                    break
+                                if i >= start_line:
+                                    lines_out.append((i, line.rstrip("\r\n")))
+                        if not lines_out:
+                            return {
+                                "ok": False,
+                                "error": f"no lines in range {start_line}-{end_eff} (file may be shorter)",
+                            }
+                        header = f"--- lines {start_line}-{lines_out[-1][0]} of {target.name} (1-based) ---\n"
+                        body = "\n".join(f"{n:6d}|{text}" for n, text in lines_out)
+                        return {
+                            "ok": True,
+                            "path": str(target),
+                            "content": header + body,
+                            "line_mode": True,
+                            "start_line": start_line,
+                            "end_line": lines_out[-1][0],
+                        }
+                    data = target.read_bytes()[:max_bytes]
+                    return {
+                        "ok": True,
+                        "path": str(target),
+                        "content": data.decode("utf-8", errors="replace"),
+                    }
+                except OSError as e:
+                    return {"ok": False, "error": str(e)}
+
+            if action == "search_files":
+                directory = str(payload.get("directory") or ".").strip() or "."
+                pattern = str(payload.get("pattern") or "").strip() or "*"
+                d = self._resolve_workspace_path(directory)
+                if not d.exists() or not d.is_dir():
+                    return {"ok": False, "error": f"directory not found: {d}"}
+                try:
+                    matches = [str(p) for p in d.rglob(pattern) if p.is_file()][:1000]
+                    return {"ok": True, "directory": str(d), "pattern": pattern, "matches": matches}
+                except OSError as e:
+                    return {"ok": False, "error": str(e)}
+
             if action == "write_file":
                 target = self._resolve_workspace_path(str(payload.get("path") or ""))
                 content = str(payload.get("content") or "")
@@ -350,9 +453,28 @@ class ExecutionRPCClient:
 HYBRID_OFF_RAILWAY_TOOL_BLOCK = (
     "Tool disabled: hybrid_railway on a host without RAILWAY_ENVIRONMENT (this Python process is not "
     "the Railway container). Run the worker on Railway, or set tools.execution.allow_local in entity YAML "
-    "for local debugging. If you use Telegram and only wanted the cloud bot, stop any local "
-    "`bumblebee run` that uses the same TELEGRAM_TOKEN."
+    "for local debugging. For file tools without touching this PC, set BUMBLEBEE_EXECUTION_RPC_URL (or "
+    "tools.execution.base_url) to a hands host that implements the execution RPC. If you use Telegram and "
+    "only wanted the cloud bot, stop any local `bumblebee run` that uses the same TELEGRAM_TOKEN."
 )
+
+
+def execution_rpc_url_configured(entity: Any) -> bool:
+    """True when an HTTP execution backend URL is configured (env or entity tools.execution)."""
+    tools_cfg = _effective_tools_config(entity)
+    exec_cfg = tools_cfg.get("execution") if isinstance(tools_cfg.get("execution"), dict) else {}
+    if not isinstance(exec_cfg, dict):
+        exec_cfg = {}
+    base = (
+        (os.environ.get("BUMBLEBEE_EXECUTION_RPC_URL") or "").strip()
+        or str(exec_cfg.get("base_url") or "").strip()
+    )
+    return bool(base.rstrip("/"))
+
+
+def read_only_workspace_fs_allowed(entity: Any) -> bool:
+    """True when read-only workspace file tools may run (local/Railway body or RPC URL set)."""
+    return local_body_host_permitted(entity) or execution_rpc_url_configured(entity)
 
 
 def local_body_host_permitted(entity: Any) -> bool:

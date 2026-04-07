@@ -1,14 +1,13 @@
-"""Filesystem tools: local read-only helpers + dangerous writes via execution backend."""
+"""Filesystem tools: read-only and write paths via the shared execution backend (local or RPC)."""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from bumblebee.presence.tools.execution_rpc import (
     HYBRID_OFF_RAILWAY_TOOL_BLOCK,
     get_execution_client,
-    local_body_host_permitted,
+    read_only_workspace_fs_allowed,
 )
 from bumblebee.presence.tools.registry import tool
 from bumblebee.presence.tools.runtime import require_tool_runtime
@@ -17,75 +16,78 @@ from bumblebee.presence.tools.runtime import require_tool_runtime
 @tool(
     name="read_file",
     description=(
-        "Read a local text or UTF-8 file the user shared or referenced (read-only). "
-        "You are not a file manager — only open paths you were given."
+        "Read a text or UTF-8 file under the entity workspace / execution host (read-only). "
+        "Uses the same backend as write_file (RPC when configured). Only open paths you were given.\n\n"
+        "When the user asks for a specific line number or a small range, set start_line (1-based, first line is 1) "
+        "and optionally end_line (inclusive). The tool returns lines prefixed with the line number — quote that "
+        "exactly; do not guess or recount from a truncated read. Blank lines count as lines. Omit start_line to "
+        "read from the start of the file up to max_bytes."
     ),
 )
-async def read_file(path: str, max_bytes: int = 48000) -> str:
+async def read_file(path: str, max_bytes: int = 48000, start_line: int = 0, end_line: int = 0) -> str:
     ctx = require_tool_runtime()
-    if not local_body_host_permitted(ctx.entity):
+    if not read_only_workspace_fs_allowed(ctx.entity):
         return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
-    p = Path(path).expanduser()
-    try:
-        p = p.resolve()
-    except OSError as e:
-        return json.dumps({"error": str(e)})
-    try:
-        data = p.read_bytes()[: max(1024, min(max_bytes, 256_000))]
-        return data.decode("utf-8", errors="replace")
-    except OSError as e:
-        return json.dumps({"error": str(e)})
+    client = get_execution_client()
+    payload: dict[str, int | str] = {
+        "path": path or ".",
+        "max_bytes": max(1024, min(max_bytes, 256_000)),
+    }
+    if start_line > 0:
+        payload["start_line"] = int(start_line)
+    if end_line > 0:
+        payload["end_line"] = int(end_line)
+    res = await client.call("read_file", payload)
+    if res.get("ok"):
+        return str(res.get("content") or "")
+    return json.dumps({"error": res.get("error") or "read failed"})
 
 
 @tool(
     name="list_directory",
-    description="See what files and folders are in a directory.",
+    description=(
+        "List files and folders under the entity workspace on the execution host (same as write_file / "
+        "run_command). When the worker runs on Railway, this is the container; with BUMBLEBEE_EXECUTION_RPC_URL "
+        "set from a hybrid laptop, it is the RPC host — not your dev PC unless allow_local is on."
+    ),
 )
 async def list_directory(path: str = ".") -> str:
     ctx = require_tool_runtime()
-    if not local_body_host_permitted(ctx.entity):
+    if not read_only_workspace_fs_allowed(ctx.entity):
         return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
-    p = Path(path).expanduser()
-    try:
-        p = p.resolve()
-    except OSError as e:
-        return json.dumps({"error": str(e)})
-    if not p.exists():
-        return json.dumps({"error": f"path not found: {p}"})
-    if not p.is_dir():
-        return json.dumps({"error": f"not a directory: {p}"})
-    try:
-        out: list[dict[str, str | int]] = []
-        for child in sorted(p.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower()))[:500]:
-            kind = "dir" if child.is_dir() else "file"
-            size = child.stat().st_size if child.is_file() else 0
-            out.append({"name": child.name, "kind": kind, "size": int(size)})
-        return json.dumps({"path": str(p), "entries": out}, ensure_ascii=False)
-    except OSError as e:
-        return json.dumps({"error": str(e)})
+    client = get_execution_client()
+    res = await client.call("list_directory", {"path": path or "."})
+    if res.get("ok"):
+        return json.dumps(
+            {"path": str(res.get("path") or ""), "entries": res.get("entries") or []},
+            ensure_ascii=False,
+        )
+    return json.dumps({"error": res.get("error") or "list failed"})
 
 
 @tool(
     name="search_files",
-    description="Search for files matching a pattern.",
+    description="Search for files matching a pattern under the entity workspace / execution host.",
 )
 async def search_files(directory: str, pattern: str) -> str:
     ctx = require_tool_runtime()
-    if not local_body_host_permitted(ctx.entity):
+    if not read_only_workspace_fs_allowed(ctx.entity):
         return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
-    d = Path(directory).expanduser()
-    try:
-        d = d.resolve()
-    except OSError as e:
-        return json.dumps({"error": str(e)})
-    if not d.exists() or not d.is_dir():
-        return json.dumps({"error": f"directory not found: {d}"})
-    pat = (pattern or "").strip() or "*"
-    try:
-        matches = [str(p) for p in d.rglob(pat) if p.is_file()][:1000]
-        return json.dumps({"directory": str(d), "pattern": pat, "matches": matches}, ensure_ascii=False)
-    except OSError as e:
-        return json.dumps({"error": str(e)})
+    client = get_execution_client()
+    res = await client.call(
+        "search_files",
+        {"directory": directory or ".", "pattern": (pattern or "").strip() or "*"},
+    )
+    if res.get("ok"):
+        return json.dumps(
+            {
+                "directory": str(res.get("directory") or ""),
+                "pattern": str(res.get("pattern") or ""),
+                "matches": res.get("matches") or [],
+            },
+            ensure_ascii=False,
+        )
+    return json.dumps({"error": res.get("error") or "search failed"})
 
 
 @tool(

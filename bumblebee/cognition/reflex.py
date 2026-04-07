@@ -1,92 +1,9 @@
-"""Fast reflex path — minimal context, same model family as deliberate by default."""
+"""Reflex routing (fast turns) still exists in ``CognitionRouter``.
 
-from __future__ import annotations
+Inference for reflex no longer uses a separate class: ``entity.perceive`` calls
+``DeliberateCognition.iter_responses(..., inference_profile=\"reflex\")`` so reflex
+turns get the same tool channel, inner voice, and delivery path as deliberate,
+using the reflex model and ``reflex_max_tokens`` from harness config.
+"""
 
-from collections.abc import Awaitable, Callable
-
-from bumblebee.config import EntityConfig
-from bumblebee.cognition import gemma
-from bumblebee.cognition.router import ContextPackage
-from bumblebee.models import Input
-from bumblebee.inference.protocol import InferenceProvider
-from bumblebee.inference.types import ChatCompletionResult
-
-
-class ReflexCognition:
-    def __init__(self, entity: EntityConfig, client: InferenceProvider) -> None:
-        self.entity = entity
-        self.client = client
-
-    async def respond(
-        self,
-        _inp: Input,
-        system_prompt: str,
-        recent_messages: list[dict[str, str]],
-        context: ContextPackage,
-    ) -> tuple[ChatCompletionResult, str]:
-        h = self.entity.harness.cognition
-        msgs: list[dict] = [{"role": "system", "content": system_prompt[:6000]}]
-        for m in recent_messages[-6:]:
-            msgs.append(m)
-        num_ctx = self.entity.effective_ollama_num_ctx()
-        res = await self.client.chat_completion(
-            self.entity.cognition.reflex_model,
-            msgs,
-            temperature=min(0.9, h.temperature),
-            max_tokens=h.reflex_max_tokens,
-            think=False,
-            num_ctx=num_ctx,
-        )
-        mood = "neutral"
-        low = (res.content or "").lower()
-        if any(x in low for x in ("ha", "lol", "funny")):
-            mood = "positive"
-        elif any(x in low for x in ("sorry", "unfortunately", "can't")):
-            mood = "slight_negative"
-        return res, mood
-
-    async def respond_stream(
-        self,
-        _inp: Input,
-        system_prompt: str,
-        recent_messages: list[dict[str, str]],
-        context: ContextPackage,
-        on_delta: Callable[[str], Awaitable[None]],
-    ) -> tuple[ChatCompletionResult, str]:
-        h = self.entity.harness.cognition
-        msgs: list[dict] = [{"role": "system", "content": system_prompt[:6000]}]
-        for m in recent_messages[-6:]:
-            msgs.append(m)
-        num_ctx = self.entity.effective_ollama_num_ctx()
-        gen = await self.client.chat_completion(
-            self.entity.cognition.reflex_model,
-            msgs,
-            temperature=min(0.9, h.temperature),
-            max_tokens=h.reflex_max_tokens,
-            think=False,
-            stream=True,
-            num_ctx=num_ctx,
-        )
-        buf = ""
-        prev_visible = ""
-        async for delta in gen:  # type: ignore[union-attr]
-            buf += delta
-            parsed = gemma.parse_assistant_output(buf)
-            vis = parsed.visible_user_text
-            if len(vis) > len(prev_visible):
-                await on_delta(vis[len(prev_visible) :])
-                prev_visible = vis
-        final = gemma.parse_assistant_output(buf)
-        visible = (final.visible_user_text or "").strip() or "…"
-        res = ChatCompletionResult(
-            content=visible,
-            thinking=final.thinking,
-            raw_assistant_text=buf,
-        )
-        mood = "neutral"
-        low = visible.lower()
-        if any(x in low for x in ("ha", "lol", "funny")):
-            mood = "positive"
-        elif any(x in low for x in ("sorry", "unfortunately", "can't")):
-            mood = "slight_negative"
-        return res, mood
+__all__: list[str] = []

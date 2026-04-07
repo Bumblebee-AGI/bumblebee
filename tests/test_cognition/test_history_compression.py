@@ -86,6 +86,17 @@ async def test_trim_history_invokes_merge_and_prefixes_messages(entity_config):
     assert msgs[-1] == um
 
 
+def test_messages_for_model_drops_duplicate_trailing_user(entity_config):
+    ent = Entity(entity_config)
+    ent._history_rolling_summary = ""
+    ent.config.cognition.history_compression.enabled = False
+    ent._history = [{"role": "user", "content": "same"}]
+    um = {"role": "user", "content": "same"}
+    msgs = ent._messages_for_model(um)
+    assert len(msgs) == 1
+    assert msgs[0]["content"] == "same"
+
+
 @pytest.mark.asyncio
 async def test_trim_skips_merge_when_disabled(entity_config):
     entity_config.cognition.history_compression.enabled = False

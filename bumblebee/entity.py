@@ -17,7 +17,6 @@ import structlog
 
 from bumblebee.cognition.deliberate import DeliberateCognition, fit_system_prompt_to_budget
 from bumblebee.cognition.inner_voice import InnerVoiceProcessor
-from bumblebee.cognition.reflex import ReflexCognition
 from bumblebee.cognition.router import CognitionRouter, ContextPackage
 from bumblebee.cognition import gemma, senses
 from bumblebee.cognition.history_compression import merge_rolling_summary
@@ -87,10 +86,18 @@ from bumblebee.utils.ollama_client import ChatCompletionResult, ToolCallSpec
 
 log = structlog.get_logger("bumblebee.entity")
 
+# entity_state key: JSON {"entries": {cache_key: route_dict, ...}} for cross-session messaging routes.
+PERSON_ROUTES_STATE_KEY = "person_routes_v1"
+
 _CLI_OPENING_USER = (
     "The terminal session just opened — no one has typed anything yet. "
     "You speak first: one short, in-character line (a greeting, a beat of silence, "
     "or a callback to last time if it fits). Do not offer help or ask how you can assist."
+)
+
+_FALLBACK_PLAIN_REPLY_FAILURE = (
+    "Something went wrong on my end and I couldn't finish that reply. "
+    "If it keeps happening, check that your model server is up and try again."
 )
 
 
@@ -268,7 +275,6 @@ class Entity:
         self.narrative_memory = NarrativeMemory(self.store)
         self.narrative_synth = NarrativeSynthesizer(config, self.store)
         self.router = CognitionRouter(config, self.client)
-        self.reflex = ReflexCognition(config, self.client)
         self.deliberate = DeliberateCognition(config, self.client)
         self.embodiment = Embodiment(config)
         self.tools = ToolRegistry()
@@ -422,6 +428,35 @@ class Entity:
         if pname:
             self._person_routes[f"name:{pname}"] = route
 
+    def _apply_person_routes_state(self, raw: str) -> None:
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            log.warning("person_routes_state_invalid_json", module="entity")
+            return
+        entries = data.get("entries")
+        if not isinstance(entries, dict):
+            return
+        for k, v in entries.items():
+            if not isinstance(k, str) or not isinstance(v, dict):
+                continue
+            self._person_routes[k] = {
+                "platform": str(v.get("platform") or ""),
+                "channel": str(v.get("channel") or ""),
+                "person_id": str(v.get("person_id") or ""),
+                "person_name": str(v.get("person_name") or ""),
+                "chat_type": str(v.get("chat_type") or ""),
+                "at": float(v.get("at") or 0.0),
+            }
+
+    async def _persist_person_routes(self, conn) -> None:
+        payload = json.dumps({"entries": self._person_routes}, ensure_ascii=False)
+        await conn.execute(
+            "INSERT OR REPLACE INTO entity_state (key, value) VALUES (?, ?)",
+            (PERSON_ROUTES_STATE_KEY, payload),
+        )
+        await conn.commit()
+
     def list_known_person_routes(self, platform: str = "") -> list[dict[str, str | float]]:
         pf = (platform or "").strip().lower()
         out: list[dict[str, str | float]] = []
@@ -526,6 +561,8 @@ class Entity:
                     lst = json.loads(v)
                     if isinstance(lst, list):
                         self.config.drives.curiosity_topics = [str(x) for x in lst]
+                elif k == PERSON_ROUTES_STATE_KEY:
+                    self._apply_person_routes_state(v if isinstance(v, str) else str(v))
             except (json.JSONDecodeError, TypeError):
                 continue
 
@@ -634,6 +671,12 @@ class Entity:
         await self.refresh_mcp_servers()
         self._presence_tools_bootstrapped = True
 
+    @staticmethod
+    def _message_content_str(content: Any) -> str:
+        if isinstance(content, list):
+            return gemma.stringify_content_blocks(content)
+        return str(content or "")
+
     def _recent_conversation_for_knowledge(self, inp: Input, max_turns: int | None = None) -> str:
         """Last few chat turns plus the current user message — for knowledge retrieval."""
         if max_turns is None:
@@ -645,26 +688,31 @@ class Entity:
             lines.append(f"[earlier thread summary]\n{rs[:2500]}")
         for m in self._history[-max_turns:]:
             role = str(m.get("role", ""))
-            c = m.get("content", "")
-            if isinstance(c, list):
-                c = gemma.stringify_content_blocks(c)
-            lines.append(f"{role}: {str(c)[:2000]}")
-        lines.append(f"user: {self._history_user_turn_text(inp)[:2000]}")
+            c = self._message_content_str(m.get("content"))
+            lines.append(f"{role}: {c[:2000]}")
+        current_line = f"user: {self._history_user_turn_text(inp)[:2000]}".strip()
+        if not lines or lines[-1].strip() != current_line:
+            lines.append(current_line)
         return "\n".join(lines)
 
     def _messages_for_model(self, user_msg: dict[str, Any]) -> list[dict[str, Any]]:
         """Rolling chat + optional compressed prefix (same thread, not a new session)."""
         hc = self.config.cognition.history_compression
         s = (self._history_rolling_summary or "").strip()
+        um = self._message_content_str(user_msg.get("content")).strip()
+        hist = list(self._history)
+        if hist and str(hist[-1].get("role", "")) == "user" and um:
+            if self._message_content_str(hist[-1].get("content")).strip() == um:
+                hist = hist[:-1]
         if not s or not hc.enabled:
-            return self._history + [user_msg]
+            return hist + [user_msg]
         cap = min(int(hc.summary_max_chars), 8000)
         body = s[:cap]
         prefix = (
             "[Earlier conversation summary — same ongoing chat; continue naturally; "
             "do not reset with a generic greeting unless it genuinely fits]\n\n" + body
         )
-        return [{"role": "user", "content": prefix}] + self._history + [user_msg]
+        return [{"role": "user", "content": prefix}] + hist + [user_msg]
 
     async def _trim_history_with_compression(self) -> None:
         keep = max(8, int(self.config.cognition.rolling_history_max_messages or 40))
@@ -751,32 +799,63 @@ class Entity:
         return prefix + "\n\n---\n\nCurrent message:\n" + fb_line
 
     async def _fallback_plain_reply(self, inp: Input) -> str:
-        """When the main path yields no visible text (parsing/Ollama quirks), one short no-thinking completion."""
+        """When the main path yields no visible text (parsing/Ollama quirks), one short no-thinking completion.
+
+        Retries use ``harness.ollama.retry_attempts`` / ``retry_delay``; if all attempts fail, returns a
+        user-visible error instead of silence or a generic greeting.
+        """
         name = self.config.name
         sys_ = (
             f"You are {name}, texting naturally. Answer in 1–3 short sentences. "
             f"If asked who you are, answer as {name} in character — never Gemma/Google/'large language model' intros. "
             "No stage directions: do not describe pauses, actions, or parenthetical asides—only words you say."
         )
-        try:
-            fb_user = self._fallback_user_turn_text(inp)
-            res = await self.client.chat_completion(
-                self.config.cognition.reflex_model,
-                [
-                    {"role": "system", "content": sys_},
-                    {"role": "user", "content": fb_user},
-                ],
-                temperature=min(0.9, self.config.harness.cognition.temperature),
-                max_tokens=min(384, self.config.harness.cognition.reflex_max_tokens + 128),
-                think=False,
-                num_ctx=self.config.effective_ollama_num_ctx(),
-            )
-            out = (res.content or "").strip()
-            if not _reply_too_thin(out):
-                return out
-        except Exception as e:
-            log.warning("fallback_reply_failed", module="entity", error=str(e))
-        return "yeah i'm here — what's up?"
+        fb_user = self._fallback_user_turn_text(inp)
+        o = self.config.harness.ollama
+        attempts = max(1, int(o.retry_attempts))
+        delay = float(o.retry_delay)
+        last_error: str | None = None
+        for attempt in range(attempts):
+            try:
+                res = await self.client.chat_completion(
+                    self.config.cognition.reflex_model,
+                    [
+                        {"role": "system", "content": sys_},
+                        {"role": "user", "content": fb_user},
+                    ],
+                    temperature=min(0.9, self.config.harness.cognition.temperature),
+                    max_tokens=min(384, self.config.harness.cognition.reflex_max_tokens + 128),
+                    think=False,
+                    num_ctx=self.config.effective_ollama_num_ctx(),
+                )
+                out = (res.content or "").strip()
+                if not _reply_too_thin(out):
+                    return out
+                log.info(
+                    "fallback_reply_thin",
+                    module="entity",
+                    attempt=attempt + 1,
+                    attempts=attempts,
+                    preview=out[:120] if out else "",
+                )
+            except Exception as e:
+                last_error = str(e)
+                log.warning(
+                    "fallback_reply_failed",
+                    module="entity",
+                    attempt=attempt + 1,
+                    attempts=attempts,
+                    error=last_error,
+                )
+            if attempt + 1 < attempts:
+                await asyncio.sleep(delay * (2**attempt))
+        log.warning(
+            "fallback_reply_exhausted",
+            module="entity",
+            attempts=attempts,
+            last_error=last_error,
+        )
+        return _FALLBACK_PLAIN_REPLY_FAILURE
 
     @staticmethod
     def _finish_reason_hit_limit(finish_reason: str | None) -> bool:
@@ -846,13 +925,9 @@ class Entity:
         model = (
             self.config.cognition.deliberate_model
             if is_deliberate
-            else self.config.cognition.reflex_model
+            else (self.config.cognition.reflex_model or self.config.cognition.deliberate_model)
         )
-        sys_cap = (
-            max(2000, int(self.config.cognition.system_prompt_char_limit or 12000))
-            if is_deliberate
-            else 6000
-        )
+        sys_cap = max(2000, int(self.config.cognition.system_prompt_char_limit or 12000))
         if is_deliberate:
             mt = int(self.config.cognition.deliberate_max_tokens or self.config.harness.cognition.deliberate_max_tokens)
         else:
@@ -926,6 +1001,7 @@ class Entity:
                 "person_name": inp.person_name,
                 "at": time.time(),
             }
+            # In-memory routes for this process (e.g. turns that return before DB session).
             self._remember_person_route(inp)
         try:
             await self._ensure_presence_tools()
@@ -976,6 +1052,13 @@ class Entity:
 
         async with self.store.session() as db:
             await self._ensure_state_hydrated(db)
+            if not preserve_conversation_route:
+                # Refresh timestamps after merge-load from entity_state.
+                self._remember_person_route(inp)
+                try:
+                    await self._persist_person_routes(db)
+                except Exception as e:
+                    log.warning("persist_person_routes_failed", module="entity", error=str(e))
 
             rel_existing = await self.relational.get(db, inp.person_id)
             rel_blurb = (
@@ -1063,7 +1146,7 @@ class Entity:
                     "they are clearly addressing everyone or someone else by name.]"
                 )
 
-            if route == "deliberate":
+            if route in ("reflex", "deliberate"):
                 cap = max(2000, int(self.config.cognition.system_prompt_char_limit or 12000))
                 full_tools = self.tools.system_tool_instruction_block()
                 tools_block = (
@@ -1093,96 +1176,64 @@ class Entity:
             thinking: str | None = None
             mood_sig = "neutral"
             deliberate_history_extra: list[dict[str, Any]] = []
+            intermediate_visible_to_chat = False
+            last_intermediate_chat_segment = ""
+            tool_state: dict[str, Any] = {}
+            final_res: ChatCompletionResult | None = None
 
-            if route == "reflex":
-                if stream:
-                    res, mood_sig = await self.reflex.respond_stream(
-                        inp,
-                        sys_prompt,
-                        self._messages_for_model(user_msg),
-                        ctx,
-                        stream,
-                    )
-                else:
-                    res, mood_sig = await self.reflex.respond(
-                        inp,
-                        sys_prompt,
-                        self._messages_for_model(user_msg),
-                        ctx,
-                    )
-                reply_text = (res.content or "").strip()
-                reply_text = await self._maybe_extend_truncated_reply(
-                    route, res, reply_text, sys_prompt, user_msg
-                )
-                if mood_sig == "positive":
-                    await self.emotions.process_stimulus(
-                        "positive",
-                        0.25,
-                        {"relationship_warmth": rw},
-                    )
-                elif mood_sig == "slight_negative":
-                    await self.emotions.process_stimulus(
-                        "negative",
-                        0.15,
-                        {"relationship_warmth": rw},
-                    )
-            else:
-                tool_state: dict[str, Any] = {}
-                intermediate_visible_to_chat = False
-                last_intermediate_chat_segment = ""
+            async def _tool_with_activity(spec: ToolCallSpec) -> str:
+                if tool_names_log is not None:
+                    tool_names_log.append(spec.name)
+                if self.config.presence.tool_activity and self.current_platform is not None:
+                    desc = format_tool_activity(spec.name, dict(spec.arguments))
+                    if desc:
+                        try:
+                            await self.current_platform.send_tool_activity(desc)
+                        except Exception as e:
+                            log.debug(
+                                "send_tool_activity_failed",
+                                module="entity",
+                                error=str(e),
+                            )
+                return await self._tool_exec(spec, inp=inp, state=tool_state)
 
-                async def _tool_with_activity(spec: ToolCallSpec) -> str:
-                    if tool_names_log is not None:
-                        tool_names_log.append(spec.name)
-                    if self.config.presence.tool_activity and self.current_platform is not None:
-                        desc = format_tool_activity(spec.name, dict(spec.arguments))
-                        if desc:
-                            try:
-                                await self.current_platform.send_tool_activity(desc)
-                            except Exception as e:
-                                log.debug(
-                                    "send_tool_activity_failed",
-                                    module="entity",
-                                    error=str(e),
-                                )
-                    return await self._tool_exec(spec, inp=inp, state=tool_state)
+            inference_profile = "reflex" if route == "reflex" else "deliberate"
+            async for ev in self.deliberate.iter_responses(
+                inp,
+                sys_prompt,
+                self._messages_for_model(user_msg),
+                tools=self.tools.openai_tools(),
+                tool_executor=_tool_with_activity,
+                inference_profile=inference_profile,
+            ):
+                if ev.kind == "intermediate":
+                    deliberate_history_extra.extend(ev.history_entries)
+                    raw_seg = ev.display_text.strip()
+                    if raw_seg and not _intermediate_text_looks_like_tool_channel(
+                        raw_seg
+                    ):
+                        seg = self.voice_ctl.sanitize_reply(raw_seg)
+                        if seg and not _reply_too_thin(seg):
+                            await _deliver_embodied_deliberate_segment(
+                                self,
+                                inp,
+                                seg,
+                                stream=stream,
+                                cli_stream_final=False,
+                            )
+                            if inp.platform in ("discord", "telegram"):
+                                intermediate_visible_to_chat = True
+                                last_intermediate_chat_segment = seg
+                elif ev.kind == "final":
+                    reply_text = (ev.display_text or "").strip()
+                    thinking = ev.merged_thinking
+                    final_res = ev.last_result
 
-                final_res: ChatCompletionResult | None = None
-                async for ev in self.deliberate.iter_responses(
-                    inp,
-                    sys_prompt,
-                    self._messages_for_model(user_msg),
-                    tools=self.tools.openai_tools(),
-                    tool_executor=_tool_with_activity,
-                ):
-                    if ev.kind == "intermediate":
-                        deliberate_history_extra.extend(ev.history_entries)
-                        raw_seg = ev.display_text.strip()
-                        if raw_seg and not _intermediate_text_looks_like_tool_channel(
-                            raw_seg
-                        ):
-                            seg = self.voice_ctl.sanitize_reply(raw_seg)
-                            if seg and not _reply_too_thin(seg):
-                                await _deliver_embodied_deliberate_segment(
-                                    self,
-                                    inp,
-                                    seg,
-                                    stream=stream,
-                                    cli_stream_final=False,
-                                )
-                                if inp.platform in ("discord", "telegram"):
-                                    intermediate_visible_to_chat = True
-                                    last_intermediate_chat_segment = seg
-                    elif ev.kind == "final":
-                        reply_text = (ev.display_text or "").strip()
-                        thinking = ev.merged_thinking
-                        final_res = ev.last_result
-
-                if final_res is None:
-                    final_res = ChatCompletionResult(content=reply_text)
-                reply_text = await self._maybe_extend_truncated_reply(
-                    route, final_res, reply_text, sys_prompt, user_msg
-                )
+            if final_res is None:
+                final_res = ChatCompletionResult(content=reply_text)
+            reply_text = await self._maybe_extend_truncated_reply(
+                route, final_res, reply_text, sys_prompt, user_msg
+            )
 
             if _reply_too_thin(reply_text):
                 log.info("reply_fallback_triggered", module="entity", route=route)
@@ -1193,7 +1244,7 @@ class Entity:
                 log.info("reply_post_sanitize_fallback", module="entity", route=route)
                 reply_text = self.voice_ctl.sanitize_reply(await self._fallback_plain_reply(inp))
 
-            if route == "deliberate":
+            if route in ("reflex", "deliberate"):
                 skip_final_chat = (
                     intermediate_visible_to_chat
                     and inp.platform in ("discord", "telegram")
@@ -1205,7 +1256,7 @@ class Entity:
                 )
                 if skip_final_chat and last_intermediate_chat_segment.strip():
                     reply_text = last_intermediate_chat_segment.strip()
-                slice_ = self.inner_voice.process(thinking, reply_text)
+                slice_ = self.inner_voice.process(thinking or "", reply_text)
                 await self.inner_voice.persist_summary(
                     db,
                     slice_.summary,
@@ -1228,19 +1279,33 @@ class Entity:
                             stream=stream,
                             cli_stream_final=False,
                         )
-                await self.emotions.process_stimulus(
-                    "deep",
-                    0.35,
-                    {"relationship_warmth": rw},
-                )
+                if route == "deliberate":
+                    await self.emotions.process_stimulus(
+                        "deep",
+                        0.35,
+                        {"relationship_warmth": rw},
+                    )
+                else:
+                    low = (reply_text or "").lower()
+                    if any(x in low for x in ("ha", "lol", "funny")):
+                        await self.emotions.process_stimulus(
+                            "positive",
+                            0.25,
+                            {"relationship_warmth": rw},
+                        )
+                    elif any(x in low for x in ("sorry", "unfortunately", "can't")):
+                        await self.emotions.process_stimulus(
+                            "negative",
+                            0.15,
+                            {"relationship_warmth": rw},
+                        )
 
             if routine_history:
                 if record_user_message:
                     self._history.append(
                         {"role": "user", "content": self._history_user_turn_text(inp)},
                     )
-                if route == "deliberate":
-                    self._history.extend(deliberate_history_extra)
+                self._history.extend(deliberate_history_extra)
                 self._history.append({"role": "assistant", "content": reply_text[:8000]})
                 await self._trim_history_with_compression()
 
@@ -1249,13 +1314,13 @@ class Entity:
                 if meaningful_override is not None:
                     meaningful = meaningful_override
                 else:
-                    meaningful = len(inp.text) > 40 or route == "deliberate"
+                    meaningful = len(inp.text) > 40 or bool(deliberate_history_extra)
                 self.drives.on_interaction(meaningful)
             else:
                 if meaningful_override is not None:
                     meaningful = meaningful_override
                 else:
-                    meaningful = len(inp.text) > 40 or route == "deliberate"
+                    meaningful = len(inp.text) > 40 or bool(deliberate_history_extra)
 
             thr = self.config.harness.memory.episode_significance_threshold
             fam = rel_existing.familiarity if rel_existing else 0.0
