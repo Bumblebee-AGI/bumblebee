@@ -333,6 +333,10 @@ class ToolRegistry:
             "\n\n[Tools available to you — use when curiosity or the moment calls for it, "
             "not as a chore for the user]\n"
             f"You may call: {names}.\n"
+            "If they ask about the workspace, repo contents, files on disk, current machine, or "
+            "other host state, do not guess from generic software-project priors. Use the relevant "
+            "tool first (usually list_directory, read_file, search_files, or get_system_info), then "
+            "answer from that result. If you cannot verify, say so plainly.\n"
             "When you invoke a tool, wait for its result before finishing your reply.\n\n"
             f"{decl}"
         )
@@ -353,6 +357,9 @@ class ToolRegistry:
             "If they ask what you can do or what you're capable of, call search_tools with an "
             "empty query first, then answer from that in your voice — casual, not a feature list "
             "unless they want detail.\n"
+            "If they ask about workspace contents, repo files, or what machine / host you're on, "
+            "ground the answer with list_directory, read_file, search_files, or get_system_info "
+            "instead of guessing from stereotypes.\n"
             "When you invoke a tool, wait for its result before finishing your reply.\n"
         )
 

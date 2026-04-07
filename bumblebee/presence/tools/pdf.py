@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from bumblebee.presence.tools.execution_rpc import (
-    HYBRID_OFF_RAILWAY_TOOL_BLOCK,
+    local_tool_block_message,
     local_body_host_permitted,
 )
 from bumblebee.presence.tools.registry import tool
@@ -42,7 +42,7 @@ def _parse_pages(pages: str, page_count: int) -> list[int]:
 async def read_pdf(path: str, pages: str = "") -> str:
     ctx = require_tool_runtime()
     if not local_body_host_permitted(ctx.entity):
-        return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
+        return json.dumps({"error": local_tool_block_message(ctx.entity)})
     p = Path(path).expanduser()
     try:
         p = p.resolve()

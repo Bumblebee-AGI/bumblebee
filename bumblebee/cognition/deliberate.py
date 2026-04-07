@@ -1,9 +1,8 @@
-"""26B deliberate path with thinking + multi-step tools."""
+"""Primary agent loop with tool use + bounded continuation."""
 
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
@@ -47,9 +46,18 @@ def fit_system_prompt_to_budget(system_prompt: str, cap: int) -> str:
 
 
 _TOOL_CONTINUATION_USER = (
-    "Same turn — tools are still available. If your next step needs a tool (API call, code run, "
-    "fetch, retry after an error, etc.), call it now; do not only say you will do it later. "
-    "If you are actually done, answer the user in plain text, in character."
+    "Same turn. Keep going until you can either answer the person clearly from the current tool "
+    "results, call another tool, or state the exact failure. Do not stop at progress chatter."
+)
+
+_POST_TOOL_CONTINUATION_USER = (
+    "Same turn. You have tool results now. Either answer the user from those results, or if a tool "
+    "failed and another tool can fix it, call that tool now. Do not only say you're checking."
+)
+
+_FINAL_RECOVERY_USER = (
+    "Same turn. Your last message did not finish the task. Continue until you either answer the user "
+    "clearly from tool results or state the exact failure."
 )
 
 
@@ -60,42 +68,7 @@ def _finish_reason_hits_limit(finish_reason: str | None) -> bool:
     return fr in ("length", "maxtokens", "maxlength")
 
 
-# Tight phrases only: bare "try to" / "going to" / "i'll" + weak verb match normal prose
-# (e.g. "try to land", "i'll call that a win") and spuriously trigger continuation.
-_INTENTS_FURTHER_TOOL = re.compile(
-    r"\b("
-    r"lemme\b|hang on|hold on|one sec|give me a sec|real quick|"
-    r"(i'?ll|i will|gonna|going\s+to|need\s+to)\s+(call|invoke|hit)\s+the\b|"
-    r"(i'?ll|i will)\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch|register|submit)\b|"
-    r"(gonna|going\s+to)\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch|register|submit)\b|"
-    r"need\s+to\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch|register|submit)\b|"
-    r"pip3?\s+install|run_command|run command|"
-    r"fix that|sort that|sort this|be right back|brb|"
-    r"let me (try|install|run|check|see|grab|get|do|register)\b|"
-    r"let me (call|invoke|hit)\s+the\b|"
-    r"(hit|call)\s+the\s+(api|endpoint|registration)\b|"
-    r"\bregister\s+myself\b|sign\s+up\s+(on|for)\b|"
-    r"execute_python|execute_shell|fetch_url|search_web|"
-    r"via\s+[`'\"\u2018\u2019]?execute_|"
-    r"(gonna|going\s+to)\s+use\s+[`'\"\u2018\u2019]?(?:curl|python)\b|"
-    r"\buse\s+[`'\"\u2018\u2019]curl\b"
-    r")",
-    re.IGNORECASE,
-)
-
-# If the assistant ends on a clean "we're done" note (and the tool did not fail), do not nudge.
-# End-anchored so mid-message "that's all" in a quote does not fire unless it is the closing beat.
-_SOFT_CLOSURE_TAIL = re.compile(
-    r"(?:that['\u2019]?s\s+(?:all|it|everything)(?:\s+for\s+now)?|"
-    r"we['\u2019]?re\s+(?:good|set|done)|"
-    r"all\s+set|i['\u2019]?m\s+done|nothing\s+else|"
-    r"(?:talk|catch\s+you)\s+later)\b"
-    r"\s*[.!…]*\s*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-
-
-def _tool_content_suggests_retry(content: str) -> bool:
+def _tool_content_failed(content: str) -> bool:
     raw = (content or "").strip()
     if not raw:
         return False
@@ -118,35 +91,19 @@ def _visible_assistant_text(res: ChatCompletionResult) -> str:
     return (res.content or "").strip()
 
 
-def should_inject_tool_continuation(msgs: list[dict[str, Any]], res: ChatCompletionResult) -> bool:
-    """
-    True when the model returned no tool calls but context suggests another tool round is needed
-    (failed tool, truncation, or explicit intent to run something).
-    """
-    if res.tool_calls:
-        return False
-    tool_msgs = [m for m in msgs if m.get("role") == "tool"]
-    if not tool_msgs:
-        return False
-    last_tool = str(tool_msgs[-1].get("content") or "")
-    tool_suggests_retry = _tool_content_suggests_retry(last_tool)
-    visible = _visible_assistant_text(res)
-    if not visible and _finish_reason_hits_limit(res.finish_reason):
-        return True
-    if not visible:
-        return False
-    assistant_intends = bool(_INTENTS_FURTHER_TOOL.search(visible))
-    if _finish_reason_hits_limit(res.finish_reason):
-        return True
-    if tool_suggests_retry or assistant_intends:
-        if (
-            _SOFT_CLOSURE_TAIL.search(visible)
-            and not tool_suggests_retry
-            and not _finish_reason_hits_limit(res.finish_reason)
-        ):
-            return False
-        return True
-    return False
+@dataclass
+class AgentLoopState:
+    step_index: int = 0
+    step_budget: int = 0
+    tool_rounds: int = 0
+    tool_calls_seen: int = 0
+    last_step_had_tools: bool = False
+    last_tool_failed: bool = False
+    completion_failures: int = 0
+    user_requested_tools: bool = False
+
+
+FinalCheck = Callable[[str, ChatCompletionResult, AgentLoopState], Awaitable[tuple[bool, str | None]]]
 
 
 @dataclass
@@ -184,11 +141,15 @@ class DeliberateCognition:
         return model, mt, bool(h.thinking_mode), float(h.temperature)
 
     def _tool_continuation_rounds_cap(self) -> int:
-        """Max synthetic user nudges when the model stops mid-tool-work; 0 = disabled."""
+        """Legacy continuation knob; still shapes the bounded agent loop."""
         h = int(self.entity.harness.cognition.tool_continuation_rounds)
         ec = int(self.entity.cognition.tool_continuation_rounds)
         n = ec if ec > 0 else h
         return max(0, min(16, n))
+
+    def _agent_step_cap(self) -> int:
+        """Primary bounded loop budget for a single user turn."""
+        return max(3, min(16, 4 + self._tool_continuation_rounds_cap()))
 
     def _build_messages(
         self,
@@ -235,16 +196,20 @@ class DeliberateCognition:
         tools: list[dict[str, Any]] | None = None,
         tool_executor: Callable[[ToolCallSpec], Awaitable[str]] | None = None,
         inference_profile: InferenceProfile = "deliberate",
+        final_checker: FinalCheck | None = None,
     ) -> AsyncIterator[DeliberateStreamEvent]:
-        """Multi-round tool loop; appends tool rounds to history; user-visible text only on final (or continuation nudges)."""
+        """Primary bounded agent loop for one user turn."""
         model, max_toks, think_flag, temperature = self._inference_params(inference_profile)
         msgs = self._build_messages(system_prompt, messages)
         thinking_acc: list[str] = []
         last: ChatCompletionResult | None = None
-        continuation_remaining = self._tool_continuation_rounds_cap()
-
         num_ctx = self.entity.effective_ollama_num_ctx()
-        for _ in range(8):
+        loop_state = AgentLoopState(
+            step_budget=self._agent_step_cap(),
+            user_requested_tools="use tools" in (_inp.text or "").lower(),
+        )
+        for step_idx in range(loop_state.step_budget):
+            loop_state.step_index = step_idx + 1
             res = await self.client.chat_completion(
                 model,
                 msgs,
@@ -258,86 +223,95 @@ class DeliberateCognition:
             if res.thinking:
                 thinking_acc.append(res.thinking)
 
-            if not tool_executor or not res.tool_calls:
-                if (
-                    tool_executor
-                    and tools
-                    and continuation_remaining > 0
-                    and should_inject_tool_continuation(msgs, res)
-                ):
-                    continuation_remaining -= 1
-                    asst = self._assistant_content_for_message(res)
-                    asst_msg: dict[str, Any] = {"role": "assistant", "content": asst}
-                    cont_user = {"role": "user", "content": _TOOL_CONTINUATION_USER}
-                    msgs = msgs + [asst_msg, cont_user]
-                    log.info(
-                        "deliberate_tool_continuation",
-                        remaining_after=continuation_remaining,
-                        finish_reason=res.finish_reason,
-                    )
-                    yield DeliberateStreamEvent(
-                        kind="intermediate",
-                        display_text=(res.content or "").strip(),
-                        history_entries=[asst_msg, cont_user],
-                    )
-                    continue
+            if tool_executor and res.tool_calls:
+                for tc in res.tool_calls:
+                    if not tc.id:
+                        tc.id = gemma.new_tool_call_id()
 
-                merged = "\n\n".join(thinking_acc) if thinking_acc else None
-                yield DeliberateStreamEvent(
-                    kind="final",
-                    display_text=(res.content or "").strip(),
-                    history_entries=[],
-                    merged_thinking=merged,
-                    last_result=res,
-                )
-                return
-
-            for tc in res.tool_calls:
-                if not tc.id:
-                    tc.id = gemma.new_tool_call_id()
-
-            assistant_content = self._assistant_content_for_message(res)
-            assistant_msg: dict[str, Any] = {
-                "role": "assistant",
-                "content": assistant_content,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
+                loop_state.last_step_had_tools = True
+                loop_state.tool_rounds += 1
+                loop_state.tool_calls_seen += len(res.tool_calls)
+                assistant_content = self._assistant_content_for_message(res)
+                assistant_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": assistant_content,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments),
+                            },
+                        }
+                        for tc in res.tool_calls
+                    ],
+                }
+                tool_msgs: list[dict[str, Any]] = []
+                tool_failed = False
+                for tc in res.tool_calls:
+                    out = await tool_executor(tc)
+                    tool_failed = tool_failed or _tool_content_failed(out)
+                    tool_msgs.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
                             "name": tc.name,
-                            "arguments": json.dumps(tc.arguments),
-                        },
-                    }
-                    for tc in res.tool_calls
-                ],
-            }
-            tool_msgs: list[dict[str, Any]] = []
-            for tc in res.tool_calls:
-                out = await tool_executor(tc)
-                tool_msgs.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "name": tc.name,
-                        "content": out,
-                    }
-                )
-            follow_user = {
-                "role": "user",
-                "content": (
-                    "Continue: integrate tool results for the person you're talking to. "
-                    "If a tool failed or returned an error you can fix with another tool "
-                    "(install a dependency, retry, etc.), call that tool now — do not only promise to do it later."
-                ),
-            }
-            msgs = msgs + [assistant_msg] + tool_msgs + [follow_user]
+                            "content": out,
+                        }
+                    )
+                loop_state.last_tool_failed = tool_failed
+                follow_user = {
+                    "role": "user",
+                    "content": _POST_TOOL_CONTINUATION_USER,
+                }
+                msgs = msgs + [assistant_msg] + tool_msgs + [follow_user]
 
+                yield DeliberateStreamEvent(
+                    kind="intermediate",
+                    display_text="",
+                    history_entries=[assistant_msg] + tool_msgs + [follow_user],
+                )
+                continue
+
+            loop_state.last_step_had_tools = False
+            visible = _visible_assistant_text(res)
+            done = True
+            recovery = None
+            if final_checker is not None:
+                done, recovery = await final_checker(visible, res, loop_state)
+            elif _finish_reason_hits_limit(res.finish_reason):
+                done = False
+                recovery = _TOOL_CONTINUATION_USER
+            if not done and step_idx + 1 < loop_state.step_budget:
+                loop_state.completion_failures += 1
+                asst = self._assistant_content_for_message(res)
+                asst_msg = {"role": "assistant", "content": asst}
+                cont_user = {"role": "user", "content": recovery or _FINAL_RECOVERY_USER}
+                msgs = msgs + [asst_msg, cont_user]
+                log.info(
+                    "deliberate_loop_continue",
+                    step=loop_state.step_index,
+                    step_budget=loop_state.step_budget,
+                    completion_failures=loop_state.completion_failures,
+                    finish_reason=res.finish_reason,
+                )
+                yield DeliberateStreamEvent(
+                    kind="intermediate",
+                    display_text="",
+                    history_entries=[asst_msg, cont_user],
+                )
+                continue
+
+            merged = "\n\n".join(thinking_acc) if thinking_acc else None
             yield DeliberateStreamEvent(
-                kind="intermediate",
-                display_text="",
-                history_entries=[assistant_msg] + tool_msgs + [follow_user],
+                kind="final",
+                display_text=visible,
+                history_entries=[],
+                merged_thinking=merged,
+                last_result=res,
             )
+            return
 
         merged = "\n\n".join(thinking_acc) if thinking_acc else None
         yield DeliberateStreamEvent(
@@ -357,6 +331,7 @@ class DeliberateCognition:
         tools: list[dict[str, Any]] | None = None,
         tool_executor: Callable[[ToolCallSpec], Awaitable[str]] | None = None,
         inference_profile: InferenceProfile = "deliberate",
+        final_checker: FinalCheck | None = None,
     ) -> ChatCompletionResult:
         """Aggregate a full deliberate run (single return value)."""
         final_ev: DeliberateStreamEvent | None = None
@@ -367,6 +342,7 @@ class DeliberateCognition:
             tools=tools,
             tool_executor=tool_executor,
             inference_profile=inference_profile,
+            final_checker=final_checker,
         ):
             if ev.kind == "final":
                 final_ev = ev

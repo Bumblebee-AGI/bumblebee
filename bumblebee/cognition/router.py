@@ -12,6 +12,7 @@ from bumblebee.inference.protocol import InferenceProvider
 
 
 RouteKind = Literal["reflex", "deliberate"]
+RouteAssessment = Literal["chat", "grounded", "exact", "deep"]
 
 
 @dataclass
@@ -54,6 +55,25 @@ def _file_or_workspace_question(low: str) -> bool:
     if "readme" in low:
         return True
     if ".md" in low or ".txt" in low or ".yaml" in low or ".yml" in low:
+        return True
+    workspace_terms = (
+        "workspace",
+        "repo",
+        "repository",
+        "project root",
+        "working directory",
+        "current directory",
+    )
+    if any(term in low for term in workspace_terms):
+        return True
+    if re.search(r"\b(list|show|check|look\s+in|look\s+around)\b.*\b(files?|folders?|directories?)\b", low):
+        return True
+    if re.search(
+        r"\bwhat(?:'s| is)?\s+in\b.*\b(workspace|repo|repository|project|folder|directory)\b",
+        low,
+    ):
+        return True
+    if re.search(r"\bwhat\s+files?\b.*\b(have|there|workspace|repo|repository|project)\b", low):
         return True
     if re.search(r"\bline\s+\d+", low):
         return True
@@ -161,16 +181,19 @@ class CognitionRouter:
             return "deliberate"
         return "deliberate" if len(t) > 200 else "reflex"
 
-    async def classify_with_reflex(self, inp: Input) -> tuple[RouteKind, float]:
-        """Use reflex model to classify; return (route, uncertainty 0-1)."""
+    async def classify_with_reflex(self, inp: Input) -> tuple[RouteKind, RouteAssessment, float]:
+        """Use reflex model for a lightweight grounding/exactness judgment."""
         model = self.entity.cognition.reflex_model
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "Reply with exactly one word: REFLEX or DELIBERATE. "
-                    "REFLEX for greetings, thanks, very short chat, slang (wagwan, sup, nm), simple facts. "
-                    "DELIBERATE for emotional depth, complex reasoning, creative work."
+                    "Reply with exactly one token: CHAT, GROUNDED, EXACT, or DEEP.\n"
+                    "CHAT = casual chat, greeting, joke, reaction, or simple reply from memory is fine.\n"
+                    "GROUNDED = likely needs tools or verification against files, workspace, web, system state, or another source.\n"
+                    "EXACT = user wants exact text, line, path, stdout, filename, quote, error, or other precise value; prefer verification.\n"
+                    "DEEP = emotional depth, creative reasoning, philosophy, or multi-step thinking.\n"
+                    "When unsure between CHAT and GROUNDED, choose GROUNDED."
                 ),
             },
             {"role": "user", "content": inp.text[:1500]},
@@ -184,14 +207,18 @@ class CognitionRouter:
                 think=False,
                 num_ctx=self.entity.effective_ollama_num_ctx(),
             )
-            word = (res.content or "").strip().upper()
-            if "DELIBERATE" in word:
-                return "deliberate", 0.2
-            if "REFLEX" in word:
-                return "reflex", 0.2
+            word = re.sub(r"[^A-Z]", "", (res.content or "").strip().upper())
+            if "EXACT" in word:
+                return "deliberate", "exact", 0.15
+            if "GROUNDED" in word:
+                return "deliberate", "grounded", 0.15
+            if "DEEP" in word:
+                return "deliberate", "deep", 0.2
+            if "CHAT" in word:
+                return "reflex", "chat", 0.2
         except Exception:
             pass
-        return "deliberate", 0.6
+        return "deliberate", "grounded", 0.6
 
     async def route(
         self,
@@ -214,9 +241,9 @@ class CognitionRouter:
             context.reflex_hint = kind
             return kind, context
         if kind == "reflex":
-            rk, unc = await self.classify_with_reflex(inp)
+            rk, assessment, unc = await self.classify_with_reflex(inp)
             thresh = self.entity.harness.cognition.escalation_threshold
-            if rk == "deliberate" or unc > 1.0 - thresh:
+            if rk == "deliberate" or assessment in ("grounded", "exact", "deep") or unc > 1.0 - thresh:
                 kind = "deliberate"
         context.reflex_hint = kind
         return kind, context

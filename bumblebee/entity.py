@@ -15,7 +15,11 @@ from typing import Any
 
 import structlog
 
-from bumblebee.cognition.deliberate import DeliberateCognition, fit_system_prompt_to_budget
+from bumblebee.cognition.deliberate import (
+    AgentLoopState,
+    DeliberateCognition,
+    fit_system_prompt_to_budget,
+)
 from bumblebee.cognition.inner_voice import InnerVoiceProcessor
 from bumblebee.cognition.router import CognitionRouter, ContextPackage
 from bumblebee.cognition import gemma, senses
@@ -96,9 +100,66 @@ _CLI_OPENING_USER = (
 )
 
 _FALLBACK_PLAIN_REPLY_FAILURE = (
-    "Something went wrong on my end and I couldn't finish that reply. "
-    "If it keeps happening, check that your model server is up and try again."
+    "something went wrong on my end and i couldn't finish that reply. "
+    "try me again in a sec."
 )
+
+
+def _short_error_text(raw: str | None, *, limit: int = 180) -> str:
+    txt = re.sub(r"\s+", " ", str(raw or "")).strip().strip(".")
+    if not txt:
+        return ""
+    if len(txt) > limit:
+        txt = txt[: limit - 1].rstrip() + "…"
+    return txt
+
+
+def format_user_visible_failure(
+    error: Exception | str | None = None,
+    *,
+    tool_state: dict[str, Any] | None = None,
+) -> str:
+    """Short user-facing failure line based on the real cause, not a generic model-server hint."""
+    tool_err = None
+    if isinstance(tool_state, dict):
+        raw = tool_state.get("last_tool_error")
+        if isinstance(raw, dict):
+            tool_err = raw
+    if tool_err:
+        tool_name = str(tool_err.get("tool") or "tool").replace("_", " ").strip()
+        detail = _short_error_text(str(tool_err.get("error") or ""))
+        low = detail.lower()
+        if "locked to railway" in low or "railway container" in low:
+            return f"i tried to use {tool_name}, but execution is locked to railway right now. {detail}"
+        if "timeout" in low or "timed out" in low:
+            return f"i tried to use {tool_name}, but it timed out. {detail}"
+        if "no search results" in low or "empty" in low or "not found" in low:
+            return f"i tried to use {tool_name}, but it came back empty. {detail}"
+        if detail:
+            return f"something went wrong while using {tool_name}. {detail}"
+        return f"something went wrong while using {tool_name}."
+
+    detail = _short_error_text(str(error or ""))
+    low = detail.lower()
+    if any(
+        marker in low
+        for marker in (
+            "connection refused",
+            "connect",
+            "unreachable",
+            "timed out",
+            "timeout",
+            "ollama",
+            "gateway",
+            "api connection",
+            "clientconnectorerror",
+            "getaddrinfo failed",
+        )
+    ):
+        return "i lost the inference backend mid-reply. try me again in a sec."
+    if detail:
+        return f"something went wrong on my end and i couldn't finish that reply. {detail}"
+    return _FALLBACK_PLAIN_REPLY_FAILURE
 
 
 def _reply_too_thin(text: str) -> bool:
@@ -192,6 +253,97 @@ def _pro_forma_tool_followup(text: str) -> bool:
             "aight",
         }
     return False
+
+
+def _reply_looks_like_progress_only(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    starters = (
+        "checking ",
+        "checking the ",
+        "looking ",
+        "looking in ",
+        "looking around",
+        "searching ",
+        "reading ",
+        "opening ",
+        "hang on",
+        "hold on",
+        "one sec",
+        "give me a sec",
+        "lemme ",
+        "let me ",
+    )
+    if any(t.startswith(s) for s in starters):
+        return True
+    return bool(
+        re.fullmatch(
+            r"(i['\u2019]?m|im|i am)\s+(checking|looking|searching|reading|opening).{0,80}",
+            t,
+        )
+    )
+
+
+def _user_explicitly_requests_tool_grounding(text: str) -> bool:
+    low = (text or "").lower()
+    return any(
+        phrase in low
+        for phrase in (
+            "use tools",
+            "not memory",
+            "don't guess",
+            "do not guess",
+            "exact path",
+            "exact stdout",
+            "exact error",
+            "exact contents",
+        )
+    )
+
+
+def _finish_reason_hint(res: ChatCompletionResult) -> bool:
+    fr = str(res.finish_reason or "").lower().replace("_", "").replace("-", "")
+    return fr in ("length", "maxtokens", "maxlength")
+
+
+def _answer_ignores_tool_results(text: str, tool_state: dict[str, Any]) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    previews = tool_state.get("tool_output_previews") if isinstance(tool_state, dict) else None
+    if not isinstance(previews, list) or not previews:
+        return False
+    if "/" in t or "\\" in t:
+        return False
+    if any(ch.isdigit() for ch in t):
+        return False
+    interesting = 0
+    for item in previews[-3:]:
+        if not isinstance(item, dict):
+            continue
+        preview = str(item.get("preview") or "")
+        tokens = [tok.strip(" .,:;()[]{}\"'") for tok in preview.split()]
+        tokens = [tok.lower() for tok in tokens if len(tok) >= 4]
+        hits = [tok for tok in tokens[:12] if tok in t]
+        if hits:
+            interesting += 1
+    return interesting == 0
+
+
+def _tool_state_summary(tool_state: dict[str, Any], *, limit: int = 3) -> str:
+    previews = tool_state.get("tool_output_previews") if isinstance(tool_state, dict) else None
+    if not isinstance(previews, list) or not previews:
+        return ""
+    lines: list[str] = []
+    for item in previews[-limit:]:
+        if not isinstance(item, dict):
+            continue
+        tool = str(item.get("tool") or "tool")
+        ok = bool(item.get("ok"))
+        preview = _short_error_text(str(item.get("preview") or ""), limit=220)
+        lines.append(f"- {tool} ({'ok' if ok else 'error'}): {preview}")
+    return "\n".join(lines)
 
 
 async def _emit_text_stream(
@@ -779,9 +931,171 @@ class Entity:
             out = await self.tools.execute(spec)
         finally:
             reset_tool_runtime(tok)
+        if state is not None:
+            state["tool_calls"] = int(state.get("tool_calls") or 0) + 1
+            state["last_tool_name"] = spec.name
+            try:
+                parsed = json.loads(out)
+            except Exception:
+                parsed = None
+            ok = True
+            if isinstance(parsed, dict):
+                ok = not bool(parsed.get("error")) and parsed.get("ok", True) is not False
+                err = str(parsed.get("error") or "").strip()
+                if err:
+                    state["last_tool_error"] = {"tool": spec.name, "error": err}
+            if ok:
+                state["tool_successes"] = int(state.get("tool_successes") or 0) + 1
+                state.pop("last_tool_error", None)
+            else:
+                state["tool_failures"] = int(state.get("tool_failures") or 0) + 1
+            previews = state.setdefault("tool_output_previews", [])
+            if isinstance(previews, list):
+                previews.append(
+                    {
+                        "tool": spec.name,
+                        "ok": ok,
+                        "preview": self._message_content_str(out)[:280],
+                    }
+                )
+                if len(previews) > 8:
+                    del previews[:-8]
         if spec.name in ("search_web", "fetch_url"):
             self.drives.satisfy("curiosity", 0.22)
         return out
+
+    async def _loop_completion_gate(
+        self,
+        inp: Input,
+        reply_text: str,
+        res: ChatCompletionResult,
+        loop_state: AgentLoopState,
+        tool_state: dict[str, Any],
+    ) -> tuple[bool, str | None]:
+        """Decide whether the shared agent loop is done with this turn."""
+        visible = (reply_text or "").strip()
+        if not visible:
+            if loop_state.tool_calls_seen > 0 or _finish_reason_hint(res):
+                return False, (
+                    "Same turn. You haven't answered yet. Either answer from the tool results, "
+                    "call another tool, or state the exact failure."
+                )
+            return False, "Same turn. You haven't answered the user yet. Continue."
+        if _reply_looks_like_progress_only(visible):
+            return False, (
+                "Same turn. That was progress chatter, not the final answer. Continue until you can "
+                "answer from results or state the exact failure."
+            )
+        if _pro_forma_tool_followup(visible) and loop_state.tool_calls_seen > 0:
+            return False, (
+                "Same turn. A one-word acknowledgement is not enough. Answer the user from the tool "
+                "results or explain the exact failure."
+            )
+        explicit_grounding = _user_explicitly_requests_tool_grounding(inp.text)
+        if explicit_grounding and loop_state.tool_calls_seen <= 0:
+            return False, (
+                "Same turn. The user explicitly asked you to use tools. Call the relevant tool now, "
+                "then answer from the result."
+            )
+        if loop_state.last_tool_failed:
+            if _pro_forma_tool_followup(visible) or _reply_looks_like_progress_only(visible):
+                return False, (
+                    "Same turn. The last tool failed. Either retry with another tool or tell the "
+                    "user exactly what failed."
+                )
+        needs_grounding_judgment = (
+            explicit_grounding
+            or loop_state.tool_calls_seen > 0
+            or loop_state.last_tool_failed
+        )
+        if needs_grounding_judgment:
+            judged_done, judged_reason = await self._judge_grounded_completion(
+                inp,
+                visible,
+                res,
+                loop_state,
+                tool_state,
+            )
+            if not judged_done:
+                return False, judged_reason
+        return True, None
+
+    async def _judge_grounded_completion(
+        self,
+        inp: Input,
+        reply_text: str,
+        res: ChatCompletionResult,
+        loop_state: AgentLoopState,
+        tool_state: dict[str, Any],
+    ) -> tuple[bool, str | None]:
+        """
+        Lightweight model-side judgment for grounded completion.
+
+        This is intentionally cheap and narrow: only used when tool grounding matters.
+        """
+        visible = (reply_text or "").strip()
+        if not visible:
+            return False, (
+                "Same turn. You still need to answer the user from the current results or state the exact failure."
+            )
+        if _answer_ignores_tool_results(visible, tool_state) and loop_state.tool_calls_seen > 0:
+            heuristic_reason = (
+                "Same turn. You used tools, but your last message did not actually report the results. "
+                "Answer from the tool outputs directly."
+            )
+        else:
+            heuristic_reason = None
+        tool_summary = _tool_state_summary(tool_state)
+        user_request = (inp.text or "").strip()[:1200]
+        candidate = visible[:1000]
+        prompt = (
+            "Reply with exactly one line starting with DONE or CONTINUE, then a colon, then a short reason.\n"
+            "DONE = the candidate reply clearly answers the user's ask and is adequately grounded in the tool results.\n"
+            "CONTINUE = the candidate reply is only progress chatter, ignores tool results, is too vague, "
+            "or should keep going before the user sees it.\n"
+            "Be strict. If the user asked for exactness or tools were used, the reply must reflect the actual tool outputs.\n\n"
+            f"User request:\n{user_request}\n\n"
+            f"Candidate reply:\n{candidate}\n\n"
+            f"Tool rounds: {loop_state.tool_rounds}\n"
+            f"Tool calls seen: {loop_state.tool_calls_seen}\n"
+            f"Last tool failed: {loop_state.last_tool_failed}\n"
+            f"Finish reason: {res.finish_reason or ''}\n\n"
+            f"Recent tool outputs:\n{tool_summary or '- none'}"
+        )
+        try:
+            judge = await self.client.chat_completion(
+                self.config.cognition.reflex_model or self.config.cognition.deliberate_model,
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a tiny completion judge for an agent loop. "
+                            "Output exactly one line: DONE: <reason> or CONTINUE: <reason>."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=40,
+                think=False,
+                num_ctx=self.config.effective_ollama_num_ctx(),
+            )
+            verdict = (judge.content or "").strip()
+            upper = verdict.upper()
+            if upper.startswith("DONE:"):
+                return True, None
+            if upper.startswith("CONTINUE:"):
+                reason = verdict.split(":", 1)[1].strip() or "Keep going until the answer is grounded."
+                return False, f"Same turn. {reason}"
+        except Exception as e:
+            log.debug("grounded_completion_judge_failed", module="entity", error=str(e))
+        if heuristic_reason:
+            return False, heuristic_reason
+        if _finish_reason_hint(res):
+            return False, (
+                "Same turn. The last step looks incomplete. Continue until you can answer clearly from the results."
+            )
+        return True, None
 
     def _fallback_user_turn_text(self, inp: Input) -> str:
         """User line for fallback completion; includes rolling summary when compression is on."""
@@ -798,7 +1112,12 @@ class Entity:
         )
         return prefix + "\n\n---\n\nCurrent message:\n" + fb_line
 
-    async def _fallback_plain_reply(self, inp: Input) -> str:
+    async def _fallback_plain_reply(
+        self,
+        inp: Input,
+        *,
+        tool_state: dict[str, Any] | None = None,
+    ) -> str:
         """When the main path yields no visible text (parsing/Ollama quirks), one short no-thinking completion.
 
         Retries use ``harness.ollama.retry_attempts`` / ``retry_delay``; if all attempts fail, returns a
@@ -855,7 +1174,7 @@ class Entity:
             attempts=attempts,
             last_error=last_error,
         )
-        return _FALLBACK_PLAIN_REPLY_FAILURE
+        return format_user_visible_failure(last_error, tool_state=tool_state)
 
     @staticmethod
     def _finish_reason_hit_limit(finish_reason: str | None) -> bool:
@@ -1197,6 +1516,19 @@ class Entity:
                             )
                 return await self._tool_exec(spec, inp=inp, state=tool_state)
 
+            async def _final_checker(
+                candidate_text: str,
+                res: ChatCompletionResult,
+                loop_state: AgentLoopState,
+            ) -> tuple[bool, str | None]:
+                return await self._loop_completion_gate(
+                    inp,
+                    candidate_text,
+                    res,
+                    loop_state,
+                    tool_state,
+                )
+
             inference_profile = "reflex" if route == "reflex" else "deliberate"
             async for ev in self.deliberate.iter_responses(
                 inp,
@@ -1205,6 +1537,7 @@ class Entity:
                 tools=self.tools.openai_tools(),
                 tool_executor=_tool_with_activity,
                 inference_profile=inference_profile,
+                final_checker=_final_checker,
             ):
                 if ev.kind == "intermediate":
                     deliberate_history_extra.extend(ev.history_entries)
@@ -1237,12 +1570,14 @@ class Entity:
 
             if _reply_too_thin(reply_text):
                 log.info("reply_fallback_triggered", module="entity", route=route)
-                reply_text = await self._fallback_plain_reply(inp)
+                reply_text = await self._fallback_plain_reply(inp, tool_state=tool_state)
             reply_text = self.voice_ctl.sanitize_reply(reply_text)
             if _reply_too_thin(reply_text):
                 # Sanitization can strip leaked markup/actions and leave empty output.
                 log.info("reply_post_sanitize_fallback", module="entity", route=route)
-                reply_text = self.voice_ctl.sanitize_reply(await self._fallback_plain_reply(inp))
+                reply_text = self.voice_ctl.sanitize_reply(
+                    await self._fallback_plain_reply(inp, tool_state=tool_state)
+                )
 
             if route in ("reflex", "deliberate"):
                 skip_final_chat = (

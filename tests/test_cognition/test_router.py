@@ -2,6 +2,7 @@ import pytest
 
 from bumblebee.config import HarnessConfig, entity_from_dict
 from bumblebee.cognition.router import CognitionRouter, ContextPackage
+from bumblebee.inference.types import ChatCompletionResult
 from bumblebee.models import EmotionalState, Input
 from bumblebee.utils.ollama_client import OllamaClient
 
@@ -64,6 +65,9 @@ def test_heuristic_readme_line_file_questions_use_deliberate(entity_config):
         "whats the readme about?",
         "what's on line 35?",
         "read config.yaml for me",
+        "whats in your workspace right now?",
+        "what files are in the repo?",
+        "show me the current directory contents",
     ):
         inp = Input(text=text, person_id="u", person_name="U")
         assert r.heuristic_route(inp, emo) == "deliberate"
@@ -77,6 +81,54 @@ async def test_route_short_casual_skips_classifier_escalation(entity_config):
     inp = Input(text="nah nuthin much here either, wagwan", person_id="u", person_name="U")
     kind, _ = await r.route(inp, emo, ctx)
     assert kind == "reflex"
+
+
+class _JudgeClient:
+    def __init__(self, label: str):
+        self.label = label
+
+    async def chat_completion(
+        self,
+        model,
+        messages,
+        *,
+        temperature=0.2,
+        max_tokens=8,
+        think=False,
+        num_ctx=None,
+        tools=None,
+        stream=False,
+    ):
+        _ = (model, messages, temperature, max_tokens, think, num_ctx, tools, stream)
+        return ChatCompletionResult(content=self.label)
+
+
+@pytest.mark.asyncio
+async def test_route_uses_grounding_judgment_for_non_keyword_tool_task(entity_config):
+    r = CognitionRouter(entity_config, _JudgeClient("GROUNDED"))
+    emo = EmotionalState()
+    ctx = ContextPackage(emotional_state=emo)
+    inp = Input(
+        text="can you verify whether you've got anything saved about yourself on disk?",
+        person_id="u",
+        person_name="U",
+    )
+    kind, _ = await r.route(inp, emo, ctx)
+    assert kind == "deliberate"
+
+
+@pytest.mark.asyncio
+async def test_route_uses_exactness_judgment_for_precise_value_request(entity_config):
+    r = CognitionRouter(entity_config, _JudgeClient("EXACT"))
+    emo = EmotionalState()
+    ctx = ContextPackage(emotional_state=emo)
+    inp = Input(
+        text="tell me the exact output, not the gist",
+        person_id="u",
+        person_name="U",
+    )
+    kind, _ = await r.route(inp, emo, ctx)
+    assert kind == "deliberate"
 
 
 @pytest.mark.asyncio

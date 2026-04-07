@@ -96,6 +96,38 @@ def _effective_tools_config(entity: Any) -> dict[str, Any]:
     return _deep_merge(base, over)
 
 
+def require_railway_execution(entity: Any) -> bool:
+    """
+    True when this worker must never execute shell/fs/code on an off-Railway host.
+
+    This still allows in-container execution on Railway itself, and still allows
+    HTTP execution RPC to another host when ``BUMBLEBEE_EXECUTION_RPC_URL`` /
+    ``tools.execution.base_url`` is configured.
+    """
+    tools_cfg = _effective_tools_config(entity)
+    exec_cfg = tools_cfg.get("execution") if isinstance(tools_cfg.get("execution"), dict) else {}
+    if not isinstance(exec_cfg, dict):
+        exec_cfg = {}
+    raw = (
+        (os.environ.get("BUMBLEBEE_EXECUTION_REQUIRE_RAILWAY") or "").strip()
+        or str(exec_cfg.get("require_railway") or "").strip()
+    )
+    return raw.lower() in ("1", "true", "yes", "on")
+
+
+def _configured_workspace_root(entity: Any) -> Path:
+    """Workspace root for local execution fallback / in-container tools."""
+    tools_cfg = _effective_tools_config(entity)
+    exec_cfg = tools_cfg.get("execution") if isinstance(tools_cfg.get("execution"), dict) else {}
+    if not isinstance(exec_cfg, dict):
+        exec_cfg = {}
+    workspace_dir = (
+        (os.environ.get("BUMBLEBEE_EXECUTION_WORKSPACE_DIR") or "").strip()
+        or str(exec_cfg.get("workspace_dir") or "").strip()
+    )
+    return Path(workspace_dir).expanduser().resolve() if workspace_dir else Path.cwd().resolve()
+
+
 def _tail_text(path: Path, max_bytes: int = 12000) -> str:
     if not path.exists():
         return ""
@@ -458,6 +490,14 @@ HYBRID_OFF_RAILWAY_TOOL_BLOCK = (
     "only wanted the cloud bot, stop any local `bumblebee run` that uses the same TELEGRAM_TOKEN."
 )
 
+RAILWAY_REQUIRED_TOOL_BLOCK = (
+    "Tool disabled: execution is locked to Railway. This Python process is not running inside the "
+    "Railway container, so it may not use local disk/shell/code on this machine. Run the worker on "
+    "Railway, or set BUMBLEBEE_EXECUTION_RPC_URL (or tools.execution.base_url) to a remote execution "
+    "host. To relax this for local debugging, unset BUMBLEBEE_EXECUTION_REQUIRE_RAILWAY (or set "
+    "tools.execution.require_railway: false)."
+)
+
 
 def execution_rpc_url_configured(entity: Any) -> bool:
     """True when an HTTP execution backend URL is configured (env or entity tools.execution)."""
@@ -470,6 +510,15 @@ def execution_rpc_url_configured(entity: Any) -> bool:
         or str(exec_cfg.get("base_url") or "").strip()
     )
     return bool(base.rstrip("/"))
+
+
+def local_tool_block_message(entity: Any) -> str:
+    """Why local disk/shell/code is blocked for this process."""
+    if require_railway_execution(entity) and not (
+        (os.environ.get("RAILWAY_ENVIRONMENT") or "").strip()
+    ):
+        return RAILWAY_REQUIRED_TOOL_BLOCK
+    return HYBRID_OFF_RAILWAY_TOOL_BLOCK
 
 
 def read_only_workspace_fs_allowed(entity: Any) -> bool:
@@ -486,6 +535,8 @@ def local_body_host_permitted(entity: Any) -> bool:
     mode = (entity.config.harness.deployment.mode or "local").strip().lower()
     allow_local = bool(exec_cfg.get("allow_local", False))
     on_railway = bool((os.environ.get("RAILWAY_ENVIRONMENT") or "").strip())
+    if require_railway_execution(entity) and not on_railway:
+        return False
     return (
         allow_local
         or mode == "local"
@@ -513,12 +564,7 @@ def get_execution_client() -> ExecutionRPCClient:
     token = (os.environ.get(token_env) or "").strip()
     timeout = float(exec_cfg.get("timeout") or 45.0)
     rpc_path = str(exec_cfg.get("rpc_path") or "/rpc")
-    workspace_dir = str(exec_cfg.get("workspace_dir") or "").strip()
-    workspace_root = (
-        Path(workspace_dir).expanduser().resolve()
-        if workspace_dir
-        else Path.cwd().resolve()
-    )
+    workspace_root = _configured_workspace_root(entity)
     allow_local_backend = local_body_host_permitted(entity)
 
     client = ExecutionRPCClient(

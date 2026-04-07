@@ -130,5 +130,6 @@ tools:
     token_env: "BUMBLEBEE_EXECUTION_RPC_TOKEN"
     timeout: 45
     allow_local: false
+    require_railway: false
     workspace_dir: ""
     rpc_path: "/rpc"

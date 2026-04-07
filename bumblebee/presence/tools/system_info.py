@@ -9,7 +9,7 @@ import shutil
 import subprocess
 
 from bumblebee.presence.tools.execution_rpc import (
-    HYBRID_OFF_RAILWAY_TOOL_BLOCK,
+    local_tool_block_message,
     local_body_host_permitted,
 )
 from bumblebee.presence.tools.registry import tool
@@ -43,7 +43,7 @@ def _gpu_info() -> str:
 async def get_system_info() -> str:
     ctx = require_tool_runtime()
     if not local_body_host_permitted(ctx.entity):
-        return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
+        return json.dumps({"error": local_tool_block_message(ctx.entity)})
     try:
         import psutil  # type: ignore[import-not-found]
     except ImportError:

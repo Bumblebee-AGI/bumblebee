@@ -175,6 +175,7 @@ def default_tools_config() -> dict[str, Any]:
             "token_env": "BUMBLEBEE_EXECUTION_RPC_TOKEN",
             "timeout": 45,
             "allow_local": False,
+            "require_railway": False,
             "workspace_dir": "",
             "rpc_path": "/rpc",
         },
@@ -386,6 +387,11 @@ def apply_harness_env_overrides(h: HarnessConfig) -> None:
     att = (os.environ.get("BUMBLEBEE_ATTACHMENTS_BACKEND") or "").strip().lower()
     if att in ("local_disk", "object_s3_compat"):
         h.attachments.backend = att
+    ewd = (os.environ.get("BUMBLEBEE_EXECUTION_WORKSPACE_DIR") or "").strip()
+    if ewd:
+        exec_cfg = h.tools.get("execution")
+        if isinstance(exec_cfg, dict):
+            exec_cfg["workspace_dir"] = ewd
 
 
 def load_harness_config(path: Path | None = None) -> HarnessConfig:

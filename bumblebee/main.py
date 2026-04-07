@@ -20,7 +20,7 @@ from bumblebee.config import (
     project_configs_dir,
     validate_entity_env,
 )
-from bumblebee.entity import Entity
+from bumblebee.entity import Entity, format_user_visible_failure
 from bumblebee.genesis import creator
 from bumblebee.health import check_inference
 from bumblebee.presence.daemon import PresenceDaemon
@@ -361,8 +361,11 @@ async def _talk(entity_name: str) -> None:
     ent.register_platform("cli", cli_p)
 
     async def on_inp(inp):
-        reply, _ = await ent.perceive(inp, stream=cli_p.stream_delta, reply_platform=cli_p)
-        return reply
+        try:
+            reply, _ = await ent.perceive(inp, stream=cli_p.stream_delta, reply_platform=cli_p)
+            return reply
+        except Exception as e:
+            return format_user_visible_failure(e)
 
     await cli_p.on_message(on_inp)
     try:
@@ -628,9 +631,13 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
                 _telegram_typing_worker(int(inp.channel), stop_typing)
             )
         try:
-            reply, needs_platform_route = await ent.perceive(
-                inp, stream=stream, reply_platform=reply_pf
-            )
+            try:
+                reply, needs_platform_route = await ent.perceive(
+                    inp, stream=stream, reply_platform=reply_pf
+                )
+            except Exception as e:
+                reply = format_user_visible_failure(e)
+                needs_platform_route = True
         finally:
             stop_typing.set()
             if typing_task is not None:

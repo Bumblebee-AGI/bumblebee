@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 
 from bumblebee.presence.tools.execution_rpc import (
-    HYBRID_OFF_RAILWAY_TOOL_BLOCK,
     get_execution_client,
+    local_tool_block_message,
     read_only_workspace_fs_allowed,
 )
 from bumblebee.presence.tools.registry import tool
@@ -27,7 +27,7 @@ from bumblebee.presence.tools.runtime import require_tool_runtime
 async def read_file(path: str, max_bytes: int = 48000, start_line: int = 0, end_line: int = 0) -> str:
     ctx = require_tool_runtime()
     if not read_only_workspace_fs_allowed(ctx.entity):
-        return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
+        return json.dumps({"error": local_tool_block_message(ctx.entity)})
     client = get_execution_client()
     payload: dict[str, int | str] = {
         "path": path or ".",
@@ -54,7 +54,7 @@ async def read_file(path: str, max_bytes: int = 48000, start_line: int = 0, end_
 async def list_directory(path: str = ".") -> str:
     ctx = require_tool_runtime()
     if not read_only_workspace_fs_allowed(ctx.entity):
-        return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
+        return json.dumps({"error": local_tool_block_message(ctx.entity)})
     client = get_execution_client()
     res = await client.call("list_directory", {"path": path or "."})
     if res.get("ok"):
@@ -72,7 +72,7 @@ async def list_directory(path: str = ".") -> str:
 async def search_files(directory: str, pattern: str) -> str:
     ctx = require_tool_runtime()
     if not read_only_workspace_fs_allowed(ctx.entity):
-        return json.dumps({"error": HYBRID_OFF_RAILWAY_TOOL_BLOCK})
+        return json.dumps({"error": local_tool_block_message(ctx.entity)})
     client = get_execution_client()
     res = await client.call(
         "search_files",
