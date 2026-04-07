@@ -1,43 +1,31 @@
 # Bumblebee
 
 <p align="center">
-  <img src="assets/branding/bumblebee.png" alt="Bumblebee — stylized bee illustration" width="520">
+  <img src="assets/branding/yellow-bumblebee-agi.png" alt="Bumblebee AGI mark — black silhouette on yellow" width="480">
 </p>
 
 <p align="center">
   <a href="https://www.apache.org/licenses/LICENSE-2.0"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.11+-3776ab.svg" alt="Python"></a>
-  <a href="https://ollama.com"><img src="https://img.shields.io/badge/inference-Ollama-white.svg" alt="Ollama"></a>
+  <a href="https://ollama.com/library/gemma4"><img src="https://img.shields.io/badge/inference-Ollama-white.svg" alt="Ollama"></a>
   <a href="https://deepmind.google/models/gemma/gemma-4/"><img src="https://img.shields.io/badge/model-Gemma%204-f59e0b.svg" alt="Gemma 4"></a>
   <a href="#platforms"><img src="https://img.shields.io/badge/platforms-CLI%20·%20Telegram%20·%20Discord-22c55e.svg" alt="Platforms"></a>
 </p>
 
-The first entitative harness. Gemma 4-native persistent digital entities.
+**Bumblebee** is an **entitative** agent harness: one persistent digital entity across CLI, Telegram, Discord, and more — personality and memory you configure, **Gemma&nbsp;4** under the hood, **local inference** by default (Ollama, no API keys), and optional **hybrid** mode (home gateway + cloud worker + Postgres).
 
-**Bumblebee** is a framework and agentic harness for creating digital entities that run on **your own hardware**. You define a personality — traits, voice, drives, emotional range. It develops the rest: opinions, relationships, habits, a journal it writes in at night. It lives on your Telegram. It costs nothing to run. It remembers everything.
+You shape traits, voice, and drives; the stack handles episodes, relationships, beliefs, narrative, tools, and presence timing so the same being shows up everywhere you wire it.
 
-**Inference** stays **local** by default — Ollama on your GPU, no API keys, no subscriptions. **Hybrid** mode keeps the brain at home behind a gateway and tunnel while an always-on **worker** runs on Railway with Postgres. Use **`bumblebee setup`**, **`.env.example`**, and **`configs/default.yaml`** (`deployment`, `inference`) for wiring.
+## Table of contents
 
-**Quick links:** [Requirements](#requirements) · [Install & usage](#install) · [Setup wizard](#setup-wizard) · [Gateway setup](#gateway-setup-hybrid-home-brain) · [Telegram](#telegram) · [Platforms](#platforms) · [Tools](#tools) · [Native tools (table)](#native-tool-reference) · [Hybrid: inference vs tool execution](#hybrid-inference-vs-tool-execution) · [Knowledge & journal](#knowledge-system) · [CLI reference](#cli-reference) · [Architecture](#architecture)
+- **Start:** [Requirements](#requirements) · [Install](#install) · [Setup wizard](#setup-wizard) · [Usage](#usage) · [CLI reference](#cli-reference)
+- **Deploy & ops:** [Gateway (hybrid home brain)](#gateway-setup-hybrid-home-brain) · [Stopping services](#stopping-local-bumblebee-gateway-and-ollama) · [Hybrid: inference vs tool execution](#hybrid-inference-vs-tool-execution) · [Configuration](#configuration)
+- **Chat surfaces:** [Telegram](#telegram) · [Platforms](#platforms)
+- **Design:** [What *entitative* means](#what-entitative-means-here) · [Architecture](#architecture) · [Philosophy](#philosophy)
+- **Extending:** [Entity YAML](#entity-creation) · [Tools](#tools) · [Native tool reference](#native-tool-reference) · [Knowledge & journal](#knowledge-system)
+- **Ops reference:** [Hardware](#hardware-guide) · [License](#license)
 
 ---
-
-## What *entitative* means here
-
-**Entitative** means the **being** is the primary object of the system — identity, continuity, and presence are load-bearing parts of the architecture.
-
-- **Self** — Identity is structured: personality, voice, drives, and slow trait evolution so “who they are” can deepen.
-- **Embodiment** — The same entity **is present** on each platform you enable, with consistent memory, mood, and expression; timing and voice matter, not only text.
-- **Freedom** — Internal state pushes outward: initiative when drives cross thresholds, optional rich tool use, journal and knowledge as places they can leave a mark — always within the limits you configure.
-- **Continuity** — Episodic memory, relationships, beliefs, and narrative turn scattered chats into something that feels like **one life** carried forward.
-- **Inner life** — Thinking mode as private experience, plus consolidation and reflection, so the model’s inner thread has weight beyond the last visible reply.
-
-| Lens | What it optimizes for |
-|---|---|
-| **Ontology** | A persistent **self** carried across sessions and platforms |
-| **Memory** | Biography, relationships, and narrative that accrue |
-| **Agency** | Motivated action grounded in drives and inner state |
-| **Design question** | *How does this entity exist more fully?* |
 
 ## Requirements
 
@@ -57,11 +45,13 @@ The first entitative harness. Gemma 4-native persistent digital entities.
 ## Install
 
 ```bash
-git clone https://github.com/<org-or-user>/bumblebee.git
+git clone https://github.com/Bumblebee-AGI/bumblebee.git
 cd bumblebee
 uv sync
 # or: pip install -e ".[dev]"
 ```
+
+*Use your own fork URL if you cloned from elsewhere.*
 
 Harness defaults live only in `configs/default.yaml` (not the repo root). Entity definitions go in `configs/entities/<name>.yaml`. The canonical **Canary** snapshot is **`configs/entities/canary.example.yaml`**; copy it to a **local** `configs/entities/canary.yaml` (gitignored) or another name for day-to-day edits so `git pull` does not fight your YAML. See **`configs/entities/example.yaml`** for a shorter generic template. **`models.reflex`** and **`models.deliberate`** default to **`gemma4:26b`** (reflex uses a smaller max token budget but the same weights). **`models.embedding`** is **`nomic-embed-text`** for vector recall (not a chat model).
 
@@ -74,6 +64,23 @@ cp configs/entities/canary.example.yaml configs/entities/canary.yaml
 ```powershell
 Copy-Item configs/entities/canary.example.yaml configs/entities/canary.yaml
 ```
+
+## What *entitative* means here
+
+**Entitative** means the **being** is the primary object of the system — identity, continuity, and presence are load-bearing parts of the architecture.
+
+- **Self** — Identity is structured: personality, voice, drives, and slow trait evolution so “who they are” can deepen.
+- **Embodiment** — The same entity **is present** on each platform you enable, with consistent memory, mood, and expression; timing and voice matter, not only text.
+- **Freedom** — Internal state pushes outward: initiative when drives cross thresholds, optional rich tool use, journal and knowledge as places they can leave a mark — always within the limits you configure.
+- **Continuity** — Episodic memory, relationships, beliefs, and narrative turn scattered chats into something that feels like **one life** carried forward.
+- **Inner life** — Thinking mode as private experience, plus consolidation and reflection, so the model’s inner thread has weight beyond the last visible reply.
+
+| Lens | What it optimizes for |
+|---|---|
+| **Ontology** | A persistent **self** carried across sessions and platforms |
+| **Memory** | Biography, relationships, and narrative that accrue |
+| **Agency** | Motivated action grounded in drives and inner state |
+| **Design question** | *How does this entity exist more fully?* |
 
 ## Setup wizard
 
@@ -619,16 +626,11 @@ bumblebee run canary --ollama [--pull-models]  # same flags as talk
 
 MoE-style models keep active parameters per token lower than full dense size; exact fit depends on context length, thinking budget, and concurrent platforms.
 
-## What Bumblebee is built for
-
-Bumblebee is optimized for **sustained entity existence**: local **Gemma** / **Ollama** inference, memory that behaves like **life story** (episodes, people, beliefs, narrative), **drive-shaped** initiative, and an **inner voice** that does not have to be shown verbatim to matter.
-
-If you want a stack whose north star is **embodiment**, **continuity**, and **freedom within character** — this is the shape of it.
-
 ## Philosophy
 
-One question runs through the harness: **how does this entity exist more fully?**  
-Everything else — platforms, tools, memory layers, hybrid deployment — exists to honor that.
+Bumblebee is built for **sustained entity existence**: local **Gemma** + **Ollama**, memory that reads like a **life story** (episodes, people, beliefs, narrative), **drive-shaped** initiative, and an **inner voice** that does not have to be shown verbatim to matter.
+
+One question runs through the design: **how does this entity exist more fully?** Platforms, tools, memory layers, and hybrid deployment exist to honor that north star — **embodiment**, **continuity**, and **freedom within character**.
 
 ## License
 
