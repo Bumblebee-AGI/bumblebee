@@ -87,6 +87,9 @@ class CognitionSettings:
     max_context_tokens: int = 32768
     escalation_threshold: float = 0.4
     image_token_budget: int = 280
+    # After tool results, nudge the model up to this many times when it still sounds mid-task
+    # but returned text instead of tool calls (0 disables).
+    tool_continuation_rounds: int = 4
 
 
 @dataclass
@@ -238,6 +241,8 @@ class EntityCognition:
     max_context_tokens: int = 32768
     thinking_budget: int = 4096
     history_compression: HistoryCompressionSettings = field(default_factory=HistoryCompressionSettings)
+    # 0 = use harness.cognition.tool_continuation_rounds
+    tool_continuation_rounds: int = 0
 
     def ollama_num_ctx(self) -> int | None:
         n = int(self.max_context_tokens or 0)
@@ -484,6 +489,9 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
         ),
         thinking_budget=int(cog.get("thinking_budget", harness.cognition.thinking_budget)),
         history_compression=history_compression,
+        tool_continuation_rounds=max(
+            0, int(cog.get("tool_continuation_rounds", 0) or 0)
+        ),
     )
     pr = data.get("presence") or {}
     presence = EntityPresence(

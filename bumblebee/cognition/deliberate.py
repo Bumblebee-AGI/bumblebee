@@ -21,6 +21,8 @@ from bumblebee.presence.tools.registry import (
 
 log = structlog.get_logger("bumblebee.cognition.deliberate")
 
+InferenceProfile = Literal["deliberate", "reflex"]
+
 
 def fit_system_prompt_to_budget(system_prompt: str, cap: int) -> str:
     """
@@ -44,16 +46,10 @@ def fit_system_prompt_to_budget(system_prompt: str, cap: int) -> str:
     return s[:suffix_start][:room] + suffix
 
 
-# After tool results, if the model answers with text only but clearly still intends another tool
-# (or hit max_tokens before emitting tool calls), inject a user nudge and continue the loop.
-MAX_TOOL_CONTINUATION_ROUNDS = 2
-
 _TOOL_CONTINUATION_USER = (
-    "Continue in this same turn: if you still need to call a tool to finish what you started "
-    "(retry after an error, install a missing dependency, run a shell command, etc.), "
-    "invoke the tool now. Do not only say you will do it later. "
-    "Otherwise answer in plain text for the user—stay in character. "
-    "Do not add meta lines about being finished or the task completing."
+    "Same turn — tools are still available. If your next step needs a tool (API call, code run, "
+    "fetch, retry after an error, etc.), call it now; do not only say you will do it later. "
+    "If you are actually done, answer the user in plain text, in character."
 )
 
 
@@ -64,19 +60,38 @@ def _finish_reason_hits_limit(finish_reason: str | None) -> bool:
     return fr in ("length", "maxtokens", "maxlength")
 
 
-# Tight phrases only: bare "try to" / "going to" / "i'll" match normal prose (e.g. "try to land")
-# and spuriously trigger continuation → models echo the nudge as "I'm done."
+# Tight phrases only: bare "try to" / "going to" / "i'll" + weak verb match normal prose
+# (e.g. "try to land", "i'll call that a win") and spuriously trigger continuation.
 _INTENTS_FURTHER_TOOL = re.compile(
     r"\b("
     r"lemme\b|hang on|hold on|one sec|give me a sec|real quick|"
-    r"(i'?ll|i will)\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch)\b|"
-    r"(gonna|going\s+to)\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch)\b|"
-    r"need\s+to\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch)\b|"
+    r"(i'?ll|i will|gonna|going\s+to|need\s+to)\s+(call|invoke|hit)\s+the\b|"
+    r"(i'?ll|i will)\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch|register|submit)\b|"
+    r"(gonna|going\s+to)\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch|register|submit)\b|"
+    r"need\s+to\s+(install|run|check|try|exec|search|look\s+up|pull\s+up|fetch|register|submit)\b|"
     r"pip3?\s+install|run_command|run command|"
     r"fix that|sort that|sort this|be right back|brb|"
-    r"let me (try|install|run|check|see|grab|get|do)\b"
+    r"let me (try|install|run|check|see|grab|get|do|register)\b|"
+    r"let me (call|invoke|hit)\s+the\b|"
+    r"(hit|call)\s+the\s+(api|endpoint|registration)\b|"
+    r"\bregister\s+myself\b|sign\s+up\s+(on|for)\b|"
+    r"execute_python|execute_shell|fetch_url|search_web|"
+    r"via\s+[`'\"\u2018\u2019]?execute_|"
+    r"(gonna|going\s+to)\s+use\s+[`'\"\u2018\u2019]?(?:curl|python)\b|"
+    r"\buse\s+[`'\"\u2018\u2019]curl\b"
     r")",
     re.IGNORECASE,
+)
+
+# If the assistant ends on a clean "we're done" note (and the tool did not fail), do not nudge.
+# End-anchored so mid-message "that's all" in a quote does not fire unless it is the closing beat.
+_SOFT_CLOSURE_TAIL = re.compile(
+    r"(?:that['\u2019]?s\s+(?:all|it|everything)(?:\s+for\s+now)?|"
+    r"we['\u2019]?re\s+(?:good|set|done)|"
+    r"all\s+set|i['\u2019]?m\s+done|nothing\s+else|"
+    r"(?:talk|catch\s+you)\s+later)\b"
+    r"\s*[.!…]*\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -99,6 +114,10 @@ def _tool_content_suggests_retry(content: str) -> bool:
     return False
 
 
+def _visible_assistant_text(res: ChatCompletionResult) -> str:
+    return (res.content or "").strip()
+
+
 def should_inject_tool_continuation(msgs: list[dict[str, Any]], res: ChatCompletionResult) -> bool:
     """
     True when the model returned no tool calls but context suggests another tool round is needed
@@ -111,7 +130,7 @@ def should_inject_tool_continuation(msgs: list[dict[str, Any]], res: ChatComplet
         return False
     last_tool = str(tool_msgs[-1].get("content") or "")
     tool_suggests_retry = _tool_content_suggests_retry(last_tool)
-    visible = (res.content or "").strip()
+    visible = _visible_assistant_text(res)
     if not visible and _finish_reason_hits_limit(res.finish_reason):
         return True
     if not visible:
@@ -119,7 +138,15 @@ def should_inject_tool_continuation(msgs: list[dict[str, Any]], res: ChatComplet
     assistant_intends = bool(_INTENTS_FURTHER_TOOL.search(visible))
     if _finish_reason_hits_limit(res.finish_reason):
         return True
-    return tool_suggests_retry or assistant_intends
+    if tool_suggests_retry or assistant_intends:
+        if (
+            _SOFT_CLOSURE_TAIL.search(visible)
+            and not tool_suggests_retry
+            and not _finish_reason_hits_limit(res.finish_reason)
+        ):
+            return False
+        return True
+    return False
 
 
 @dataclass
@@ -141,6 +168,27 @@ class DeliberateCognition:
     def __init__(self, entity: EntityConfig, client: InferenceProvider) -> None:
         self.entity = entity
         self.client = client
+
+    def _inference_params(self, profile: InferenceProfile) -> tuple[str, int, bool, float]:
+        """Model id, max_tokens, think flag, temperature."""
+        h = self.entity.harness.cognition
+        if profile == "reflex":
+            model = (self.entity.cognition.reflex_model or "").strip()
+            if not model:
+                model = (self.entity.cognition.deliberate_model or "").strip()
+            mt = max(32, int(h.reflex_max_tokens))
+            return model, mt, False, float(min(0.9, h.temperature))
+        model = (self.entity.cognition.deliberate_model or "").strip()
+        mt = int(self.entity.cognition.deliberate_max_tokens or h.deliberate_max_tokens)
+        mt = max(128, mt)
+        return model, mt, bool(h.thinking_mode), float(h.temperature)
+
+    def _tool_continuation_rounds_cap(self) -> int:
+        """Max synthetic user nudges when the model stops mid-tool-work; 0 = disabled."""
+        h = int(self.entity.harness.cognition.tool_continuation_rounds)
+        ec = int(self.entity.cognition.tool_continuation_rounds)
+        n = ec if ec > 0 else h
+        return max(0, min(16, n))
 
     def _build_messages(
         self,
@@ -186,25 +234,24 @@ class DeliberateCognition:
         *,
         tools: list[dict[str, Any]] | None = None,
         tool_executor: Callable[[ToolCallSpec], Awaitable[str]] | None = None,
+        inference_profile: InferenceProfile = "deliberate",
     ) -> AsyncIterator[DeliberateStreamEvent]:
         """Multi-round tool loop; appends tool rounds to history; user-visible text only on final (or continuation nudges)."""
-        h = self.entity.harness.cognition
-        max_toks = int(self.entity.cognition.deliberate_max_tokens or h.deliberate_max_tokens)
-        max_toks = max(128, max_toks)
+        model, max_toks, think_flag, temperature = self._inference_params(inference_profile)
         msgs = self._build_messages(system_prompt, messages)
         thinking_acc: list[str] = []
         last: ChatCompletionResult | None = None
-        continuation_remaining = MAX_TOOL_CONTINUATION_ROUNDS
+        continuation_remaining = self._tool_continuation_rounds_cap()
 
         num_ctx = self.entity.effective_ollama_num_ctx()
         for _ in range(8):
             res = await self.client.chat_completion(
-                self.entity.cognition.deliberate_model,
+                model,
                 msgs,
                 tools=tools,
-                temperature=h.temperature,
+                temperature=temperature,
                 max_tokens=max_toks,
-                think=h.thinking_mode,
+                think=think_flag,
                 num_ctx=num_ctx,
             )
             last = res
@@ -309,6 +356,7 @@ class DeliberateCognition:
         *,
         tools: list[dict[str, Any]] | None = None,
         tool_executor: Callable[[ToolCallSpec], Awaitable[str]] | None = None,
+        inference_profile: InferenceProfile = "deliberate",
     ) -> ChatCompletionResult:
         """Aggregate a full deliberate run (single return value)."""
         final_ev: DeliberateStreamEvent | None = None
@@ -318,6 +366,7 @@ class DeliberateCognition:
             messages,
             tools=tools,
             tool_executor=tool_executor,
+            inference_profile=inference_profile,
         ):
             if ev.kind == "final":
                 final_ev = ev

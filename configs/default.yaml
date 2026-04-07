@@ -46,6 +46,8 @@ cognition:
   max_context_tokens: 32768
   escalation_threshold: 0.4
   image_token_budget: 280
+  # Nudge the model when it describes a tool step but returns no tool_calls (multi-step tasks).
+  tool_continuation_rounds: 4
 
 identity:
   emotion_decay_rate: 0.001

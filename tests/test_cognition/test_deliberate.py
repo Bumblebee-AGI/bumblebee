@@ -186,3 +186,59 @@ def test_should_not_inject_on_try_to_in_normal_prose_after_tool():
     )
     assert should_inject_tool_continuation(msgs, res) is False
 
+
+def test_should_inject_when_promising_api_call_after_tool():
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "tool", "content": '{"ok": true, "body": "read skill.md"}'},
+    ]
+    res = ChatCompletionResult(
+        content=(
+            "alright, i see the plan. first i gotta register. "
+            "i'll call the api to register myself as canary. "
+            "after that i'll need to send you the claim_url."
+        ),
+        tool_calls=[],
+        finish_reason="stop",
+    )
+    assert should_inject_tool_continuation(msgs, res) is True
+
+
+def test_should_inject_when_using_curl_via_execute_python_after_tool():
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "tool", "content": '{"ok": true}'},
+    ]
+    res = ChatCompletionResult(
+        content="i'm gonna use `curl` via `execute_python` to hit the registration endpoint.",
+        tool_calls=[],
+        finish_reason="stop",
+    )
+    assert should_inject_tool_continuation(msgs, res) is True
+
+
+def test_should_not_inject_i_ll_call_that_idiom_after_tool():
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "tool", "content": '{"ok": true}'},
+    ]
+    res = ChatCompletionResult(
+        content="pretty smooth launch — i'd call that a win for the team.",
+        tool_calls=[],
+        finish_reason="stop",
+    )
+    assert should_inject_tool_continuation(msgs, res) is False
+
+
+def test_should_not_inject_when_soft_closure_after_intent():
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "tool", "content": '{"ok": true}'},
+    ]
+    res = ChatCompletionResult(
+        content="i'll call the api tomorrow. that's all for now.",
+        tool_calls=[],
+        finish_reason="stop",
+    )
+    assert should_inject_tool_continuation(msgs, res) is False
+
