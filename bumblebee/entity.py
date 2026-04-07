@@ -37,7 +37,10 @@ from bumblebee.memory.imprints import ImprintStore
 from bumblebee.memory.journal import Journal
 from bumblebee.memory.knowledge import KnowledgeStore
 from bumblebee.memory.narrative import NarrativeMemory, NarrativeSynthesizer
+from bumblebee.memory.procedural import ProceduralMemoryStore
+from bumblebee.memory.projects import ProjectLedger
 from bumblebee.memory.relational import RelationalMemory
+from bumblebee.memory.self_model import SelfModelStore
 from bumblebee.models import EmotionCategory, ImprintRecord, Input, is_group_like_chat, speaker_label_for_model
 from bumblebee.presence.embodiment import Embodiment
 from bumblebee.presence.initiative import InitiativeEngine
@@ -52,6 +55,7 @@ from bumblebee.presence.tools.filesystem import (
 from bumblebee.presence.tools import (
     browser as browser_tools,
     code as code_tools,
+    execution_ops as execution_ops_tools,
     imagegen as imagegen_tools,
     messaging as messaging_tools,
     news as news_tools,
@@ -68,6 +72,8 @@ from bumblebee.presence.tools import (
 from bumblebee.presence.tools import automations as automation_tools
 from bumblebee.presence.tools import discovery as discovery_tools
 from bumblebee.presence.tools import journal_tools
+from bumblebee.presence.tools import procedural as procedural_tools
+from bumblebee.presence.tools import projects as project_tools
 from bumblebee.presence.tools.knowledge import register_knowledge_tool
 from bumblebee.presence.tools.mcp import MCPHub
 from bumblebee.presence.tools.registry import ToolRegistry, format_tool_activity
@@ -75,6 +81,10 @@ from bumblebee.presence.tools.runtime import (
     ToolRuntimeContext,
     reset_tool_runtime,
     set_tool_runtime,
+)
+from bumblebee.presence.tools.execution_rpc import (
+    get_execution_client,
+    read_only_workspace_fs_allowed,
 )
 from bumblebee.presence.tools import time_tools
 from bumblebee.presence.tools import web as web_tools
@@ -420,6 +430,9 @@ class Entity:
         self.voice_ctl = VoiceController(config)
         self.episodic = EpisodicMemory(config, self.store)
         self.knowledge = KnowledgeStore(config, self.client)
+        self.procedural = ProceduralMemoryStore(config, self.client)
+        self.projects = ProjectLedger(Path(self.config.projects_path()))
+        self.self_model = SelfModelStore(Path(self.config.self_model_path()))
         self.relational = RelationalMemory(self.store)
         self.inner_voice = InnerVoiceProcessor(self.store)
         self.imprints = ImprintStore(self.store)
@@ -758,6 +771,15 @@ class Entity:
         self.tools.register_decorated(time_tools.get_current_time)
         self.tools.register_decorated(discovery_tools.search_tools)
         self.tools.register_decorated(discovery_tools.describe_tool)
+        self.tools.register_decorated(execution_ops_tools.get_execution_context)
+        self.tools.register_decorated(execution_ops_tools.list_checkpoints)
+        self.tools.register_decorated(execution_ops_tools.rollback_checkpoint)
+        self.tools.register_decorated(procedural_tools.list_skills)
+        self.tools.register_decorated(procedural_tools.read_skill)
+        self.tools.register_decorated(procedural_tools.update_skill)
+        self.tools.register_decorated(project_tools.create_project)
+        self.tools.register_decorated(project_tools.list_projects)
+        self.tools.register_decorated(project_tools.update_project)
         if self._tool_enabled("youtube", True):
             self.tools.register_decorated(youtube_tools.get_youtube_transcript)
             self.tools.register_decorated(youtube_tools.search_youtube)
@@ -847,6 +869,109 @@ class Entity:
             lines.append(current_line)
         return "\n".join(lines)
 
+    async def _expand_context_references(self, inp: Input) -> Input:
+        """Expand lightweight @path references from the execution workspace into the current turn."""
+        text = (inp.text or "").strip()
+        if "@" not in text or not read_only_workspace_fs_allowed(self):
+            return inp
+        refs = re.findall(r"(?<!\S)@([^\s,;:!?]+)", text)
+        refs = [r.strip("`'\"") for r in refs if r and "://" not in r][:4]
+        if not refs:
+            return inp
+        tok = set_tool_runtime(
+            ToolRuntimeContext(entity=self, inp=inp, platform=self.current_platform, state={})
+        )
+        try:
+            client = get_execution_client()
+            blocks: list[str] = []
+            for ref in refs:
+                list_res = await client.call("list_directory", {"path": ref})
+                if list_res.get("ok"):
+                    entries = list_res.get("entries") or []
+                    rows = [f"{e.get('kind')}: {e.get('name')}" for e in entries[:20] if isinstance(e, dict)]
+                    blocks.append(f"[Context reference @{ref}]\n" + "\n".join(rows))
+                    continue
+                file_res = await client.call("read_file", {"path": ref, "max_bytes": 12000})
+                if file_res.get("ok"):
+                    blocks.append(
+                        f"[Context reference @{ref}]\n{str(file_res.get('content') or '').strip()[:12000]}"
+                    )
+            if not blocks:
+                return inp
+            merged = text + "\n\n" + "\n\n".join(blocks)
+            return replace(inp, text=merged)
+        finally:
+            reset_tool_runtime(tok)
+
+    async def _judge_faculty_mode(self, inp: Input) -> str:
+        """Choose a bounded internal faculty for this turn."""
+        t = (inp.text or "").strip()
+        if not t:
+            return "social"
+        try:
+            res = await self.client.chat_completion(
+                self.config.cognition.reflex_model or self.config.cognition.deliberate_model,
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Reply with exactly one token: SOCIAL, RESEARCH, PLANNING, EXECUTION, or REVIEW.\n"
+                            "SOCIAL = casual conversation or relationship-maintaining talk.\n"
+                            "RESEARCH = gather facts, inspect files, browse, look things up.\n"
+                            "PLANNING = break work into steps, compare approaches, design.\n"
+                            "EXECUTION = act on the world, edit files, run code, operate tools.\n"
+                            "REVIEW = inspect an existing answer, output, change, or result critically."
+                        ),
+                    },
+                    {"role": "user", "content": t[:1500]},
+                ],
+                temperature=0.0,
+                max_tokens=8,
+                think=False,
+                num_ctx=self.config.effective_ollama_num_ctx(),
+            )
+            label = re.sub(r"[^A-Z]", "", (res.content or "").strip().upper())
+            return label.lower() if label in {"SOCIAL", "RESEARCH", "PLANNING", "EXECUTION", "REVIEW"} else "social"
+        except Exception:
+            return "social"
+
+    async def _refresh_self_model_snapshot(self, *, note: str = "") -> None:
+        try:
+            skills = await self.procedural.list_skills()
+            projects = await self.projects.list_projects()
+            open_projects = [p for p in projects if p.status.lower() not in ("done", "archived", "closed")]
+            await self.self_model.refresh_snapshot(
+                open_project_count=len(open_projects),
+                skill_count=len(skills),
+                note=note,
+            )
+        except Exception as e:
+            log.debug("self_model_refresh_failed", module="entity", error=str(e))
+
+    async def proactive_context_for_drive(self, drive: Drive) -> str:
+        lc = getattr(self, "_last_conversation", {}) or {}
+        rel_note = ""
+        pid = str(lc.get("person_id") or "").strip()
+        if pid:
+            try:
+                async with self.store.session() as db:
+                    rel = await self.relational.get(db, pid)
+                if rel is not None:
+                    rel_note = self.relational.blurb(rel)
+            except Exception:
+                rel_note = ""
+        projects = await self.projects.summary_lines(limit=4)
+        self_model_summary = await self.self_model.summary()
+        proj_text = "\n".join(f"- {line}" for line in projects) if projects else "- none"
+        return (
+            f"Drive: {drive.name}. Topics: {self.config.drives.curiosity_topics}.\n"
+            f"Last conversation platform={lc.get('platform')} channel={lc.get('channel')} "
+            f"person_id={lc.get('person_id')} person_name={lc.get('person_name')}.\n"
+            f"Relationship context: {rel_note or 'no relational context loaded'}\n"
+            f"Open projects:\n{proj_text}\n"
+            f"Self model: {self_model_summary}"
+        )
+
     def _messages_for_model(self, user_msg: dict[str, Any]) -> list[dict[str, Any]]:
         """Rolling chat + optional compressed prefix (same thread, not a new session)."""
         hc = self.config.cognition.history_compression
@@ -931,6 +1056,8 @@ class Entity:
             out = await self.tools.execute(spec)
         finally:
             reset_tool_runtime(tok)
+        parsed = None
+        ok = True
         if state is not None:
             state["tool_calls"] = int(state.get("tool_calls") or 0) + 1
             state["last_tool_name"] = spec.name
@@ -938,7 +1065,6 @@ class Entity:
                 parsed = json.loads(out)
             except Exception:
                 parsed = None
-            ok = True
             if isinstance(parsed, dict):
                 ok = not bool(parsed.get("error")) and parsed.get("ok", True) is not False
                 err = str(parsed.get("error") or "").strip()
@@ -960,6 +1086,14 @@ class Entity:
                 )
                 if len(previews) > 8:
                     del previews[:-8]
+        try:
+            await self.self_model.record_tool_result(
+                spec.name,
+                ok,
+                str((parsed or {}).get("error") or "") if isinstance(parsed, dict) else "",
+            )
+        except Exception as e:
+            log.debug("self_model_record_tool_failed", module="entity", error=str(e))
         if spec.name in ("search_web", "fetch_url"):
             self.drives.satisfy("curiosity", 0.22)
         return out
@@ -1353,6 +1487,11 @@ class Entity:
         except Exception as e:
             log.warning("attachment_persist_batch_failed", module="entity", error=str(e))
 
+        try:
+            inp = await self._expand_context_references(inp)
+        except Exception as e:
+            log.debug("context_reference_expand_failed", module="entity", error=str(e))
+
         if inp.audio:
             aud0 = inp.audio[0]
             transcript = await senses.transcribe_audio_attachment(
@@ -1437,6 +1576,12 @@ class Entity:
             knowledge_sections = await self.knowledge.query(
                 self._recent_conversation_for_knowledge(inp),
             )
+            procedural_sections = await self.procedural.query(
+                self._recent_conversation_for_knowledge(inp),
+                limit=3,
+            )
+            faculty_mode = await self._judge_faculty_mode(inp)
+            self_model_summary = await self.self_model.summary()
             sys_prompt = await self.personality.compile_system_prompt(
                 self.emotions.get_state(),
                 {
@@ -1456,6 +1601,26 @@ class Entity:
                 last_interlocutor_name=prev_interlocutor_name,
                 entity_created_at=parse_entity_created_timestamp(self.config.raw.get("created")),
             )
+            if procedural_sections:
+                sys_prompt += "\n\n[Procedural memory that may help right now]\n" + "\n\n".join(
+                    procedural_sections
+                )
+            projects_lines = await self.projects.summary_lines(limit=4)
+            if projects_lines:
+                sys_prompt += "\n\n[Long-horizon projects you are carrying]\n" + "\n".join(
+                    f"- {line}" for line in projects_lines
+                )
+            sys_prompt += (
+                "\n\n[Internal faculty for this turn]\n"
+                f"Favor the {faculty_mode} faculty right now — let that shape how you inspect, plan, act, or review."
+            )
+            sys_prompt += "\n\n[Self-model snapshot]\n" + self_model_summary
+            if rel_blurb:
+                sys_prompt += (
+                    "\n\n[Identity-constrained tool use]\n"
+                    "Let your drives, mood, relationship context, and ongoing projects shape whether "
+                    "a tool use feels natural. Do not use tools with generic assistant eagerness."
+                )
 
             if is_group_like_chat(inp):
                 sys_prompt += (
@@ -1697,6 +1862,7 @@ class Entity:
                     warmth_delta=0.02 if meaningful else 0.0,
                 )
 
+            await self._refresh_self_model_snapshot(note=f"completed turn via {faculty_mode} faculty")
             self._last_turn_completed_at = time.time()
             needs_platform_route = route == "reflex" and inp.platform in ("discord", "telegram")
             return reply_text, needs_platform_route

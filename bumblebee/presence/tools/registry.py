@@ -115,6 +115,12 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "append_file":
         name = Path(str(args.get("path", "file") or "file")).name
         return f"📎 appending to {name}..."
+    if tool_name == "get_execution_context":
+        return "🧭 checking execution context..."
+    if tool_name == "list_checkpoints":
+        return "🧷 listing checkpoints..."
+    if tool_name == "rollback_checkpoint":
+        return "↩️ rolling back checkpoint..."
     if tool_name == "execute_python":
         return "🐍 running python..."
     if tool_name == "execute_javascript":
@@ -161,6 +167,18 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return "📓 writing in journal..."
     if tool_name == "read_journal":
         return None
+    if tool_name == "list_skills":
+        return "🧠 checking procedural memory..."
+    if tool_name == "read_skill":
+        return "🧠 reading a skill..."
+    if tool_name == "update_skill":
+        return "🧠 updating procedural memory..."
+    if tool_name == "create_project":
+        return "🧵 starting a long-horizon project..."
+    if tool_name == "list_projects":
+        return "🧵 checking ongoing projects..."
+    if tool_name == "update_project":
+        return "🧵 updating a project..."
     if tool_name.startswith("mcp_"):
         parts = tool_name.split("_", 2)
         server = (parts[1] if len(parts) >= 2 else "mcp").lower()
@@ -333,6 +351,9 @@ class ToolRegistry:
             "\n\n[Tools available to you — use when curiosity or the moment calls for it, "
             "not as a chore for the user]\n"
             f"You may call: {names}.\n"
+            "Treat these as part of your body and memory: execution/context tools are how you inspect "
+            "and act in your environment, skills are procedural memory, and projects are long-running "
+            "threads you can carry across sessions.\n"
             "If they ask about the workspace, repo contents, files on disk, current machine, or "
             "other host state, do not guess from generic software-project priors. Use the relevant "
             "tool first (usually list_directory, read_file, search_files, or get_system_info), then "
@@ -354,6 +375,8 @@ class ToolRegistry:
         return (
             "\n\n[Tools — callable via the tool channel; full parameter schemas are in the API]\n"
             f"You may call: {names}.\n"
+            "Execution/context tools are part of your body, skills are procedural memory, and projects "
+            "are long-running commitments you can keep alive across sessions.\n"
             "If they ask what you can do or what you're capable of, call search_tools with an "
             "empty query first, then answer from that in your voice — casual, not a feature list "
             "unless they want detail.\n"

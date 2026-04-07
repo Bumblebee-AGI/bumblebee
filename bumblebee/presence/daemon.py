@@ -101,12 +101,7 @@ class PresenceDaemon:
             cooldown = float(self.cfg.drives.initiative_cooldown)
             if drives and self.entity.drives.can_initiate(now, cooldown):
                 d = drives[0]
-                lc = getattr(self.entity, "_last_conversation", {}) or {}
-                ctx = (
-                    f"Drive: {d.name}. Topics: {self.cfg.drives.curiosity_topics}. "
-                    f"Last conversation platform={lc.get('platform')} channel={lc.get('channel')} "
-                    f"person_id={lc.get('person_id')}."
-                )
+                ctx = await self.entity.proactive_context_for_drive(d)
                 msg = await self._initiative.compose_proactive(d, ctx)
                 if msg:
                     self.entity.drives.register_initiative_time(now)

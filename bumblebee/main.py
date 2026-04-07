@@ -23,7 +23,9 @@ from bumblebee.config import (
 from bumblebee.entity import Entity, format_user_visible_failure
 from bumblebee.genesis import creator
 from bumblebee.health import check_inference
+from bumblebee.models import Input
 from bumblebee.presence.daemon import PresenceDaemon
+from bumblebee.presence.platforms.base import Platform
 from bumblebee.presence.platforms.cli import CLIPlatform
 from bumblebee.presence.platforms.discord_platform import DiscordPlatform, token_from_config
 from bumblebee.presence.platforms.telegram_platform import TelegramPlatform, merge_telegram_operator_user_ids
@@ -129,6 +131,39 @@ async def _graceful_run_shutdown(daemon: PresenceDaemon, platforms: list, ent: E
     except BaseException:
         pass
     shutdown_spawned_ollama()
+
+
+class _OneShotCLIPlatform(Platform):
+    """Minimal CLI platform for single-turn prompts."""
+
+    def __init__(self, *, person_id: str = "cli_user", person_name: str = "You") -> None:
+        self._person_id = person_id
+        self._person_name = person_name
+        self._cb = None
+
+    async def connect(self) -> None:
+        return None
+
+    async def send_message(self, channel: str, content: str) -> None:
+        click.echo(content)
+
+    async def send_tool_activity(self, description: str) -> None:
+        return None
+
+    async def on_message(self, callback) -> None:
+        self._cb = callback
+
+    async def set_presence(self, status: str) -> None:
+        return None
+
+    async def disconnect(self) -> None:
+        return None
+
+    def get_person_id(self, message: object) -> str:
+        return self._person_id
+
+    def get_person_name(self, message: object) -> str:
+        return self._person_name
 
 
 def _prepare_ollama_cli(entity_name: str, with_ollama: bool, pull_models: bool) -> None:
@@ -343,6 +378,74 @@ def cmd_talk(entity_name: str, with_ollama: bool, pull_models: bool) -> None:
         click.echo("\nStopped.", err=True)
     finally:
         shutdown_spawned_ollama()
+
+
+@cli.command("ask")
+@click.argument("entity_name")
+@click.argument("message_parts", nargs=-1, required=True)
+@click.option(
+    "--ollama",
+    "with_ollama",
+    is_flag=True,
+    help="Start local Ollama if needed (does not pull models; use --pull-models to fetch).",
+)
+@click.option(
+    "--pull-models",
+    is_flag=True,
+    help="Run ollama pull for configured models (optional; combine with --ollama).",
+)
+def cmd_ask(
+    entity_name: str,
+    message_parts: tuple[str, ...],
+    with_ollama: bool,
+    pull_models: bool,
+) -> None:
+    """Single-turn CLI prompt (one reply, no daemon)."""
+    message = " ".join(message_parts).strip()
+    if not message:
+        raise click.ClickException("Message cannot be empty.")
+    _prepare_ollama_cli(entity_name, with_ollama, pull_models)
+    try:
+        asyncio.run(_ask_once(entity_name, message))
+    except KeyboardInterrupt:
+        click.echo("\nStopped.", err=True)
+    finally:
+        shutdown_spawned_ollama()
+
+
+async def _ask_once(entity_name: str, message: str) -> None:
+    harness = load_harness_config()
+    ec = load_entity_config(entity_name, harness)
+    setup_logging(
+        ec.name,
+        ec.harness.logging.level,
+        ec.log_path(),
+        ec.harness.logging.format,
+        immersive=True,
+    )
+    ent = Entity(ec)
+    cli_p = _OneShotCLIPlatform()
+    await cli_p.connect()
+    ent.register_platform("cli", cli_p)
+    inp = Input(
+        text=message,
+        person_id=cli_p.get_person_id(None),
+        person_name=cli_p.get_person_name(None),
+        channel="cli",
+        platform="cli",
+    )
+    try:
+        reply, _ = await ent.perceive(inp, reply_platform=cli_p)
+        click.echo(reply)
+    finally:
+        try:
+            await asyncio.shield(cli_p.disconnect())
+        except BaseException:
+            pass
+        try:
+            await asyncio.shield(ent.shutdown())
+        except BaseException:
+            pass
 
 
 async def _talk(entity_name: str) -> None:

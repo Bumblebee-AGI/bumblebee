@@ -154,6 +154,49 @@ def test_require_railway_block_message_is_explicit(
     assert "locked to Railway" in msg
 
 
+@pytest.mark.asyncio
+async def test_local_write_creates_checkpoint_and_can_roll_back(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("BUMBLEBEE_EXECUTION_RPC_URL", raising=False)
+    monkeypatch.delenv("RAILWAY_ENVIRONMENT", raising=False)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("BUMBLEBEE_EXECUTION_WORKSPACE_DIR", str(workspace))
+
+    h = HarnessConfig()
+    h.deployment.mode = "local"
+    h.memory.database_path = str(tmp_path / "m.db")
+    ec = entity_from_dict(h, _MIN_ENTITY)
+    holder = _EntityHolder(ec)
+    tok = set_tool_runtime(ToolRuntimeContext(entity=holder, inp=None))
+    try:
+        client = execution_rpc.get_execution_client()
+        first = await client.call("write_file", {"path": "note.txt", "content": "first"})
+        cp_first = str(first.get("checkpoint_id") or "")
+        assert cp_first.startswith("cp_")
+        second = await client.call("write_file", {"path": "note.txt", "content": "second"})
+        cp_second = str(second.get("checkpoint_id") or "")
+        assert cp_second.startswith("cp_")
+        rolled = await client.call("rollback_checkpoint", {"checkpoint_id": cp_second})
+        assert rolled["ok"] is True
+        assert (workspace / "note.txt").read_text(encoding="utf-8") == "first"
+        rolled_delete = await client.call("rollback_checkpoint", {"checkpoint_id": cp_first})
+        assert rolled_delete["ok"] is True
+        assert not (workspace / "note.txt").exists()
+        cps = await client.call("list_checkpoints", {"limit": 10})
+        assert cps["ok"] is True
+        ids = {str(row.get("id") or "") for row in cps["checkpoints"]}
+        assert cp_first in ids
+        assert cp_second in ids
+        env = await client.call("get_execution_context", {})
+        assert env["ok"] is True
+        assert env["environment"]["workspace_root"] == str(workspace.resolve())
+    finally:
+        reset_tool_runtime(tok)
+
+
 @pytest.mark.parametrize(
     ("error", "expect"),
     [

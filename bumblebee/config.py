@@ -318,6 +318,15 @@ class EntityConfig:
     def journal_path(self) -> str:
         return _expand("~/.bumblebee/entities/{entity_name}/journal.md", self.name)
 
+    def skills_dir(self) -> str:
+        return _expand("~/.bumblebee/entities/{entity_name}/skills", self.name)
+
+    def projects_path(self) -> str:
+        return _expand("~/.bumblebee/entities/{entity_name}/projects.json", self.name)
+
+    def self_model_path(self) -> str:
+        return _expand("~/.bumblebee/entities/{entity_name}/self_model.json", self.name)
+
 
 def _merge_dict(base: dict, override: dict) -> dict:
     out = {**base}

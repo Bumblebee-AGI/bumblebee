@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,15 @@ log = structlog.get_logger("bumblebee.presence.tools.execution")
 
 _CLIENTS: dict[str, "ExecutionRPCClient"] = {}
 _BG_PROCS: dict[str, dict[str, Any]] = {}
+
+
+@dataclass
+class ExecutionEnvironment:
+    kind: str
+    workspace_root: str
+    base_url: str
+    allow_local_backend: bool
+    require_railway: bool
 
 
 def _rpc_error_suggests_unknown_action(res: dict[str, Any]) -> bool:
@@ -140,6 +150,10 @@ def _tail_text(path: Path, max_bytes: int = 12000) -> str:
     return data.decode("utf-8", errors="replace")
 
 
+def _iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 @dataclass
 class ExecutionRPCClient:
     base_url: str
@@ -148,6 +162,113 @@ class ExecutionRPCClient:
     timeout: float
     allow_local_backend: bool
     workspace_root: Path
+
+    def environment(self) -> ExecutionEnvironment:
+        kind = "rpc" if self.base_url else "local"
+        if kind == "local" and (os.environ.get("RAILWAY_ENVIRONMENT") or "").strip():
+            kind = "railway"
+        return ExecutionEnvironment(
+            kind=kind,
+            workspace_root=str(self.workspace_root),
+            base_url=self.base_url,
+            allow_local_backend=self.allow_local_backend,
+            require_railway=bool((os.environ.get("BUMBLEBEE_EXECUTION_REQUIRE_RAILWAY") or "").strip()),
+        )
+
+    def _ops_dir(self) -> Path:
+        p = self.workspace_root / ".bumblebee" / "ops"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _checkpoints_dir(self) -> Path:
+        p = self._ops_dir() / "checkpoints"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    def _audit_log_path(self) -> Path:
+        return self._ops_dir() / "action_log.jsonl"
+
+    def _write_audit_event(
+        self,
+        *,
+        action: str,
+        payload: dict[str, Any],
+        result: dict[str, Any],
+    ) -> None:
+        rec = {
+            "at": _iso_now(),
+            "action": action,
+            "workspace_root": str(self.workspace_root),
+            "environment": self.environment().__dict__,
+            "payload": payload,
+            "result": result,
+        }
+        try:
+            with self._audit_log_path().open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def _create_checkpoint(self, target: Path, action: str) -> dict[str, Any]:
+        cp_id = f"cp_{uuid.uuid4().hex[:12]}"
+        cp_dir = self._checkpoints_dir()
+        meta_path = cp_dir / f"{cp_id}.json"
+        data_path = cp_dir / f"{cp_id}.bak"
+        existed = target.exists()
+        is_file = target.is_file()
+        if existed and is_file:
+            shutil.copy2(target, data_path)
+        meta = {
+            "id": cp_id,
+            "action": action,
+            "target": str(target),
+            "workspace_root": str(self.workspace_root),
+            "created_at": _iso_now(),
+            "existed": existed,
+            "is_file": is_file,
+            "backup_path": str(data_path) if existed and is_file else "",
+        }
+        meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+        return meta
+
+    def _list_checkpoints(self, limit: int) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for meta_path in sorted(
+            self._checkpoints_dir().glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:limit]:
+            try:
+                rows.append(json.loads(meta_path.read_text(encoding="utf-8", errors="replace")))
+            except (OSError, json.JSONDecodeError):
+                continue
+        return rows
+
+    def _rollback_checkpoint(self, checkpoint_id: str) -> dict[str, Any]:
+        cid = (checkpoint_id or "").strip()
+        if not cid:
+            return {"ok": False, "error": "empty checkpoint_id"}
+        meta_path = self._checkpoints_dir() / f"{cid}.json"
+        if not meta_path.is_file():
+            return {"ok": False, "error": f"unknown checkpoint_id: {cid}"}
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError) as e:
+            return {"ok": False, "error": str(e)}
+        target = Path(str(meta.get("target") or ""))
+        if not target:
+            return {"ok": False, "error": "checkpoint missing target"}
+        backup_path = Path(str(meta.get("backup_path") or ""))
+        existed = bool(meta.get("existed"))
+        try:
+            if existed and backup_path.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(backup_path, target)
+            else:
+                target.unlink(missing_ok=True)
+            return {"ok": True, "checkpoint_id": cid, "target": str(target)}
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
 
     async def call(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         if self.base_url:
@@ -215,6 +336,16 @@ class ExecutionRPCClient:
 
     def _call_local(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:
+            if action == "get_execution_context":
+                return {"ok": True, "environment": self.environment().__dict__}
+
+            if action == "list_checkpoints":
+                limit = max(1, min(int(payload.get("limit") or 20), 100))
+                return {"ok": True, "checkpoints": self._list_checkpoints(limit)}
+
+            if action == "rollback_checkpoint":
+                return self._rollback_checkpoint(str(payload.get("checkpoint_id") or ""))
+
             if action == "run_command":
                 cmd = str(payload.get("command") or "").strip()
                 timeout = int(payload.get("timeout") or self.timeout)
@@ -228,12 +359,14 @@ class ExecutionRPCClient:
                     text=True,
                     timeout=max(1, timeout),
                 )
-                return {
+                res = {
                     "ok": True,
                     "exit_code": int(p.returncode),
                     "stdout": (p.stdout or "")[:20000],
                     "stderr": (p.stderr or "")[:20000],
                 }
+                self._write_audit_event(action="run_command", payload=payload, result=res)
+                return res
 
             if action == "run_background":
                 cmd = str(payload.get("command") or "").strip()
@@ -259,7 +392,9 @@ class ExecutionRPCClient:
                     "command": cmd,
                     "started_at": time.time(),
                 }
-                return {"ok": True, "process_id": proc_id, "pid": int(proc.pid)}
+                res = {"ok": True, "process_id": proc_id, "pid": int(proc.pid)}
+                self._write_audit_event(action="run_background", payload=payload, result=res)
+                return res
 
             if action == "check_process":
                 proc_id = str(payload.get("process_id") or "").strip()
@@ -290,11 +425,13 @@ class ExecutionRPCClient:
                         proc.wait(timeout=4)
                     except subprocess.TimeoutExpired:
                         proc.kill()
-                return {
+                res = {
                     "ok": True,
                     "process_id": proc_id,
                     "exit_code": None if proc.poll() is None else int(proc.poll()),
                 }
+                self._write_audit_event(action="kill_process", payload=payload, result=res)
+                return res
 
             if action == "list_directory":
                 raw_path = str(payload.get("path") or ".").strip() or "."
@@ -390,17 +527,33 @@ class ExecutionRPCClient:
             if action == "write_file":
                 target = self._resolve_workspace_path(str(payload.get("path") or ""))
                 content = str(payload.get("content") or "")
+                checkpoint = self._create_checkpoint(target, "write_file")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(content, encoding="utf-8")
-                return {"ok": True, "path": str(target), "bytes": len(content.encode("utf-8"))}
+                res = {
+                    "ok": True,
+                    "path": str(target),
+                    "bytes": len(content.encode("utf-8")),
+                    "checkpoint_id": checkpoint.get("id"),
+                }
+                self._write_audit_event(action="write_file", payload=payload, result=res)
+                return res
 
             if action == "append_file":
                 target = self._resolve_workspace_path(str(payload.get("path") or ""))
                 content = str(payload.get("content") or "")
+                checkpoint = self._create_checkpoint(target, "append_file")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with target.open("a", encoding="utf-8") as f:
                     f.write(content)
-                return {"ok": True, "path": str(target), "bytes": len(content.encode("utf-8"))}
+                res = {
+                    "ok": True,
+                    "path": str(target),
+                    "bytes": len(content.encode("utf-8")),
+                    "checkpoint_id": checkpoint.get("id"),
+                }
+                self._write_audit_event(action="append_file", payload=payload, result=res)
+                return res
 
             if action == "execute_python":
                 code = str(payload.get("code") or "")
@@ -417,12 +570,14 @@ class ExecutionRPCClient:
                         text=True,
                         timeout=max(1, timeout),
                     )
-                    return {
+                    res = {
                         "ok": True,
                         "exit_code": int(p.returncode),
                         "stdout": (p.stdout or "")[:20000],
                         "stderr": (p.stderr or "")[:20000],
                     }
+                    self._write_audit_event(action="execute_python", payload=payload, result=res)
+                    return res
                 finally:
                     try:
                         tmp.unlink(missing_ok=True)
@@ -447,12 +602,14 @@ class ExecutionRPCClient:
                         text=True,
                         timeout=max(1, timeout),
                     )
-                    return {
+                    res = {
                         "ok": True,
                         "exit_code": int(p.returncode),
                         "stdout": (p.stdout or "")[:20000],
                         "stderr": (p.stderr or "")[:20000],
                     }
+                    self._write_audit_event(action="execute_javascript", payload=payload, result=res)
+                    return res
                 finally:
                     try:
                         tmp.unlink(missing_ok=True)

@@ -24,7 +24,8 @@ class InitiativeEngine:
                 "content": (
                     f"You are {self.entity.name}. A inner drive ({drive.name}) has grown strong. "
                     "Write one short unsolicited message (2–4 sentences) you might send someone "
-                    "you know — not generic, not a question list. Stay in character."
+                    "you know — not generic, not a question list. Let active projects, relationship context, "
+                    "and your own habits shape what feels natural. Stay in character."
                 ),
             },
             {"role": "user", "content": f"Context:\n{context[:3000]}"},
