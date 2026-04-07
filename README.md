@@ -1,7 +1,7 @@
 # Bumblebee
 
 <p align="center">
-  <img src="assets/branding/yellow-bumblebee-agi.png" alt="Bumblebee AGI mark — black silhouette on yellow" width="480">
+  <img src="assets/branding/yellow-bumblebee-agi.png" alt="Bumblebee AGI mark — black silhouette on yellow">
 </p>
 
 <p align="center">
@@ -638,5 +638,5 @@ Apache 2.0
 
 <p align="center">
   <strong>🐝</strong><br/>
-  <sub>Apache 2.0 — built with Gemma by Google DeepMind</sub>
+  <sub>Apache License 2.0 — community open-source project</sub>
 </p>
