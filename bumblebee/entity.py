@@ -268,7 +268,8 @@ class Entity:
         self.embodiment = Embodiment(config)
         soma_cfg = config.harness.soma if isinstance(config.harness.soma, dict) else {}
         self.tonic = TonicBody(soma_cfg, Path(config.soma_dir()))
-        self.tonic.restore_state()
+        self.tonic.restore_state()  # filesystem fallback; DB restore in _retrieve_memory
+        self._soma_db_restored = False
         self.tools = ToolRegistry()
         self._register_tools()
         web_tools.configure_firecrawl(
@@ -1458,6 +1459,12 @@ class Entity:
         """Hydrate state, load relationship/narrative, episodic recall, apply imprints."""
         db = tc.db
         await self._ensure_state_hydrated(db)
+        if not self._soma_db_restored:
+            try:
+                if await self.tonic.restore_state_db(db):
+                    self._soma_db_restored = True
+            except Exception as e:
+                log.debug("soma_db_restore_skipped", error=str(e))
         if not tc.preserve_conversation_route:
             self._remember_person_route(tc.inp)
             try:
@@ -1831,6 +1838,10 @@ class Entity:
                 )
             except Exception:
                 pass
+        try:
+            await self.tonic.save_state_db(tc.db)
+        except Exception as e:
+            log.debug("soma_db_save_in_commit_failed", error=str(e))
         log.info(
             "turn_completed",
             platform=tc.inp.platform,
@@ -1959,6 +1970,11 @@ class Entity:
     async def shutdown(self) -> None:
         try:
             self.tonic.save_state()
+        except Exception:
+            pass
+        try:
+            async with self.store.session() as conn:
+                await self.tonic.save_state_db(conn)
         except Exception:
             pass
         try:

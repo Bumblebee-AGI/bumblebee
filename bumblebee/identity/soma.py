@@ -858,6 +858,7 @@ class TonicBody:
         return best_cat, best_intensity
 
     def save_state(self) -> None:
+        """Save bar state to filesystem (fallback for local/SQLite deployments)."""
         state_path = self._soma_dir / "soma-bar-state.json"
         try:
             self.bars.save_state(state_path)
@@ -865,8 +866,53 @@ class TonicBody:
             log.warning("soma_save_state_failed", error=str(e))
 
     def restore_state(self) -> bool:
+        """Restore bar state from filesystem (fallback for local/SQLite deployments)."""
         state_path = self._soma_dir / "soma-bar-state.json"
         return self.bars.restore_state(state_path)
+
+    async def save_state_db(self, conn: Any) -> None:
+        """Persist bar state to entity_state table (Postgres-durable)."""
+        data = {
+            "values": dict(self.bars._values),
+            "history": list(self.bars._history),
+            "ordered_names": list(self.bars._ordered_names),
+        }
+        payload = json.dumps(data, separators=(",", ":"))
+        try:
+            await conn.execute(
+                "INSERT OR REPLACE INTO entity_state (key, value) VALUES (?, ?)",
+                ("soma_bar_state_v1", payload),
+            )
+            await conn.commit()
+        except Exception as e:
+            log.warning("soma_save_state_db_failed", error=str(e))
+
+    async def restore_state_db(self, conn: Any) -> bool:
+        """Restore bar state from entity_state table."""
+        try:
+            cur = await conn.execute(
+                "SELECT value FROM entity_state WHERE key = ?",
+                ("soma_bar_state_v1",),
+            )
+            row = await cur.fetchone()
+            if not row:
+                return False
+            data = json.loads(row[0])
+            saved_names = data.get("ordered_names", [])
+            if saved_names != self.bars._ordered_names:
+                log.info("soma_bar_names_changed_db", saved=saved_names, current=self.bars._ordered_names)
+                return False
+            self.bars._values = {k: float(data["values"][k]) for k in self.bars._ordered_names}
+            self.bars._history.clear()
+            for snap in data.get("history", []):
+                self.bars._history.append({k: float(snap.get(k, 0)) for k in self.bars._ordered_names})
+            if not self.bars._history:
+                self.bars._history.append(dict(self.bars._values))
+            log.info("soma_bar_state_restored_db", values={k: round(v, 1) for k, v in self.bars._values.items()})
+            return True
+        except Exception:
+            log.warning("soma_bar_state_restore_db_failed", exc_info=True)
+            return False
 
     def drain_recent_events(self) -> list[dict[str, Any]]:
         """Return and clear recent events (for periodic cleanup)."""
