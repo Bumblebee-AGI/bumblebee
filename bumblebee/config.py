@@ -293,13 +293,26 @@ class EntityDrives:
 @dataclass
 class HistoryCompressionSettings:
     """When rolling chat history exceeds ``rolling_history_max_messages``, oldest turns are dropped.
-    If ``enabled``, those turns are merged into an in-memory summary prepended to model context."""
+    If ``enabled``, those turns are merged into an in-memory summary prepended to model context.
+
+    The ``compaction_*`` fields control the proactive pre-flight compactor that fires *before*
+    inference when the estimated token count approaches ``max_context_tokens``.  The older
+    message-count trim (``rolling_history_max_messages``) remains as a safety net.
+    """
 
     enabled: bool = True
     summary_max_chars: int = 4500
     max_merge_input_chars: int = 12000
     merge_max_tokens: int = 900
     format_per_message_chars: int = 2200
+
+    # --- proactive context compaction (Hermes-style) ---
+    compaction_threshold_ratio: float = 0.75
+    compaction_target_ratio: float = 0.20
+    compaction_protect_last_n: int = 12
+    compaction_protect_first_n: int = 2
+    compaction_max_passes: int = 3
+    compaction_flush_to_knowledge: bool = True
 
 
 @dataclass
@@ -573,6 +586,24 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
             merge_max_tokens=max(200, int(hc_raw.get("merge_max_tokens", 900) or 900)),
             format_per_message_chars=max(
                 400, int(hc_raw.get("format_per_message_chars", 2200) or 2200)
+            ),
+            compaction_threshold_ratio=max(
+                0.10, min(0.95, float(hc_raw.get("compaction_threshold_ratio", 0.75) or 0.75))
+            ),
+            compaction_target_ratio=max(
+                0.10, min(0.80, float(hc_raw.get("compaction_target_ratio", 0.20) or 0.20))
+            ),
+            compaction_protect_last_n=max(
+                4, int(hc_raw.get("compaction_protect_last_n", 12) or 12)
+            ),
+            compaction_protect_first_n=max(
+                0, int(hc_raw.get("compaction_protect_first_n", 2) or 2)
+            ),
+            compaction_max_passes=max(
+                1, min(5, int(hc_raw.get("compaction_max_passes", 3) or 3))
+            ),
+            compaction_flush_to_knowledge=bool(
+                hc_raw.get("compaction_flush_to_knowledge", True)
             ),
         )
     else:
