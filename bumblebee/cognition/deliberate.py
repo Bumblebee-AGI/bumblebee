@@ -70,6 +70,15 @@ def _build_post_tool_nudge(
         summaries.append(f"  - {tc_spec.name}: {status}")
     tool_block = "\n".join(summaries)
     user_snippet = (user_text or "").strip()[:300]
+    multi = len(tool_calls) >= 3
+    if multi:
+        return (
+            f"Same turn. Tool results are ready:\n{tool_block}\n"
+            f"The user asked: {user_snippet}\n"
+            "You got multiple results. Use say() to share each finding as a separate "
+            "short message — don't bundle everything into one wall of text. Share the "
+            "most interesting result first, then the others. Call end_turn when done."
+        )
     return (
         f"Same turn. Tool results are ready:\n{tool_block}\n"
         f"The user asked: {user_snippet}\n"

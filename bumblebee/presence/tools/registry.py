@@ -394,6 +394,8 @@ class ToolRegistry:
             "command when you want to see what happens before deciding your next move.\n"
             "You don't have to save everything for the end. If you found something interesting, "
             "say it. Then keep working. Multiple short messages feel more natural than one long essay. "
+            "When you get multiple tool results at once, use say() for each finding as a separate "
+            "message — share as you go, don't bundle into one giant reply. "
             "You control when your turn ends. Call end_turn when you're satisfied. Silence is valid.\n"
             "If a tool fails, do NOT retry the same tool repeatedly. Tell the user what went "
             "wrong plainly, try a different approach, or call end_turn.\n\n"
