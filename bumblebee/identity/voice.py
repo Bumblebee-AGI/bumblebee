@@ -102,10 +102,27 @@ def apply_voice_outgoing_substitutions(text: str, voice: Mapping[str, Any] | Non
     return t
 
 
+_INLINE_REPEAT = re.compile(r"(.{3,40}?)\1{3,}", re.DOTALL)
+
+
 def _strip_degenerate_repetition(text: str, max_repeats: int = 3) -> str:
-    """Detect and truncate degenerate repetition loops (model stuck repeating a phrase)."""
+    """Detect and truncate degenerate repetition loops.
+
+    Catches two patterns:
+    1. Full-line repeats (same line appearing 3+ times)
+    2. Inline substring repeats (same 3-40 char fragment repeating 4+ times within a line)
+    """
     if not text or len(text) < 80:
         return text
+
+    # --- inline repetition: truncate at the point where the repeat starts ---
+    m = _INLINE_REPEAT.search(text)
+    if m:
+        text = text[:m.start()].rstrip()
+        if not text:
+            return ""
+
+    # --- line-level repetition ---
     lines = text.splitlines()
     if len(lines) < max_repeats + 2:
         return text
