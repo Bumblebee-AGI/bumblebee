@@ -314,7 +314,7 @@ class DeliberateCognition:
 
                 yield DeliberateStreamEvent(
                     kind="intermediate",
-                    display_text="",
+                    display_text=_visible_assistant_text(res),
                     history_entries=[assistant_msg] + tool_msgs + [follow_user],
                 )
                 continue

@@ -590,6 +590,7 @@ class Entity:
 
     def _register_tools(self) -> None:
         self.tools.register_decorated(agency_tools.think)
+        self.tools.register_decorated(agency_tools.say)
         self.tools.register_decorated(agency_tools.end_turn)
         self.tools.register_decorated(agency_tools.wait)
         self.tools.register_decorated(web_tools.search_web)
@@ -1698,11 +1699,13 @@ class Entity:
                 raw_seg = ev.display_text.strip()
                 if raw_seg and not intermediate_text_looks_like_tool_channel(raw_seg):
                     seg = self.voice_ctl.sanitize_reply(raw_seg)
-                    if seg and not reply_too_thin(seg):
+                    msg_count = tc.tool_state.get("_messages_sent", 0)
+                    if seg and not reply_too_thin(seg) and msg_count < 6:
                         await _deliver_embodied_deliberate_segment(
                             self, tc.inp, seg,
                             stream=tc.stream, cli_stream_final=False,
                         )
+                        tc.tool_state["_messages_sent"] = msg_count + 1
                         if tc.inp.platform in ("discord", "telegram"):
                             tc.intermediate_sent = True
                             tc.last_intermediate = seg
@@ -1729,8 +1732,9 @@ class Entity:
                 await self._fallback_plain_reply(tc.inp, tool_state=tc.tool_state)
             )
         if tc.route in ("reflex", "deliberate"):
+            messages_already_sent = tc.tool_state.get("_messages_sent", 0)
             tc.skip_final_delivery = (
-                tc.intermediate_sent
+                (tc.intermediate_sent or messages_already_sent > 0)
                 and tc.inp.platform in ("discord", "telegram")
                 and bool((tc.reply_text or "").strip())
                 and (reply_too_thin(tc.reply_text) or pro_forma_tool_followup(tc.reply_text))

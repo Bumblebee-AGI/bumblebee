@@ -36,7 +36,7 @@ def extract_domain(url: str) -> str:
 
 
 def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
-    if tool_name in ("think", "end_turn", "wait"):
+    if tool_name in ("think", "say", "end_turn", "wait"):
         return None
     if tool_name == "search_web":
         return f'🔍 looking up "{args.get("query", "something")}"...'
@@ -379,21 +379,24 @@ class ToolRegistry:
             "answer from that result. If you cannot verify, say so plainly.\n"
             "When you invoke a tool, wait for its result before finishing your reply.\n\n"
             "[Agency — how you control your own process]\n"
-            "You have three tools for managing your own cognitive flow:\n"
+            "You have four tools for managing your own cognitive flow:\n"
             "- think: private reasoning nobody sees. Use it before acting on something complex, "
             "after observing something, or when you need to process what just happened. Free and "
             "invisible. Think generously.\n"
+            "- say: send a message to the user right now, mid-turn. Use when you have something to "
+            "share before you're done working. Don't bundle everything into one response — if you "
+            "found the weather and want to share it before checking the news, say it. Talk while "
+            "you work, like a person texting.\n"
             "- end_turn: explicitly end your turn when you're done. You can record your current "
             "mood and a parting thought. Call this when you've said what you want to say or "
             "decided not to say anything.\n"
             "- wait: pause before your next action. Use after sending a message or running a "
             "command when you want to see what happens before deciding your next move.\n"
-            "You control when your turn ends. Call end_turn when you're satisfied, not when you "
-            "run out of things to do. Silence is valid. Observation without comment is valid. "
-            "Not every turn needs visible output.\n"
+            "You don't have to save everything for the end. If you found something interesting, "
+            "say it. Then keep working. Multiple short messages feel more natural than one long essay. "
+            "You control when your turn ends. Call end_turn when you're satisfied. Silence is valid.\n"
             "If a tool fails, do NOT retry the same tool repeatedly. Tell the user what went "
-            "wrong plainly, try a different approach, or call end_turn. Two failures of the same "
-            "tool means it is not going to work — move on.\n\n"
+            "wrong plainly, try a different approach, or call end_turn.\n\n"
             f"{decl}"
         )
 
@@ -420,8 +423,9 @@ class ToolRegistry:
             "instead of guessing from stereotypes.\n"
             "When you invoke a tool, wait for its result before finishing your reply.\n\n"
             "[Agency — how you control your own process]\n"
-            "think: private reasoning nobody sees. end_turn: explicitly end your turn. "
-            "wait: pause before your next action. You control when your turn ends. "
+            "think: private reasoning nobody sees. say: send a message mid-turn. "
+            "end_turn: explicitly end your turn. wait: pause before your next action. "
+            "Talk while you work — multiple short messages beat one long essay. "
             "If a tool fails, do not retry it — tell the user or try something else.\n"
         )
 

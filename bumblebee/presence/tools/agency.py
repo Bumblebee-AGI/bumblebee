@@ -1,8 +1,8 @@
 """Agency primitives — tools that give the model control over its own cognitive process.
 
-These tools cannot affect the outside world. They shape the model's internal
-flow: private reasoning, explicit turn termination, and temporal patience.
-The model decides when to think, when to wait, and when it's done.
+These tools shape the model's internal flow: private reasoning, explicit turn
+termination, temporal patience, and mid-turn communication. The model decides
+when to think, when to speak, when to wait, and when it's done.
 """
 
 from __future__ import annotations
@@ -40,6 +40,33 @@ async def end_turn(mood: str = "", thought: str = "") -> str:
         if thought:
             ctx.state["_end_turn_thought"] = thought
     return "[turn ended]"
+
+
+@tool(
+    "say",
+    "Send a message to the user right now, mid-turn. The turn continues after. "
+    "Use when you have something to share before you're done working — don't "
+    "bundle everything into one response. Talk while you work, like a person texting.",
+)
+async def say(message: str) -> str:
+    ctx = get_tool_runtime()
+    platform = ctx.platform
+    inp = ctx.inp
+    if platform is None or inp is None:
+        return "[no active chat to send to]"
+    text = (message or "").strip()
+    if not text:
+        return "[empty message, not sent]"
+    if ctx.state is not None:
+        count = ctx.state.get("_messages_sent", 0)
+        if count >= 6:
+            return "[message limit reached this turn — save it for later]"
+        ctx.state["_messages_sent"] = count + 1
+    try:
+        await platform.send_message(inp.channel, text)
+    except Exception as e:
+        return f"[send failed: {e}]"
+    return f"[sent]"
 
 
 @tool(
