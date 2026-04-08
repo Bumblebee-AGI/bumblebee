@@ -34,7 +34,15 @@ from bumblebee.cognition.reply_heuristics import (
 )
 from bumblebee.cognition.router import CognitionRouter, ContextPackage
 from bumblebee.cognition import gemma, senses
-from bumblebee.cognition.history_compression import merge_rolling_summary
+from bumblebee.cognition.history_compression import (
+    merge_rolling_summary,
+    estimate_context_tokens,
+    prune_old_tool_results,
+    find_compaction_boundaries,
+    generate_structured_summary,
+    sanitize_tool_pairs,
+    extract_knowledge_for_flush,
+)
 from bumblebee.config import EntityConfig, resolve_firecrawl_settings, validate_ollama_models
 from bumblebee.inference import InferenceProvider, build_inference_provider
 from bumblebee.identity.drives import Drive, DriveSystem
@@ -47,7 +55,7 @@ from bumblebee.memory.beliefs import BeliefStore
 from bumblebee.memory.episodic import EpisodicMemory
 from bumblebee.memory.imprints import ImprintStore
 from bumblebee.memory.journal import Journal
-from bumblebee.memory.knowledge import KnowledgeStore, seed_knowledge_if_missing
+from bumblebee.memory.knowledge import KnowledgeStore, seed_knowledge_if_missing, append_knowledge_sections
 from bumblebee.memory.narrative import NarrativeMemory, NarrativeSynthesizer
 from bumblebee.memory.procedural import ProceduralMemoryStore
 from bumblebee.memory.projects import ProjectLedger
@@ -857,6 +865,115 @@ class Entity:
             num_ctx=self.config.effective_ollama_num_ctx(),
         )
 
+    async def _ensure_context_budget(self, tc: TurnContext) -> None:
+        """Pre-flight context compaction: compress history before inference if over budget."""
+        hc = self.config.cognition.history_compression
+        if not hc.enabled:
+            return
+        ctx_limit = int(self.config.cognition.max_context_tokens or 32768)
+        threshold = int(ctx_limit * hc.compaction_threshold_ratio)
+        model = self.config.cognition.deliberate_model or self.config.harness.models.deliberate
+        num_ctx = self.config.effective_ollama_num_ctx()
+        min_msgs = hc.compaction_protect_first_n + hc.compaction_protect_last_n + 1
+
+        for pass_n in range(hc.compaction_max_passes):
+            if len(self._history) <= min_msgs:
+                break
+
+            messages = self._messages_for_model(tc.user_msg)
+            est = estimate_context_tokens(tc.sys_prompt, messages)
+            if est < threshold:
+                break
+
+            log.info(
+                "context_compaction_triggered",
+                pass_n=pass_n,
+                estimated_tokens=est,
+                threshold=threshold,
+                history_len=len(self._history),
+            )
+
+            tail_budget = int(threshold * hc.compaction_target_ratio)
+            start, end = find_compaction_boundaries(
+                self._history,
+                head_n=hc.compaction_protect_first_n,
+                tail_token_budget=tail_budget,
+                min_tail_n=hc.compaction_protect_last_n,
+            )
+
+            if end <= start or end - start < 2:
+                break
+
+            middle = self._history[start:end]
+
+            if pass_n == 0 and hc.compaction_flush_to_knowledge:
+                try:
+                    facts = await extract_knowledge_for_flush(
+                        self.client, model,
+                        turns=middle,
+                        entity_name=self.config.name,
+                        num_ctx=num_ctx,
+                    )
+                    if facts:
+                        written = append_knowledge_sections(self.config, facts)
+                        if written:
+                            await self.knowledge.refresh_after_edit()
+                            log.info("compaction_knowledge_flushed", sections=written)
+                except Exception as e:
+                    log.warning("compaction_knowledge_flush_error", error=str(e))
+
+            pruned_history, pruned_count = prune_old_tool_results(
+                self._history,
+                protect_tail_count=hc.compaction_protect_last_n * 3,
+            )
+            if pruned_count:
+                self._history = pruned_history
+                start, end = find_compaction_boundaries(
+                    self._history,
+                    head_n=hc.compaction_protect_first_n,
+                    tail_token_budget=tail_budget,
+                    min_tail_n=hc.compaction_protect_last_n,
+                )
+                if end <= start:
+                    break
+                middle = self._history[start:end]
+
+            summary = await generate_structured_summary(
+                self.client, model,
+                turns=middle,
+                previous_summary=self._history_rolling_summary,
+                entity_name=self.config.name,
+                context_length=ctx_limit,
+                num_ctx=num_ctx,
+            )
+
+            head = self._history[:start]
+            tail = self._history[end:]
+            new_history = head + tail
+            new_history = sanitize_tool_pairs(new_history)
+            old_len = len(self._history)
+            self._history = new_history
+
+            if summary:
+                self._history_rolling_summary = summary
+            elif self._history_rolling_summary:
+                pass
+            else:
+                self._history_rolling_summary = (
+                    "[Earlier conversation turns were removed to stay within context limits.]"
+                )
+
+            log.info(
+                "context_compaction_complete",
+                pass_n=pass_n,
+                messages_before=old_len,
+                messages_after=len(self._history),
+                summary_chars=len(self._history_rolling_summary),
+            )
+
+            if len(self._history) <= min_msgs:
+                break
+
     def _history_user_turn_text(self, inp: Input) -> str:
         lim = max(600, int(self.config.cognition.history_message_char_limit or 4000))
         label = speaker_label_for_model(inp)
@@ -1364,6 +1481,7 @@ class Entity:
             tc.db = db
             await self._retrieve_memory(tc)
             await self._build_prompt(tc)
+            await self._ensure_context_budget(tc)
             await self._run_agent_loop(tc)
             await self._finalize_reply(tc)
             await self._deliver_reply(tc)
@@ -1728,25 +1846,34 @@ class Entity:
 
     async def _finalize_reply(self, tc: TurnContext) -> None:
         """Extend truncated replies, apply fallbacks, sanitize, resolve skip-final-chat."""
+        messages_already_sent = tc.tool_state.get("_messages_sent", 0)
+        already_spoke = tc.intermediate_sent or messages_already_sent > 0
+
         tc.reply_text = await self._maybe_extend_truncated_reply(
             tc.route, tc.final_res, tc.reply_text, tc.sys_prompt, tc.user_msg
         )
-        if reply_too_thin(tc.reply_text):
-            log.info("reply_fallback_triggered", module="entity", route=tc.route)
-            tc.reply_text = await self._fallback_plain_reply(tc.inp, tool_state=tc.tool_state)
         tc.reply_text = self.voice_ctl.sanitize_reply(tc.reply_text)
-        if reply_too_thin(tc.reply_text):
-            log.info("reply_post_sanitize_fallback", module="entity", route=tc.route)
+
+        if reply_too_thin(tc.reply_text) and not already_spoke:
+            log.info("reply_fallback_triggered", module="entity", route=tc.route)
             tc.reply_text = self.voice_ctl.sanitize_reply(
                 await self._fallback_plain_reply(tc.inp, tool_state=tc.tool_state)
             )
+            if reply_too_thin(tc.reply_text):
+                log.info("reply_post_sanitize_fallback", module="entity", route=tc.route)
+                tc.reply_text = self.voice_ctl.sanitize_reply(
+                    await self._fallback_plain_reply(tc.inp, tool_state=tc.tool_state)
+                )
+
         if tc.route in ("reflex", "deliberate"):
-            messages_already_sent = tc.tool_state.get("_messages_sent", 0)
             tc.skip_final_delivery = (
-                (tc.intermediate_sent or messages_already_sent > 0)
+                already_spoke
                 and tc.inp.platform in ("discord", "telegram")
-                and bool((tc.reply_text or "").strip())
-                and (reply_too_thin(tc.reply_text) or pro_forma_tool_followup(tc.reply_text))
+                and (
+                    reply_too_thin(tc.reply_text)
+                    or pro_forma_tool_followup(tc.reply_text)
+                    or not (tc.reply_text or "").strip()
+                )
             )
             if tc.skip_final_delivery and tc.last_intermediate.strip():
                 tc.reply_text = tc.last_intermediate.strip()
