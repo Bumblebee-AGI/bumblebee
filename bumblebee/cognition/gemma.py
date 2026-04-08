@@ -63,9 +63,9 @@ _GEMMA_LEAK_TAIL = re.compile(
 )
 
 # Informal tool-like tags Gemma sometimes emits as plain text instead of proper tool calls.
-# The closing > is optional -- Gemma often emits <thought\n without closing the bracket.
+# Catches: <thought>, <t>, </t>, <mood>, <endofturn>, <say>, etc. Closing > is optional.
 _INFORMAL_TOOL_TAGS = re.compile(
-    r"</?(?:thought|think|end_turn|say|wait|tool_call|tool_response)[^>\n]*>?",
+    r"</?(?:thought|think|end_turn|endofturn|say|wait|tool_call|tool_response|t|mood)[^>\n]*>?",
     re.IGNORECASE,
 )
 
@@ -73,6 +73,12 @@ _INFORMAL_TOOL_TAGS = re.compile(
 _INFORMAL_TOOL_CALLS = re.compile(
     r"(?:say|think|end_turn|wait)\s*\{[^}]{0,500}\}",
     re.IGNORECASE,
+)
+
+# Metadata tag lines to discard entirely: <mood>restless</mood>, <endofturn>, etc.
+_META_TAG_LINE = re.compile(
+    r"^\s*</?(?:mood|endofturn|end_of_turn|internal|meta|analysis)[^>]*>(?:[^<\n]{0,200}</[^>]{1,60}>)?\s*$",
+    re.MULTILINE | re.IGNORECASE,
 )
 
 
@@ -94,6 +100,7 @@ def strip_leaked_control_tokens(text: str) -> str:
         if nxt == t:
             break
         t = nxt
+    t = _META_TAG_LINE.sub("", t).strip()
     t = _INFORMAL_TOOL_TAGS.sub("", t).strip()
     t = _INFORMAL_TOOL_CALLS.sub("", t).strip()
     return t
