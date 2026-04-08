@@ -6,9 +6,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+import structlog
+
 from bumblebee.config import EntityConfig
 from bumblebee.models import EmotionCategory, EmotionalState, Input
 from bumblebee.inference.protocol import InferenceProvider
+
+log = structlog.get_logger("bumblebee.cognition.router")
 
 
 RouteKind = Literal["reflex", "deliberate"]
@@ -216,8 +220,8 @@ class CognitionRouter:
                 return "deliberate", "deep", 0.2
             if "CHAT" in word:
                 return "reflex", "chat", 0.2
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("classify_with_reflex_failed", error=str(e))
         return "deliberate", "grounded", 0.6
 
     async def route(
@@ -232,13 +236,16 @@ class CognitionRouter:
         if self.entity.cognition.always_deliberate:
             context.reflex_hint = "deliberate"
             return "deliberate", context
-        kind = self.heuristic_route(inp, emotional)
+        heuristic_kind = self.heuristic_route(inp, emotional)
+        kind = heuristic_kind
+        assessment: RouteAssessment | None = None
         t = inp.text.strip()
         low = t.lower()
         if kind == "reflex" and (
             _short_casual_vibe(low, len(t)) or _tiny_non_identity_reaction(t, low)
         ):
             context.reflex_hint = kind
+            log.info("route_decision", route=kind, heuristic=heuristic_kind, platform=inp.platform, text_len=len(t))
             return kind, context
         if kind == "reflex":
             rk, assessment, unc = await self.classify_with_reflex(inp)
@@ -246,4 +253,12 @@ class CognitionRouter:
             if rk == "deliberate" or assessment in ("grounded", "exact", "deep") or unc > 1.0 - thresh:
                 kind = "deliberate"
         context.reflex_hint = kind
+        log.info(
+            "route_decision",
+            route=kind,
+            heuristic=heuristic_kind,
+            assessment=assessment,
+            platform=inp.platform,
+            text_len=len(t),
+        )
         return kind, context

@@ -7,18 +7,20 @@ import base64
 import html
 import io
 import os
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import structlog
-from telegram import BotCommand, Update
+from telegram import BotCommand, InputMediaPhoto, Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.helpers import escape_markdown
 
 from bumblebee.models import Input
 from bumblebee.presence.platforms.base import Platform
+from bumblebee.presence.tools.execution_rpc import get_execution_client
 from bumblebee.presence.platforms.telegram_format import (
     build_status_html,
     command_menu_items,
@@ -40,8 +42,12 @@ from bumblebee.presence.platforms.telegram_format import (
     format_privacy_opened_html,
     format_privacy_operator_required_html,
     format_privacy_status_html,
+    format_remote_session_caption,
     format_reset_html,
     format_routines_html,
+    format_session_disabled_html,
+    format_session_operator_required_html,
+    format_session_status_html,
     format_start_html,
     format_tools_html,
     format_unknown_command,
@@ -165,6 +171,8 @@ class TelegramPlatform(Platform):
         self._message_id_dedup_lock = asyncio.Lock()
         self._chat_reply_locks: dict[int, asyncio.Lock] = {}
         self._chat_reply_locks_init = asyncio.Lock()
+        self._remote_sessions: dict[int, dict[str, Any]] = {}
+        self._remote_sessions_lock = asyncio.Lock()
 
         self._register_handlers()
 
@@ -190,6 +198,9 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("routines", self._on_routines_command), group=_g)
         self.app.add_handler(CommandHandler("ping", self._on_ping_command), group=_g)
         self.app.add_handler(CommandHandler("reset", self._on_reset_command), group=_g)
+        self.app.add_handler(CommandHandler("session_start", self._on_session_start), group=_g)
+        self.app.add_handler(CommandHandler("session_status", self._on_session_status), group=_g)
+        self.app.add_handler(CommandHandler("session_stop", self._on_session_stop), group=_g)
         self.app.add_handler(MessageHandler(filters.PHOTO, self._on_photo), group=_g)
         self.app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._on_voice), group=_g)
         self.app.add_handler(MessageHandler(filters.Document.ALL, self._on_doc_image), group=_g)
@@ -255,6 +266,258 @@ class TelegramPlatform(Platform):
             pass
         return False
 
+    def _effective_tools_cfg(self) -> dict[str, Any]:
+        base = self._entity.config.harness.tools if isinstance(self._entity.config.harness.tools, dict) else {}
+        over = self._entity.config.raw.get("tools") if isinstance(self._entity.config.raw, dict) else {}
+        if not isinstance(over, dict):
+            over = {}
+        merged = dict(base)
+        for key, value in over.items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = {**merged[key], **value}
+            else:
+                merged[key] = value
+        return merged
+
+    def _remote_session_cfg(self) -> dict[str, Any]:
+        cfg = self._effective_tools_cfg().get("remote_session")
+        return cfg if isinstance(cfg, dict) else {}
+
+    def _remote_sessions_enabled(self) -> bool:
+        cfg = self._remote_session_cfg()
+        return bool(cfg.get("enabled", False))
+
+    def _remote_session_refresh_seconds(self) -> float:
+        cfg = self._remote_session_cfg()
+        try:
+            raw = float(cfg.get("refresh_seconds", 2.5))
+        except (TypeError, ValueError):
+            raw = 2.5
+        return max(1.0, min(30.0, raw))
+
+    def _remote_session_require_operator(self) -> bool:
+        cfg = self._remote_session_cfg()
+        if "require_operator" in cfg:
+            return bool(cfg.get("require_operator"))
+        return True
+
+    def _remote_session_max_idle_seconds(self) -> int:
+        cfg = self._remote_session_cfg()
+        try:
+            raw = int(cfg.get("max_idle_seconds", 900))
+        except (TypeError, ValueError):
+            raw = 900
+        return max(60, min(86_400, raw))
+
+    def _remote_session_snapshot(self, session: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(session, dict):
+            return None
+        keep = {
+            "session_id",
+            "status",
+            "summary",
+            "active_app",
+            "last_action",
+            "started_at",
+            "last_refresh_at",
+            "message_id",
+            "chat_id",
+        }
+        return {k: session[k] for k in keep if k in session}
+
+    def get_active_remote_session(self, channel: str) -> dict[str, Any] | None:
+        try:
+            chat_id = int(channel)
+        except (TypeError, ValueError):
+            return None
+        return self._remote_session_snapshot(self._remote_sessions.get(chat_id))
+
+    async def set_active_remote_session(
+        self,
+        channel: str,
+        session: dict[str, Any] | None,
+    ) -> None:
+        try:
+            chat_id = int(channel)
+        except (TypeError, ValueError):
+            return
+        async with self._remote_sessions_lock:
+            current = self._remote_sessions.get(chat_id)
+            if session is None:
+                if current is not None:
+                    task = current.get("updater_task")
+                    if isinstance(task, asyncio.Task):
+                        task.cancel()
+                    current.pop("updater_task", None)
+                    current["status"] = "stopped"
+                self._remote_sessions.pop(chat_id, None)
+                return
+            nxt = dict(current or {})
+            nxt.update(session)
+            nxt["chat_id"] = chat_id
+            self._remote_sessions[chat_id] = nxt
+
+    async def clear_remote_session_card(self, channel: str) -> None:
+        try:
+            chat_id = int(channel)
+        except (TypeError, ValueError):
+            return
+        async with self._remote_sessions_lock:
+            current = self._remote_sessions.get(chat_id)
+            if current is None:
+                return
+            current.pop("message_id", None)
+
+    def _remote_session_operator_allowed(self, update: Update) -> bool:
+        if not self._remote_session_require_operator():
+            return True
+        user = update.effective_user
+        return bool(user is not None and self._is_operator(int(user.id)))
+
+    async def _ensure_remote_session_allowed(self, update: Update) -> bool:
+        if not await self._check_allowed(update, notify=True):
+            return False
+        if not self._remote_sessions_enabled():
+            await self._reply_html(update, format_session_disabled_html())
+            return False
+        if self._remote_session_require_operator() and not self._operators_configured():
+            await self._reply_html(update, format_privacy_no_operators_html())
+            return False
+        if not self._remote_session_operator_allowed(update):
+            await self._reply_html(update, format_session_operator_required_html())
+            return False
+        return True
+
+    @staticmethod
+    def _decode_remote_image_bytes(res: dict[str, Any]) -> bytes | None:
+        raw = ""
+        for key in ("image_base64", "screenshot_base64", "frame_base64"):
+            val = res.get(key)
+            if isinstance(val, str) and val.strip():
+                raw = val.strip()
+                break
+        if not raw:
+            return None
+        try:
+            return base64.b64decode(raw, validate=False)
+        except Exception:
+            return None
+
+    async def _remote_session_rpc(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+        client = get_execution_client()
+        res = await client.call(action, payload)
+        return res if isinstance(res, dict) else {"ok": False, "error": "invalid result"}
+
+    def _remote_session_start_payload(self, update: Update) -> dict[str, Any]:
+        chat = update.effective_chat
+        user = update.effective_user
+        return {
+            "platform": "telegram",
+            "chat_id": int(chat.id) if chat is not None else 0,
+            "chat_type": str(getattr(chat, "type", "") or "").lower(),
+            "entity_name": self._entity.config.name,
+            "max_idle_seconds": self._remote_session_max_idle_seconds(),
+            "requested_by": {
+                "user_id": int(user.id) if user is not None else 0,
+                "display_name": _telegram_display_name(user),
+            },
+        }
+
+    async def _capture_remote_session(self, session_id: str) -> dict[str, Any]:
+        return await self._remote_session_rpc(
+            "desktop_session_capture",
+            {"session_id": session_id, "format": "jpeg"},
+        )
+
+    async def _status_remote_session(self, session_id: str) -> dict[str, Any]:
+        return await self._remote_session_rpc("desktop_session_status", {"session_id": session_id})
+
+    async def upsert_remote_session_card(
+        self,
+        channel: str,
+        *,
+        image_bytes: bytes | None,
+        caption: str,
+        session: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            chat_id = int(channel)
+        except (TypeError, ValueError):
+            return
+        async with self._remote_sessions_lock:
+            current = self._remote_sessions.setdefault(chat_id, {"chat_id": chat_id})
+            if isinstance(session, dict):
+                current.update(session)
+            message_id = current.get("message_id")
+            if image_bytes is not None:
+                buf = io.BytesIO(image_bytes)
+                buf.name = "remote-session.jpg"
+                if message_id:
+                    await self.app.bot.edit_message_media(
+                        chat_id=chat_id,
+                        message_id=int(message_id),
+                        media=InputMediaPhoto(media=buf, caption=caption[:1024]),
+                    )
+                else:
+                    msg = await self.app.bot.send_photo(chat_id=chat_id, photo=buf, caption=caption[:1024])
+                    current["message_id"] = int(msg.message_id)
+            elif message_id:
+                await self.app.bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=int(message_id),
+                    caption=caption[:1024],
+                )
+            current["last_refresh_at"] = time.time()
+
+    async def _start_remote_session_updater(self, chat_id: int) -> None:
+        async with self._remote_sessions_lock:
+            current = self._remote_sessions.get(chat_id)
+            if current is None:
+                return
+            task = current.get("updater_task")
+            if isinstance(task, asyncio.Task) and not task.done():
+                return
+            current["updater_task"] = asyncio.create_task(self._remote_session_updater(chat_id))
+
+    async def _remote_session_updater(self, chat_id: int) -> None:
+        failures = 0
+        while True:
+            async with self._remote_sessions_lock:
+                session = dict(self._remote_sessions.get(chat_id) or {})
+            session_id = str(session.get("session_id") or "").strip()
+            if not session_id:
+                return
+            try:
+                status = await self._status_remote_session(session_id)
+                if not status.get("ok"):
+                    raise RuntimeError(str(status.get("error") or "status failed"))
+                capture = await self._capture_remote_session(session_id)
+                if not capture.get("ok"):
+                    raise RuntimeError(str(capture.get("error") or "capture failed"))
+                merged = dict(session)
+                merged.update(status)
+                merged.update({k: v for k, v in capture.items() if k != "image_base64"})
+                caption = format_remote_session_caption(self._entity.config.name, merged)
+                await self.upsert_remote_session_card(
+                    str(chat_id),
+                    image_bytes=self._decode_remote_image_bytes(capture),
+                    caption=caption,
+                    session=merged,
+                )
+                failures = 0
+                if str(merged.get("status") or "").lower() in {"stopped", "ended", "closed"}:
+                    await self.set_active_remote_session(str(chat_id), None)
+                    return
+                await asyncio.sleep(self._remote_session_refresh_seconds())
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                failures += 1
+                log.warning("telegram_remote_session_refresh_failed", chat_id=chat_id, error=str(e))
+                if failures >= 3:
+                    return
+                await asyncio.sleep(min(10.0, self._remote_session_refresh_seconds() * (failures + 1)))
+
     def _remember_last_chat(self, update: Update) -> int | None:
         chat = update.effective_chat
         if chat is None:
@@ -280,6 +543,13 @@ class TelegramPlatform(Platform):
             "chat_type": str(getattr(msg.chat, "type", "") or "").lower(),
             "telegram_message_id": int(msg.message_id),
         }
+
+    def _telegram_msg_meta_with_session(self, msg: Any) -> dict[str, Any]:
+        meta = self._telegram_msg_meta(msg)
+        session = self.get_active_remote_session(str(getattr(msg, "chat_id", "") or ""))
+        if isinstance(session, dict):
+            meta["desktop_session"] = session
+        return meta
 
     async def _ensure_chat_reply_lock(self, chat_id: int) -> asyncio.Lock:
         async with self._chat_reply_locks_init:
@@ -664,6 +934,97 @@ class TelegramPlatform(Platform):
         self._entity.clear_conversation_history()
         await self._reply_html(update, format_reset_html(self._entity.config.name))
 
+    async def _on_session_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        _ = context
+        if update.effective_chat is None:
+            return
+        if not await self._ensure_remote_session_allowed(update):
+            return
+        chat_id = int(update.effective_chat.id)
+        self._remember_last_chat(update)
+        existing = self.get_active_remote_session(str(chat_id))
+        if isinstance(existing, dict) and str(existing.get("session_id") or "").strip():
+            await self._reply_html(update, format_session_status_html(self._entity.config.name, existing))
+            return
+        start_res = await self._remote_session_rpc(
+            "desktop_session_start",
+            self._remote_session_start_payload(update),
+        )
+        if not start_res.get("ok"):
+            await self._reply_html(
+                update,
+                f"Could not start a remote session: {html.escape(str(start_res.get('error') or '')[:300])}",
+            )
+            return
+        session = dict(start_res)
+        session["chat_id"] = chat_id
+        session["status"] = str(session.get("status") or "running")
+        await self.set_active_remote_session(str(chat_id), session)
+        session_id = str(session.get("session_id") or "").strip()
+        if session_id:
+            capture = await self._capture_remote_session(session_id)
+            if capture.get("ok"):
+                session.update({k: v for k, v in capture.items() if k != "image_base64"})
+                await self.set_active_remote_session(str(chat_id), session)
+                await self.upsert_remote_session_card(
+                    str(chat_id),
+                    image_bytes=self._decode_remote_image_bytes(capture),
+                    caption=format_remote_session_caption(self._entity.config.name, session),
+                    session=session,
+                )
+        await self._start_remote_session_updater(chat_id)
+        await self._reply_html(update, format_session_status_html(self._entity.config.name, session))
+
+    async def _on_session_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        _ = context
+        if update.effective_chat is None:
+            return
+        if not await self._ensure_remote_session_allowed(update):
+            return
+        chat_id = int(update.effective_chat.id)
+        self._remember_last_chat(update)
+        session = self.get_active_remote_session(str(chat_id))
+        if not isinstance(session, dict):
+            await self._reply_html(update, format_session_status_html(self._entity.config.name, None))
+            return
+        session_id = str(session.get("session_id") or "").strip()
+        if session_id:
+            status = await self._status_remote_session(session_id)
+            if status.get("ok"):
+                session.update(status)
+                await self.set_active_remote_session(str(chat_id), session)
+        await self._reply_html(update, format_session_status_html(self._entity.config.name, session))
+
+    async def _on_session_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        _ = context
+        if update.effective_chat is None:
+            return
+        if not await self._ensure_remote_session_allowed(update):
+            return
+        chat_id = int(update.effective_chat.id)
+        self._remember_last_chat(update)
+        session = self.get_active_remote_session(str(chat_id))
+        if not isinstance(session, dict):
+            await self._reply_html(update, format_session_status_html(self._entity.config.name, None))
+            return
+        session_id = str(session.get("session_id") or "").strip()
+        if session_id:
+            stop_res = await self._remote_session_rpc("desktop_session_stop", {"session_id": session_id})
+            if not stop_res.get("ok"):
+                await self._reply_html(
+                    update,
+                    f"Could not stop the remote session: {html.escape(str(stop_res.get('error') or '')[:300])}",
+                )
+                return
+        await self.set_active_remote_session(str(chat_id), None)
+        await self._reply_html(update, format_session_status_html(self._entity.config.name, None))
+
     async def _on_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):
             return
@@ -692,7 +1053,7 @@ class TelegramPlatform(Platform):
             person_name=_telegram_display_name(u),
             channel=str(msg.chat_id),
             platform="telegram",
-            metadata=self._telegram_msg_meta(msg),
+            metadata=self._telegram_msg_meta_with_session(msg),
         )
         await self._run_callback(inp)
 
@@ -720,7 +1081,7 @@ class TelegramPlatform(Platform):
                 channel=str(msg.chat_id),
                 platform="telegram",
                 images=[{"base64": b64, "mime": "image/jpeg"}],
-                metadata=self._telegram_msg_meta(msg),
+                metadata=self._telegram_msg_meta_with_session(msg),
             )
             await self._run_callback(inp)
         except Exception as e:
@@ -758,7 +1119,7 @@ class TelegramPlatform(Platform):
                 channel=str(msg.chat_id),
                 platform="telegram",
                 audio=[{"base64": b64, "format": "ogg"}],
-                metadata=self._telegram_msg_meta(msg),
+                metadata=self._telegram_msg_meta_with_session(msg),
             )
             await self._run_callback(inp)
         except Exception as e:
@@ -795,7 +1156,7 @@ class TelegramPlatform(Platform):
                 channel=str(msg.chat_id),
                 platform="telegram",
                 images=[{"base64": b64, "mime": mime or "image/jpeg"}],
-                metadata=self._telegram_msg_meta(msg),
+                metadata=self._telegram_msg_meta_with_session(msg),
             )
             await self._run_callback(inp)
         except Exception as e:
@@ -918,6 +1279,11 @@ class TelegramPlatform(Platform):
         pass
 
     async def disconnect(self) -> None:
+        async with self._remote_sessions_lock:
+            for session in self._remote_sessions.values():
+                task = session.get("updater_task")
+                if isinstance(task, asyncio.Task):
+                    task.cancel()
         if self.app.updater is not None:
             await self.app.updater.stop()
         await self.app.stop()

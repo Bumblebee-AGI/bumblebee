@@ -58,3 +58,30 @@ class Platform(ABC):
     async def send_image(self, channel: str, path: str) -> None:
         """Send an image file from disk (platform-specific best effort)."""
         return None
+
+    def get_active_remote_session(self, channel: str) -> dict[str, Any] | None:
+        """Return session metadata for a live remote-control context in this channel, if any."""
+        return None
+
+    async def set_active_remote_session(
+        self,
+        channel: str,
+        session: dict[str, Any] | None,
+    ) -> None:
+        """Store or clear active remote-session metadata for the channel."""
+        return None
+
+    async def upsert_remote_session_card(
+        self,
+        channel: str,
+        *,
+        image_bytes: bytes | None,
+        caption: str,
+        session: dict[str, Any] | None = None,
+    ) -> None:
+        """Create or update a live remote-session card (for example, one Telegram photo message)."""
+        return None
+
+    async def clear_remote_session_card(self, channel: str) -> None:
+        """Forget any live remote-session card bookkeeping for the channel."""
+        return None

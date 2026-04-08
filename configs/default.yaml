@@ -88,6 +88,78 @@ firecrawl:
   prefer_for_fetch: true
   prefer_for_search: true
 
+# Tonic body state — continuous internal drives, affects, and impulses.
+# The agent reads its body state each turn; it cannot set it directly.
+soma:
+  enabled: true
+  bars:
+    variables:
+      - name: social
+        initial: 50
+        decay_rate: -2.0
+        floor: 0
+        ceiling: 100
+      - name: curiosity
+        initial: 60
+        decay_rate: -1.0
+        floor: 0
+        ceiling: 100
+      - name: creative
+        initial: 40
+        decay_rate: -1.5
+        floor: 0
+        ceiling: 100
+      - name: tension
+        initial: 20
+        decay_rate: -3.0
+        floor: 0
+        ceiling: 100
+      - name: comfort
+        initial: 65
+        decay_rate: -0.5
+        floor: 0
+        ceiling: 100
+    momentum_window: 6
+  coupling:
+    - when: "social > 80"
+      effect: "curiosity.decay_rate *= 1.5"
+    - when: "tension > 70"
+      effect: "comfort.decay_rate *= 2.0"
+  event_effects:
+    message_received: { social: 8, curiosity: 3 }
+    message_sent: { social: 5, creative: 2 }
+    action: { curiosity: 4 }
+    idle: { social: -1, curiosity: 1 }
+  impulses:
+    - drive: social
+      threshold: 80
+      type: reach_out
+      label: reach_out
+      cooldown_minutes: 30
+      relief: { social: -25 }
+    - drive: curiosity
+      threshold: 85
+      type: explore
+      label: explore_something
+      cooldown_minutes: 20
+      relief: { curiosity: -20 }
+  conflicts:
+    - drives: [curiosity, comfort]
+      threshold: 70
+      label: "restless comfort"
+      tension_per_tick: 0.5
+      comfort_per_tick: -0.3
+  affect_cycle_seconds: 180
+  # Generative entropic noise — a small model producing continuous inner voice.
+  # The entity reads this as its own stream of consciousness.
+  noise:
+    enabled: true
+    model: ""  # empty uses reflex model; set to e.g. "gemma3:1b" for a dedicated small noise model
+    cycle_seconds: 60
+    temperature: 1.1
+    max_tokens: 150
+    max_fragments: 8
+
 tools:
   shell:
     enabled: true
@@ -96,6 +168,11 @@ tools:
     timeout: 30
   browser:
     enabled: false
+  remote_session:
+    enabled: false
+    refresh_seconds: 2.5
+    max_idle_seconds: 900
+    require_operator: true
   code:
     enabled: true
     timeout: 30

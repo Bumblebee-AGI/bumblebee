@@ -144,6 +144,24 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         usage="/private on  or  /private off",
         category="Session",
     ),
+    TelegramCommandSpec(
+        name="session_start",
+        summary="Start a remote Linux desktop session for this chat",
+        usage="/session_start",
+        category="Session",
+    ),
+    TelegramCommandSpec(
+        name="session_status",
+        summary="Inspect the active remote desktop session in this chat",
+        usage="/session_status",
+        category="Session",
+    ),
+    TelegramCommandSpec(
+        name="session_stop",
+        summary="Stop the active remote desktop session in this chat",
+        usage="/session_stop",
+        category="Session",
+    ),
 ]
 
 
@@ -721,3 +739,61 @@ def format_privacy_invalid_id_html() -> str:
 
 def format_privacy_cannot_deny_last_html() -> str:
     return "Refusing to remove the last allowed user while locked — use <code>/privacy open</code> first."
+
+
+def format_session_disabled_html() -> str:
+    return (
+        "Remote desktop sessions are disabled for this entity.\n"
+        "Enable <code>tools.remote_session.enabled: true</code> and point "
+        "<code>tools.execution.base_url</code> at a Linux execution RPC host."
+    )
+
+
+def format_session_operator_required_html() -> str:
+    return (
+        "Only configured <b>operators</b> can start or stop remote desktop sessions in this chat.\n"
+        "Set <code>operator_user_ids</code> in entity YAML and/or "
+        "<code>BUMBLEBEE_TELEGRAM_OPERATOR_IDS</code> on the worker."
+    )
+
+
+def format_session_status_html(entity_name: str, session: dict[str, Any] | None) -> str:
+    en = html.escape(entity_name)
+    if not isinstance(session, dict) or not str(session.get("session_id") or "").strip():
+        return (
+            f"<b>{en} remote session</b>\n\n"
+            "No active desktop session for this chat.\n"
+            "Use <code>/session_start</code> to create one."
+        )
+    session_id = html.escape(str(session.get("session_id") or ""))
+    status = html.escape(str(session.get("status") or "running") or "running")
+    summary = html.escape(str(session.get("summary") or "").strip()[:500]) or "—"
+    last_action = html.escape(str(session.get("last_action") or "").strip()[:200]) or "—"
+    active_app = html.escape(str(session.get("active_app") or "").strip()[:200]) or "—"
+    return (
+        f"<b>{en} remote session</b>\n\n"
+        f"<b>Session id</b> <code>{session_id}</code>\n"
+        f"<b>Status</b> {status}\n"
+        f"<b>Active app</b> {active_app}\n"
+        f"<b>Last action</b> {last_action}\n"
+        f"<b>Summary</b> {summary}\n\n"
+        "The live screenshot card in chat should keep refreshing while the session is active."
+    )
+
+
+def format_remote_session_caption(entity_name: str, session: dict[str, Any] | None) -> str:
+    en = (entity_name or "Bumblebee").strip() or "Bumblebee"
+    if not isinstance(session, dict):
+        return f"{en} remote session"
+    status = str(session.get("status") or "running").strip() or "running"
+    active_app = str(session.get("active_app") or "").strip()
+    last_action = str(session.get("last_action") or "").strip()
+    summary = str(session.get("summary") or "").strip()
+    lines = [f"{en} remote session", f"Status: {status}"]
+    if active_app:
+        lines.append(f"App: {active_app[:120]}")
+    if last_action:
+        lines.append(f"Last action: {last_action[:120]}")
+    if summary:
+        lines.append(summary[:400])
+    return "\n".join(lines)[:1024]

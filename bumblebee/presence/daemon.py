@@ -117,7 +117,47 @@ class PresenceDaemon:
                 await self.entity.refresh_mcp_servers()
             except Exception as e:
                 log.warning("mcp_heartbeat_refresh_failed", module="presence", error=str(e))
-            # Routine schedules are owned by APScheduler (automation_engine), not this tick.
+            # --- Tonic body: tick bars, emit idle, refresh affects ---
+            tonic = getattr(self.entity, "tonic", None)
+            if tonic is not None:
+                hb_sec = max(5, self._heartbeat_seconds())
+                dt_hours = hb_sec / 3600.0
+                if silence > 60:
+                    tonic.emit({"type": "idle", "duration_minutes": silence / 60.0})
+                await tonic.tick_bars(dt_hours)
+                reflex_model = (
+                    self.entity.config.cognition.reflex_model
+                    or self.entity.config.cognition.deliberate_model
+                )
+                try:
+                    await tonic.maybe_tick_affects(
+                        self.entity.client,
+                        reflex_model,
+                        num_ctx=self.entity.config.effective_ollama_num_ctx(),
+                    )
+                except Exception as e:
+                    log.debug("soma_affect_tick_failed", module="presence", error=str(e))
+                try:
+                    journal_tail = ""
+                    if hasattr(self.entity, "journal") and self.entity.journal.path.is_file():
+                        raw = self.entity.journal.path.read_text(encoding="utf-8", errors="replace")
+                        journal_tail = raw[-500:] if len(raw) > 500 else raw
+                    conv_tail = ""
+                    hist = getattr(self.entity, "_history", [])
+                    for m in hist[-3:]:
+                        role = m.get("role", "")
+                        content = str(m.get("content", ""))[:200]
+                        conv_tail += f"{role}: {content}\n"
+                    await tonic.maybe_tick_noise(
+                        self.entity.client,
+                        reflex_model,
+                        entity_name=self.entity.config.name,
+                        journal_tail=journal_tail,
+                        conversation_tail=conv_tail.strip(),
+                        num_ctx=self.entity.config.effective_ollama_num_ctx(),
+                    )
+                except Exception as e:
+                    log.debug("soma_noise_tick_failed", module="presence", error=str(e))
         except Exception as e:
             log.exception("daemon_heartbeat_error", module="presence", error=str(e))
 

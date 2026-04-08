@@ -10,6 +10,19 @@ from typing import Any
 import structlog
 
 
+class _ConsoleQuietFilter(logging.Filter):
+    """Drop messages below WARNING from specific logger prefixes on the console handler."""
+
+    def __init__(self, prefixes: tuple[str, ...]) -> None:
+        super().__init__()
+        self._prefixes = prefixes
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        return not record.name.startswith(self._prefixes)
+
+
 def setup_logging(
     entity_name: str,
     level: str = "INFO",
@@ -17,6 +30,7 @@ def setup_logging(
     log_format: str = "json",
     *,
     immersive: bool = False,
+    console_quiet: tuple[str, ...] = (),
 ) -> None:
     # log_format: reserved for file sink; console is always human-readable.
     expanded_file: str | None = None
@@ -54,6 +68,8 @@ def setup_logging(
     )
     # Immersive CLI: keep INFO+ in the log file but only WARNING+ on stdout so Rich UI stays clean.
     handler_console.setLevel(logging.WARNING if immersive else cfg_level)
+    if console_quiet:
+        handler_console.addFilter(_ConsoleQuietFilter(console_quiet))
 
     root = logging.getLogger()
     root.handlers.clear()

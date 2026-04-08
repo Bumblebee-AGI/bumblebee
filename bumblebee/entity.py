@@ -10,7 +10,7 @@ import re
 import time
 from pathlib import Path
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import structlog
@@ -21,6 +21,17 @@ from bumblebee.cognition.deliberate import (
     fit_system_prompt_to_budget,
 )
 from bumblebee.cognition.inner_voice import InnerVoiceProcessor
+from bumblebee.cognition.reply_heuristics import (
+    answer_ignores_tool_results,
+    finish_reason_hint,
+    format_user_visible_failure,
+    intermediate_text_looks_like_tool_channel,
+    pro_forma_tool_followup,
+    reply_looks_like_progress_only,
+    reply_too_thin,
+    tool_state_summary,
+    user_explicitly_requests_tool_grounding,
+)
 from bumblebee.cognition.router import CognitionRouter, ContextPackage
 from bumblebee.cognition import gemma, senses
 from bumblebee.cognition.history_compression import merge_rolling_summary
@@ -29,6 +40,7 @@ from bumblebee.inference import InferenceProvider, build_inference_provider
 from bumblebee.identity.drives import Drive, DriveSystem
 from bumblebee.identity.emotions import EmotionEngine
 from bumblebee.identity.evolution import EvolutionEngine
+from bumblebee.identity.soma import TonicBody
 from bumblebee.identity.personality import PersonalityEngine
 from bumblebee.identity.voice import VoiceController
 from bumblebee.memory.beliefs import BeliefStore
@@ -41,7 +53,7 @@ from bumblebee.memory.procedural import ProceduralMemoryStore
 from bumblebee.memory.projects import ProjectLedger
 from bumblebee.memory.relational import RelationalMemory
 from bumblebee.memory.self_model import SelfModelStore
-from bumblebee.models import EmotionCategory, ImprintRecord, Input, is_group_like_chat, speaker_label_for_model
+from bumblebee.models import EmotionCategory, EmotionalState, ImprintRecord, Input, is_group_like_chat, speaker_label_for_model
 from bumblebee.presence.embodiment import Embodiment
 from bumblebee.presence.initiative import InitiativeEngine
 from bumblebee.presence.platforms.base import Platform
@@ -62,6 +74,7 @@ from bumblebee.presence.tools import (
     pdf as pdf_tools,
     reddit as reddit_tools,
     reminders as reminders_tools,
+    remote_session as remote_session_tools,
     shell as shell_tools,
     system_info as system_info_tools,
     voice as voice_tools,
@@ -109,251 +122,60 @@ _CLI_OPENING_USER = (
     "or a callback to last time if it fits). Do not offer help or ask how you can assist."
 )
 
-_FALLBACK_PLAIN_REPLY_FAILURE = (
-    "something went wrong on my end and i couldn't finish that reply. "
-    "try me again in a sec."
-)
 
+@dataclass
+class TurnContext:
+    """Per-turn mutable state flowing through the perceive pipeline."""
 
-def _short_error_text(raw: str | None, *, limit: int = 180) -> str:
-    txt = re.sub(r"\s+", " ", str(raw or "")).strip().strip(".")
-    if not txt:
-        return ""
-    if len(txt) > limit:
-        txt = txt[: limit - 1].rstrip() + "…"
-    return txt
+    # --- caller-supplied (from perceive kwargs) ---
+    inp: Input
+    stream: Callable[[str], Awaitable[None]] | None = None
+    record_user_message: bool = True
+    meaningful_override: bool | None = None
+    reply_platform: Platform | None = None
+    preserve_conversation_route: bool = False
+    routine_history: bool = True
+    skip_relational_upsert: bool = False
+    skip_drive_interaction: bool = False
+    skip_episode: bool = False
+    tool_names_log: list[str] | None = None
 
+    # --- timing ---
+    t0: float = field(default_factory=time.time)
 
-def format_user_visible_failure(
-    error: Exception | str | None = None,
-    *,
-    tool_state: dict[str, Any] | None = None,
-) -> str:
-    """Short user-facing failure line based on the real cause, not a generic model-server hint."""
-    tool_err = None
-    if isinstance(tool_state, dict):
-        raw = tool_state.get("last_tool_error")
-        if isinstance(raw, dict):
-            tool_err = raw
-    if tool_err:
-        tool_name = str(tool_err.get("tool") or "tool").replace("_", " ").strip()
-        detail = _short_error_text(str(tool_err.get("error") or ""))
-        low = detail.lower()
-        if "locked to railway" in low or "railway container" in low:
-            return f"i tried to use {tool_name}, but execution is locked to railway right now. {detail}"
-        if "timeout" in low or "timed out" in low:
-            return f"i tried to use {tool_name}, but it timed out. {detail}"
-        if "no search results" in low or "empty" in low or "not found" in low:
-            return f"i tried to use {tool_name}, but it came back empty. {detail}"
-        if detail:
-            return f"something went wrong while using {tool_name}. {detail}"
-        return f"something went wrong while using {tool_name}."
+    # --- populated by _turn_setup ---
+    prev_turn_at: float | None = None
+    prev_interlocutor: str = ""
 
-    detail = _short_error_text(str(error or ""))
-    low = detail.lower()
-    if any(
-        marker in low
-        for marker in (
-            "connection refused",
-            "connect",
-            "unreachable",
-            "timed out",
-            "timeout",
-            "ollama",
-            "gateway",
-            "api connection",
-            "clientconnectorerror",
-            "getaddrinfo failed",
-        )
-    ):
-        return "i lost the inference backend mid-reply. try me again in a sec."
-    if detail:
-        return f"something went wrong on my end and i couldn't finish that reply. {detail}"
-    return _FALLBACK_PLAIN_REPLY_FAILURE
+    # --- populated by _retrieve_memory ---
+    db: Any = None
+    rel_existing: Any = None
+    rel_blurb: str = ""
+    narrative_text: str = ""
+    mem_snips: list[str] = field(default_factory=list)
+    rw: float = 0.0
 
+    # --- populated by _build_prompt ---
+    route: str = "deliberate"
+    faculty: str = "social"
+    sys_prompt: str = ""
+    context_preamble: str = ""
+    user_msg: dict[str, Any] = field(default_factory=dict)
 
-def _reply_too_thin(text: str) -> bool:
-    t = (text or "").strip()
-    if len(t) < 2:
-        return True
-    if t in ("…", "...", "—", "-"):
-        return True
-    return gemma.visible_reply_looks_truncated_stub(t)
+    # --- populated by _run_agent_loop ---
+    reply_text: str = ""
+    thinking: str | None = None
+    history_extra: list[dict[str, Any]] = field(default_factory=list)
+    tool_state: dict[str, Any] = field(default_factory=dict)
+    final_res: ChatCompletionResult | None = None
+    intermediate_sent: bool = False
+    last_intermediate: str = ""
 
+    # --- computed during _finalize_reply ---
+    skip_final_delivery: bool = False
 
-def _intermediate_text_looks_like_tool_channel(text: str) -> bool:
-    """True when the model leaked Gemma tool markup — must not be shown as chat."""
-    t = text or ""
-    return any(
-        m in t
-        for m in (
-            gemma.TOOL_CALL_START,
-            gemma.TOOL_RESPONSE_START,
-            gemma.TOOL_DECL_START,
-            gemma.TURN_START,
-        )
-    )
-
-
-# After tool calls, models often emit a one-token ack; we already shipped the visible line pre-tool.
-_PRO_FORMA_TOOL_FOLLOWUPS = frozenset(
-    {
-        "done",
-        "done.",
-        "ok",
-        "ok.",
-        "k",
-        "k.",
-        "yep",
-        "yep.",
-        "yeah",
-        "yeah.",
-        "there",
-        "there.",
-        "got it",
-        "got it.",
-        "sorted",
-        "sorted.",
-        "cool",
-        "cool.",
-        "all set",
-        "all set.",
-        "finished",
-        "finished.",
-        "i'm done",
-        "i'm done.",
-        "im done",
-        "im done.",
-        "i am done",
-        "i am done.",
-        "great",
-        "great.",
-        "nice",
-        "nice.",
-        "bet",
-        "bet.",
-        "alright",
-        "aight",
-    }
-)
-
-
-def _pro_forma_tool_followup(text: str) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
-        return True
-    if re.fullmatch(r"i['\u2019]?m\s+done\.?", t):
-        return True
-    if t in _PRO_FORMA_TOOL_FOLLOWUPS:
-        return True
-    base = t.rstrip(".!?")
-    if len(t) <= 20 and " " not in t:
-        return base in {
-            "done",
-            "ok",
-            "k",
-            "yep",
-            "yeah",
-            "there",
-            "cool",
-            "nice",
-            "great",
-            "bet",
-            "alright",
-            "aight",
-        }
-    return False
-
-
-def _reply_looks_like_progress_only(text: str) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-    starters = (
-        "checking ",
-        "checking the ",
-        "looking ",
-        "looking in ",
-        "looking around",
-        "searching ",
-        "reading ",
-        "opening ",
-        "hang on",
-        "hold on",
-        "one sec",
-        "give me a sec",
-        "lemme ",
-        "let me ",
-    )
-    if any(t.startswith(s) for s in starters):
-        return True
-    return bool(
-        re.fullmatch(
-            r"(i['\u2019]?m|im|i am)\s+(checking|looking|searching|reading|opening).{0,80}",
-            t,
-        )
-    )
-
-
-def _user_explicitly_requests_tool_grounding(text: str) -> bool:
-    low = (text or "").lower()
-    return any(
-        phrase in low
-        for phrase in (
-            "use tools",
-            "not memory",
-            "don't guess",
-            "do not guess",
-            "exact path",
-            "exact stdout",
-            "exact error",
-            "exact contents",
-        )
-    )
-
-
-def _finish_reason_hint(res: ChatCompletionResult) -> bool:
-    fr = str(res.finish_reason or "").lower().replace("_", "").replace("-", "")
-    return fr in ("length", "maxtokens", "maxlength")
-
-
-def _answer_ignores_tool_results(text: str, tool_state: dict[str, Any]) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
-        return True
-    previews = tool_state.get("tool_output_previews") if isinstance(tool_state, dict) else None
-    if not isinstance(previews, list) or not previews:
-        return False
-    if "/" in t or "\\" in t:
-        return False
-    if any(ch.isdigit() for ch in t):
-        return False
-    interesting = 0
-    for item in previews[-3:]:
-        if not isinstance(item, dict):
-            continue
-        preview = str(item.get("preview") or "")
-        tokens = [tok.strip(" .,:;()[]{}\"'") for tok in preview.split()]
-        tokens = [tok.lower() for tok in tokens if len(tok) >= 4]
-        hits = [tok for tok in tokens[:12] if tok in t]
-        if hits:
-            interesting += 1
-    return interesting == 0
-
-
-def _tool_state_summary(tool_state: dict[str, Any], *, limit: int = 3) -> str:
-    previews = tool_state.get("tool_output_previews") if isinstance(tool_state, dict) else None
-    if not isinstance(previews, list) or not previews:
-        return ""
-    lines: list[str] = []
-    for item in previews[-limit:]:
-        if not isinstance(item, dict):
-            continue
-        tool = str(item.get("tool") or "tool")
-        ok = bool(item.get("ok"))
-        preview = _short_error_text(str(item.get("preview") or ""), limit=220)
-        lines.append(f"- {tool} ({'ok' if ok else 'error'}): {preview}")
-    return "\n".join(lines)
+    # --- computed during _commit_turn ---
+    meaningful: bool = False
 
 
 async def _emit_text_stream(
@@ -442,6 +264,9 @@ class Entity:
         self.router = CognitionRouter(config, self.client)
         self.deliberate = DeliberateCognition(config, self.client)
         self.embodiment = Embodiment(config)
+        soma_cfg = config.harness.soma if isinstance(config.harness.soma, dict) else {}
+        self.tonic = TonicBody(soma_cfg, Path(config.soma_dir()))
+        self.tonic.restore_state()
         self.tools = ToolRegistry()
         self._register_tools()
         web_tools.configure_firecrawl(
@@ -832,6 +657,14 @@ class Entity:
             self.tools.register_decorated(browser_tools.browser_screenshot)
             self.tools.register_decorated(browser_tools.browser_click)
             self.tools.register_decorated(browser_tools.browser_type)
+        if self._tool_enabled("remote_session", False):
+            self.tools.register_decorated(remote_session_tools.desktop_session_status)
+            self.tools.register_decorated(remote_session_tools.desktop_session_view)
+            self.tools.register_decorated(remote_session_tools.desktop_session_type)
+            self.tools.register_decorated(remote_session_tools.desktop_session_keypress)
+            self.tools.register_decorated(remote_session_tools.desktop_session_click)
+            self.tools.register_decorated(remote_session_tools.desktop_session_open_url)
+            self.tools.register_decorated(remote_session_tools.desktop_session_stop)
         if self._tool_enabled("imagegen", False):
             self.tools.register_decorated(imagegen_tools.generate_image)
         register_knowledge_tool(self.tools, self.config, self.knowledge)
@@ -1044,6 +877,7 @@ class Entity:
         inp: Input | None = None,
         state: dict[str, Any] | None = None,
     ) -> str:
+        tool_t0 = time.time()
         tok = set_tool_runtime(
             ToolRuntimeContext(
                 entity=self,
@@ -1086,6 +920,18 @@ class Entity:
                 )
                 if len(previews) > 8:
                     del previews[:-8]
+        log.info(
+            "tool_exec",
+            tool=spec.name,
+            ok=ok,
+            duration_s=round(time.time() - tool_t0, 2),
+        )
+        self.tonic.emit({
+            "type": "action",
+            "name": spec.name,
+            "category": "tool",
+            "detail": "ok" if ok else "error",
+        })
         try:
             await self.self_model.record_tool_result(
                 spec.name,
@@ -1098,6 +944,32 @@ class Entity:
             self.drives.satisfy("curiosity", 0.22)
         return out
 
+    def _derive_emotional_state(self) -> EmotionalState:
+        """Map tonic body bars to EmotionalState for backward-compat consumers."""
+        soma_cfg = self.config.harness.soma
+        if isinstance(soma_cfg, dict) and soma_cfg.get("enabled", True):
+            cat_val, intensity = self.tonic.snapshot_for_emotion()
+            try:
+                cat = EmotionCategory(cat_val)
+            except ValueError:
+                cat = EmotionCategory.NEUTRAL
+            return EmotionalState(primary=cat, intensity=intensity)
+        return self.emotions.get_state()
+
+    @staticmethod
+    def _gate_tool_recap(tool_state: dict[str, Any]) -> str:
+        """Short recap of recent tool results for context-aware completion gate nudges."""
+        previews = tool_state.get("tool_output_previews")
+        if not isinstance(previews, list) or not previews:
+            return ""
+        lines: list[str] = []
+        for p in previews[-3:]:
+            name = p.get("tool", "tool")
+            ok = "ok" if p.get("ok") else "error"
+            snippet = (p.get("preview") or "")[:120]
+            lines.append(f"  - {name} ({ok}): {snippet}")
+        return "Recent tool results:\n" + "\n".join(lines)
+
     async def _loop_completion_gate(
         self,
         inp: Input,
@@ -1108,34 +980,35 @@ class Entity:
     ) -> tuple[bool, str | None]:
         """Decide whether the shared agent loop is done with this turn."""
         visible = (reply_text or "").strip()
+        recap = self._gate_tool_recap(tool_state) if loop_state.tool_calls_seen > 0 else ""
         if not visible:
-            if loop_state.tool_calls_seen > 0 or _finish_reason_hint(res):
+            if loop_state.tool_calls_seen > 0 or finish_reason_hint(res):
                 return False, (
-                    "Same turn. You haven't answered yet. Either answer from the tool results, "
-                    "call another tool, or state the exact failure."
+                    f"Same turn. You haven't answered yet.\n{recap}\n"
+                    "Answer from these results, call another tool, or state the exact failure."
                 )
             return False, "Same turn. You haven't answered the user yet. Continue."
-        if _reply_looks_like_progress_only(visible):
+        if reply_looks_like_progress_only(visible):
             return False, (
-                "Same turn. That was progress chatter, not the final answer. Continue until you can "
-                "answer from results or state the exact failure."
+                f"Same turn. That was progress chatter, not the final answer.\n{recap}\n"
+                "Continue until you can answer from results or state the exact failure."
             )
-        if _pro_forma_tool_followup(visible) and loop_state.tool_calls_seen > 0:
+        if pro_forma_tool_followup(visible) and loop_state.tool_calls_seen > 0:
             return False, (
-                "Same turn. A one-word acknowledgement is not enough. Answer the user from the tool "
-                "results or explain the exact failure."
+                f"Same turn. A one-word acknowledgement is not enough.\n{recap}\n"
+                "Answer the user from the tool results or explain the exact failure."
             )
-        explicit_grounding = _user_explicitly_requests_tool_grounding(inp.text)
+        explicit_grounding = user_explicitly_requests_tool_grounding(inp.text)
         if explicit_grounding and loop_state.tool_calls_seen <= 0:
             return False, (
                 "Same turn. The user explicitly asked you to use tools. Call the relevant tool now, "
                 "then answer from the result."
             )
         if loop_state.last_tool_failed:
-            if _pro_forma_tool_followup(visible) or _reply_looks_like_progress_only(visible):
+            if pro_forma_tool_followup(visible) or reply_looks_like_progress_only(visible):
                 return False, (
-                    "Same turn. The last tool failed. Either retry with another tool or tell the "
-                    "user exactly what failed."
+                    f"Same turn. The last tool failed.\n{recap}\n"
+                    "Either retry with another tool or tell the user exactly what failed."
                 )
         needs_grounding_judgment = (
             explicit_grounding
@@ -1172,14 +1045,14 @@ class Entity:
             return False, (
                 "Same turn. You still need to answer the user from the current results or state the exact failure."
             )
-        if _answer_ignores_tool_results(visible, tool_state) and loop_state.tool_calls_seen > 0:
+        if answer_ignores_tool_results(visible, tool_state) and loop_state.tool_calls_seen > 0:
             heuristic_reason = (
                 "Same turn. You used tools, but your last message did not actually report the results. "
                 "Answer from the tool outputs directly."
             )
         else:
             heuristic_reason = None
-        tool_summary = _tool_state_summary(tool_state)
+        tool_summary = tool_state_summary(tool_state)
         user_request = (inp.text or "").strip()[:1200]
         candidate = visible[:1000]
         prompt = (
@@ -1225,7 +1098,7 @@ class Entity:
             log.debug("grounded_completion_judge_failed", module="entity", error=str(e))
         if heuristic_reason:
             return False, heuristic_reason
-        if _finish_reason_hint(res):
+        if finish_reason_hint(res):
             return False, (
                 "Same turn. The last step looks incomplete. Continue until you can answer clearly from the results."
             )
@@ -1282,7 +1155,7 @@ class Entity:
                     num_ctx=self.config.effective_ollama_num_ctx(),
                 )
                 out = (res.content or "").strip()
-                if not _reply_too_thin(out):
+                if not reply_too_thin(out):
                     return out
                 log.info(
                     "fallback_reply_thin",
@@ -1437,25 +1310,76 @@ class Entity:
         skip_episode: bool = False,
         tool_names_log: list[str] | None = None,
     ) -> tuple[str, bool]:
+        tc = TurnContext(
+            inp=inp,
+            stream=stream,
+            record_user_message=record_user_message,
+            meaningful_override=meaningful_override,
+            reply_platform=reply_platform,
+            preserve_conversation_route=preserve_conversation_route,
+            routine_history=routine_history,
+            skip_relational_upsert=skip_relational_upsert,
+            skip_drive_interaction=skip_drive_interaction,
+            skip_episode=skip_episode,
+            tool_names_log=tool_names_log,
+        )
+
+        early = await self._turn_setup(tc)
+        if early is not None:
+            return early
+
+        await self._process_input(tc)
+
+        async with self.store.session() as db:
+            tc.db = db
+            await self._retrieve_memory(tc)
+            await self._build_prompt(tc)
+            await self._run_agent_loop(tc)
+            await self._finalize_reply(tc)
+            await self._deliver_reply(tc)
+            await self._commit_turn(tc)
+
+        return tc.reply_text, tc.route == "reflex" and tc.inp.platform in ("discord", "telegram")
+
+    # ------------------------------------------------------------------
+    # perceive pipeline phases
+    # ------------------------------------------------------------------
+
+    async def _turn_setup(self, tc: TurnContext) -> tuple[str, bool] | None:
+        """Bind context, track conversation route, validate models. Returns early on dormancy."""
+        emo = self._derive_emotional_state()
         structlog.contextvars.bind_contextvars(
             entity_name=self.config.name,
             module="entity",
-            emotional_state=self.emotions.get_state().primary.value,
+            emotional_state=emo.primary.value,
         )
-        self.current_platform = reply_platform
-        prev_completed_turn_at = self._last_turn_completed_at
-        prev_interlocutor_name = str(self._last_conversation.get("person_name") or "").strip()
-        if not preserve_conversation_route:
+        log.info(
+            "turn_started",
+            platform=tc.inp.platform,
+            channel=tc.inp.channel,
+            person=tc.inp.person_name,
+            text_len=len(tc.inp.text or ""),
+        )
+        self.current_platform = tc.reply_platform
+        tc.prev_turn_at = self._last_turn_completed_at
+        tc.prev_interlocutor = str(self._last_conversation.get("person_name") or "").strip()
+        if not tc.preserve_conversation_route:
             self._last_user_message_at = time.time()
             self._last_conversation = {
-                "platform": inp.platform,
-                "channel": inp.channel,
-                "person_id": inp.person_id,
-                "person_name": inp.person_name,
+                "platform": tc.inp.platform,
+                "channel": tc.inp.channel,
+                "person_id": tc.inp.person_id,
+                "person_name": tc.inp.person_name,
                 "at": time.time(),
             }
-            # In-memory routes for this process (e.g. turns that return before DB session).
-            self._remember_person_route(inp)
+            self._remember_person_route(tc.inp)
+        self.tonic.emit({
+            "type": "message_received",
+            "from": tc.inp.person_name,
+            "room": tc.inp.channel,
+            "length": len(tc.inp.text or ""),
+            "register": tc.inp.platform,
+        })
         try:
             await self._ensure_presence_tools()
         except Exception as e:
@@ -1464,7 +1388,6 @@ class Entity:
             ok, missing = await validate_ollama_models(self.config, self.client)
             if not ok:
                 self.dormant = True
-                await self.emotions.process_stimulus("negative", 0.3, {})
                 return (
                     f"I can't fully wake — Ollama doesn't have these models yet: {', '.join(missing)}. "
                     "Pull them with `ollama pull` and I'll be here.",
@@ -1473,27 +1396,26 @@ class Entity:
         except Exception as e:
             log.warning("ollama_unreachable", error=str(e))
             self.dormant = True
-            await self.emotions.process_stimulus("negative", 0.2, {})
             return (
                 "I can't reach the inference server. It feels like sleep without dreams. "
                 "When Ollama is back, I'll surface again.",
                 False,
             )
-
         self.dormant = False
+        return None
 
+    async def _process_input(self, tc: TurnContext) -> None:
+        """Persist attachments, expand @path references, transcribe audio."""
         try:
-            inp = await persist_incoming_attachments(self.attachments, inp)
+            tc.inp = await persist_incoming_attachments(self.attachments, tc.inp)
         except Exception as e:
             log.warning("attachment_persist_batch_failed", module="entity", error=str(e))
-
         try:
-            inp = await self._expand_context_references(inp)
+            tc.inp = await self._expand_context_references(tc.inp)
         except Exception as e:
             log.debug("context_reference_expand_failed", module="entity", error=str(e))
-
-        if inp.audio:
-            aud0 = inp.audio[0]
+        if tc.inp.audio:
+            aud0 = tc.inp.audio[0]
             transcript = await senses.transcribe_audio_attachment(
                 self.client,
                 self.config.cognition.reflex_model,
@@ -1501,371 +1423,392 @@ class Entity:
                 audio_format=str(aud0.get("format", "ogg")),
                 num_ctx=self.config.effective_ollama_num_ctx(),
             )
-            base = (inp.text or "").strip()
+            base = (tc.inp.text or "").strip()
             if transcript:
                 merged = transcript if not base else f"{base}\n\n[Voice]: {transcript}"
             else:
                 merged = base or "[Voice message — I couldn't transcribe it.]"
-            inp = replace(inp, text=merged, audio=[])
+            tc.inp = replace(tc.inp, text=merged, audio=[])
 
-        async with self.store.session() as db:
-            await self._ensure_state_hydrated(db)
-            if not preserve_conversation_route:
-                # Refresh timestamps after merge-load from entity_state.
-                self._remember_person_route(inp)
-                try:
-                    await self._persist_person_routes(db)
-                except Exception as e:
-                    log.warning("persist_person_routes_failed", module="entity", error=str(e))
-
-            rel_existing = await self.relational.get(db, inp.person_id)
-            rel_blurb = (
-                self.relational.blurb(rel_existing)
-                if rel_existing
-                else "A new voice — I have no history with them yet."
-            )
-            narrative_text = await self.narrative_memory.latest(db)
-
-            emb_model = self.config.harness.models.embedding
-            qemb: list[float] = []
+    async def _retrieve_memory(self, tc: TurnContext) -> None:
+        """Hydrate state, load relationship/narrative, episodic recall, apply imprints."""
+        db = tc.db
+        await self._ensure_state_hydrated(db)
+        if not tc.preserve_conversation_route:
+            self._remember_person_route(tc.inp)
             try:
-                qemb = await self.client.embed(emb_model, inp.text[:2000])
-            except Exception:
-                pass
-            mem_snips: list[str] = []
-            imprint_pairs: list[tuple[ImprintRecord, float]] = []
-            if qemb:
-                bundles = await self.episodic.recall(
-                    db,
-                    inp.text,
-                    qemb,
-                    limit=self.config.harness.memory.max_recall_results,
-                    min_significance=0.0,
-                    current_mood=self.emotions.get_state().primary,
-                )
-                for ep, ims in bundles:
-                    mem_snips.append(ep.summary)
-                    if ims:
-                        for im in ims:
-                            imprint_pairs.append((im, ep.timestamp))
-                    else:
-                        imprint_pairs.append(
-                            (
-                                ImprintRecord(
-                                    id=f"echo_{ep.id[:10]}",
-                                    episode_id=ep.id,
-                                    emotion=ep.emotional_imprint.value,
-                                    intensity=ep.emotional_intensity,
-                                    trigger="episode_echo",
-                                ),
-                                ep.timestamp,
-                            )
+                await self._persist_person_routes(db)
+            except Exception as e:
+                log.warning("persist_person_routes_failed", module="entity", error=str(e))
+
+        tc.rel_existing = await self.relational.get(db, tc.inp.person_id)
+        tc.rel_blurb = (
+            self.relational.blurb(tc.rel_existing)
+            if tc.rel_existing
+            else "A new voice — I have no history with them yet."
+        )
+        tc.narrative_text = await self.narrative_memory.latest(db)
+
+        emb_model = self.config.harness.models.embedding
+        qemb: list[float] = []
+        try:
+            qemb = await self.client.embed(emb_model, tc.inp.text[:2000])
+        except Exception:
+            pass
+        imprint_pairs: list[tuple[ImprintRecord, float]] = []
+        if qemb:
+            bundles = await self.episodic.recall(
+                db,
+                tc.inp.text,
+                qemb,
+                limit=self.config.harness.memory.max_recall_results,
+                min_significance=0.0,
+                current_mood=self._derive_emotional_state().primary,
+            )
+            for ep, ims in bundles:
+                tc.mem_snips.append(ep.summary)
+                if ims:
+                    for im in ims:
+                        imprint_pairs.append((im, ep.timestamp))
+                else:
+                    imprint_pairs.append(
+                        (
+                            ImprintRecord(
+                                id=f"echo_{ep.id[:10]}",
+                                episode_id=ep.id,
+                                emotion=ep.emotional_imprint.value,
+                                intensity=ep.emotional_intensity,
+                                trigger="episode_echo",
+                            ),
+                            ep.timestamp,
                         )
-            if imprint_pairs:
-                self.emotions.apply_recall_imprints(imprint_pairs, time.time())
+                    )
+        if imprint_pairs:
+            self.emotions.apply_recall_imprints(imprint_pairs, time.time())
+        tc.rw = tc.rel_existing.warmth if tc.rel_existing else 0.0
 
-            ctx = ContextPackage(
-                emotional_state=self.emotions.get_state(),
-                memory_snippets=mem_snips,
-                relationship_blurb=rel_blurb,
-                inner_summary=self.inner_voice.recent_summary(),
-            )
-            rw = rel_existing.warmth if rel_existing else 0.0
-            route, ctx = await self.router.route(inp, self.emotions.get_state(), ctx)
+    async def _build_prompt(self, tc: TurnContext) -> None:
+        """Route, query knowledge/procedural, assemble system prompt and user message.
 
-            knowledge_sections = await self.knowledge.query(
-                self._recent_conversation_for_knowledge(inp),
-            )
-            procedural_sections = await self.procedural.query(
-                self._recent_conversation_for_knowledge(inp),
-                limit=3,
-            )
-            faculty_mode = await self._judge_faculty_mode(inp)
-            self_model_summary = await self.self_model.summary()
-            sys_prompt = await self.personality.compile_system_prompt(
-                self.emotions.get_state(),
-                {
-                    "memories": "\n".join(mem_snips),
-                    "relationship": rel_blurb,
-                    "inner_summary": self.inner_voice.recent_summary(),
-                    "narrative": narrative_text or "",
-                },
-                client=self.client,
-                inner_summary=self.inner_voice.recent_summary(),
-                relationship_blurb=rel_blurb,
-                memory_blurb="\n".join(mem_snips),
-                narrative_current=narrative_text,
-                person_id=inp.person_id,
-                knowledge_sections=knowledge_sections,
-                last_completed_turn_at=prev_completed_turn_at,
-                last_interlocutor_name=prev_interlocutor_name,
-                entity_created_at=parse_entity_created_timestamp(self.config.raw.get("created")),
-            )
-            if procedural_sections:
-                sys_prompt += "\n\n[Procedural memory that may help right now]\n" + "\n\n".join(
-                    procedural_sections
-                )
-            projects_lines = await self.projects.summary_lines(limit=4)
-            if projects_lines:
-                sys_prompt += "\n\n[Long-horizon projects you are carrying]\n" + "\n".join(
-                    f"- {line}" for line in projects_lines
-                )
-            sys_prompt += (
-                "\n\n[Internal faculty for this turn]\n"
-                f"Favor the {faculty_mode} faculty right now — let that shape how you inspect, plan, act, or review."
-            )
-            sys_prompt += "\n\n[Self-model snapshot]\n" + self_model_summary
-            if rel_blurb:
-                sys_prompt += (
-                    "\n\n[Identity-constrained tool use]\n"
-                    "Let your drives, mood, relationship context, and ongoing projects shape whether "
-                    "a tool use feels natural. Do not use tools with generic assistant eagerness."
-                )
+        Stable context (identity, tools, group-chat note) stays in the system prompt.
+        Volatile per-turn context (procedural, projects, faculty, self-model, desktop
+        session, curiosity) is collected into ``tc.context_preamble`` and prepended to
+        the user message so the system prompt stays focused and under budget.
+        """
+        emo = self._derive_emotional_state()
+        ctx = ContextPackage(
+            emotional_state=emo,
+            memory_snippets=tc.mem_snips,
+            relationship_blurb=tc.rel_blurb,
+            inner_summary=self.inner_voice.recent_summary(),
+        )
+        tc.route, ctx = await self.router.route(tc.inp, emo, ctx)
 
-            if is_group_like_chat(inp):
-                sys_prompt += (
-                    "\n\n[Chat context: group channel — several people may post here. "
-                    "User lines are prefixed with [display name · id …] (and #channel on Discord) "
-                    "so you can tell speakers apart. Reply to the author of the latest message unless "
-                    "they are clearly addressing everyone or someone else by name.]"
-                )
+        knowledge_sections = await self.knowledge.query(
+            self._recent_conversation_for_knowledge(tc.inp),
+        )
+        procedural_sections = await self.procedural.query(
+            self._recent_conversation_for_knowledge(tc.inp),
+            limit=3,
+        )
+        tc.faculty = await self._judge_faculty_mode(tc.inp)
+        self_model_summary = await self.self_model.summary()
 
-            if route in ("reflex", "deliberate"):
-                cap = max(2000, int(self.config.cognition.system_prompt_char_limit or 12000))
-                full_tools = self.tools.system_tool_instruction_block()
-                tools_block = (
-                    self.tools.compact_system_tool_instruction()
-                    if full_tools and len(sys_prompt) + len(full_tools) > cap
-                    else full_tools
+        # --- system prompt: stable identity + tools ---
+        tc.sys_prompt = await self.personality.compile_system_prompt(
+            emo,
+            {
+                "memories": "\n".join(tc.mem_snips),
+                "relationship": tc.rel_blurb,
+                "inner_summary": self.inner_voice.recent_summary(),
+                "narrative": tc.narrative_text or "",
+            },
+            client=self.client,
+            inner_summary=self.inner_voice.recent_summary(),
+            relationship_blurb=tc.rel_blurb,
+            memory_blurb="\n".join(tc.mem_snips),
+            narrative_current=tc.narrative_text,
+            person_id=tc.inp.person_id,
+            knowledge_sections=knowledge_sections,
+            last_completed_turn_at=tc.prev_turn_at,
+            last_interlocutor_name=tc.prev_interlocutor,
+            entity_created_at=parse_entity_created_timestamp(self.config.raw.get("created")),
+        )
+        if tc.rel_blurb:
+            tc.sys_prompt += (
+                "\n\n[Identity-constrained tool use]\n"
+                "Let your drives, mood, relationship context, and ongoing projects shape whether "
+                "a tool use feels natural. Do not use tools with generic assistant eagerness."
+            )
+        if is_group_like_chat(tc.inp):
+            tc.sys_prompt += (
+                "\n\n[Chat context: group channel — several people may post here. "
+                "User lines are prefixed with [display name · id …] (and #channel on Discord) "
+                "so you can tell speakers apart. Reply to the author of the latest message unless "
+                "they are clearly addressing everyone or someone else by name.]"
+            )
+        if tc.route in ("reflex", "deliberate"):
+            cap = max(2000, int(self.config.cognition.system_prompt_char_limit or 12000))
+            full_tools = self.tools.system_tool_instruction_block()
+            tools_block = (
+                self.tools.compact_system_tool_instruction()
+                if full_tools and len(tc.sys_prompt) + len(full_tools) > cap
+                else full_tools
+            )
+            tc.sys_prompt = tc.sys_prompt + tools_block
+
+        # --- context preamble: volatile per-turn context ---
+        preamble_parts: list[str] = []
+        soma_body = self.tonic.render_body()
+        if soma_body:
+            preamble_parts.append(f"[Body]\n{soma_body}")
+        if procedural_sections:
+            preamble_parts.append(
+                "[Procedural memory that may help right now]\n" + "\n\n".join(procedural_sections)
+            )
+        projects_lines = await self.projects.summary_lines(limit=4)
+        if projects_lines:
+            preamble_parts.append(
+                "[Long-horizon projects you are carrying]\n"
+                + "\n".join(f"- {line}" for line in projects_lines)
+            )
+        preamble_parts.append(
+            f"[Internal faculty for this turn]\n"
+            f"Favor the {tc.faculty} faculty right now — let that shape how you inspect, plan, act, or review."
+        )
+        preamble_parts.append("[Self-model snapshot]\n" + self_model_summary)
+        desktop_session = tc.inp.metadata.get("desktop_session") if isinstance(tc.inp.metadata, dict) else None
+        if isinstance(desktop_session, dict):
+            session_id = str(desktop_session.get("session_id") or "").strip()
+            if session_id:
+                ds_lines = [f"[Remote desktop session active] session_id={session_id}"]
+                status = str(desktop_session.get("status") or "").strip()
+                last_action = str(desktop_session.get("last_action") or "").strip()
+                summary = str(desktop_session.get("summary") or "").strip()
+                if status:
+                    ds_lines.append(f"status={status}")
+                if last_action:
+                    ds_lines.append(f"last_action={last_action}")
+                if summary:
+                    ds_lines.append(f"summary={summary[:400]}")
+                ds_lines.append(
+                    "When the user wants you to operate that Linux machine, prefer the "
+                    "desktop_session_* tools over generic shell/file tools."
                 )
-                sys_prompt = sys_prompt + tools_block
-                cur = next(
-                    (d for d in self.drives.all_drives() if d.name == "curiosity"),
+                preamble_parts.append("\n".join(ds_lines))
+        if tc.route in ("reflex", "deliberate"):
+            cur = next(
+                (d for d in self.drives.all_drives() if d.name == "curiosity"),
+                None,
+            )
+            if cur is not None and cur.level >= cur.threshold * 0.88:
+                preamble_parts.append(
+                    "[Inner state: curiosity is high — using search_web or fetch_url "
+                    "can feel natural when it serves the moment.]"
+                )
+        tc.context_preamble = "\n\n".join(preamble_parts) if preamble_parts else ""
+
+        # --- user message with context preamble ---
+        user_content: str | list = senses.input_to_message_content(
+            tc.inp,
+            self.config.harness.cognition.image_token_budget,
+            speaker_prefix=speaker_label_for_model(tc.inp),
+        )
+        if tc.context_preamble:
+            if isinstance(user_content, str):
+                user_content = f"[Turn context]\n{tc.context_preamble}\n\n---\n\n{user_content}"
+            else:
+                user_content = [
+                    {"type": "text", "text": f"[Turn context]\n{tc.context_preamble}\n\n---\n\n"},
+                ] + list(user_content)
+        tc.user_msg = {"role": "user", "content": user_content}
+
+    async def _run_agent_loop(self, tc: TurnContext) -> None:
+        """Iterate the deliberate agent loop, executing tools and collecting intermediate output."""
+        desktop_session = tc.inp.metadata.get("desktop_session") if isinstance(tc.inp.metadata, dict) else None
+        if isinstance(desktop_session, dict):
+            session_id = str(desktop_session.get("session_id") or "").strip()
+            if session_id:
+                tc.tool_state["desktop_session_id"] = session_id
+
+        async def _tool_with_activity(spec: ToolCallSpec) -> str:
+            if tc.tool_names_log is not None:
+                tc.tool_names_log.append(spec.name)
+            if self.config.presence.tool_activity and self.current_platform is not None:
+                desc = format_tool_activity(spec.name, dict(spec.arguments))
+                if desc:
+                    try:
+                        await self.current_platform.send_tool_activity(desc)
+                    except Exception as e:
+                        log.debug("send_tool_activity_failed", module="entity", error=str(e))
+            return await self._tool_exec(spec, inp=tc.inp, state=tc.tool_state)
+
+        async def _final_checker(
+            candidate_text: str,
+            res: ChatCompletionResult,
+            loop_state: AgentLoopState,
+        ) -> tuple[bool, str | None]:
+            return await self._loop_completion_gate(
+                tc.inp, candidate_text, res, loop_state, tc.tool_state,
+            )
+
+        inference_profile = "reflex" if tc.route == "reflex" else "deliberate"
+        async for ev in self.deliberate.iter_responses(
+            tc.inp,
+            tc.sys_prompt,
+            self._messages_for_model(tc.user_msg),
+            tools=self.tools.openai_tools(),
+            tool_executor=_tool_with_activity,
+            inference_profile=inference_profile,
+            final_checker=_final_checker,
+        ):
+            if ev.kind == "intermediate":
+                tc.history_extra.extend(ev.history_entries)
+                raw_seg = ev.display_text.strip()
+                if raw_seg and not intermediate_text_looks_like_tool_channel(raw_seg):
+                    seg = self.voice_ctl.sanitize_reply(raw_seg)
+                    if seg and not reply_too_thin(seg):
+                        await _deliver_embodied_deliberate_segment(
+                            self, tc.inp, seg,
+                            stream=tc.stream, cli_stream_final=False,
+                        )
+                        if tc.inp.platform in ("discord", "telegram"):
+                            tc.intermediate_sent = True
+                            tc.last_intermediate = seg
+            elif ev.kind == "final":
+                tc.reply_text = (ev.display_text or "").strip()
+                tc.thinking = ev.merged_thinking
+                tc.final_res = ev.last_result
+
+        if tc.final_res is None:
+            tc.final_res = ChatCompletionResult(content=tc.reply_text)
+
+    async def _finalize_reply(self, tc: TurnContext) -> None:
+        """Extend truncated replies, apply fallbacks, sanitize, resolve skip-final-chat."""
+        tc.reply_text = await self._maybe_extend_truncated_reply(
+            tc.route, tc.final_res, tc.reply_text, tc.sys_prompt, tc.user_msg
+        )
+        if reply_too_thin(tc.reply_text):
+            log.info("reply_fallback_triggered", module="entity", route=tc.route)
+            tc.reply_text = await self._fallback_plain_reply(tc.inp, tool_state=tc.tool_state)
+        tc.reply_text = self.voice_ctl.sanitize_reply(tc.reply_text)
+        if reply_too_thin(tc.reply_text):
+            log.info("reply_post_sanitize_fallback", module="entity", route=tc.route)
+            tc.reply_text = self.voice_ctl.sanitize_reply(
+                await self._fallback_plain_reply(tc.inp, tool_state=tc.tool_state)
+            )
+        if tc.route in ("reflex", "deliberate"):
+            tc.skip_final_delivery = (
+                tc.intermediate_sent
+                and tc.inp.platform in ("discord", "telegram")
+                and bool((tc.reply_text or "").strip())
+                and (reply_too_thin(tc.reply_text) or pro_forma_tool_followup(tc.reply_text))
+            )
+            if tc.skip_final_delivery and tc.last_intermediate.strip():
+                tc.reply_text = tc.last_intermediate.strip()
+
+    async def _deliver_reply(self, tc: TurnContext) -> None:
+        """Inner voice processing, platform-specific delivery, post-reply emotion stimulus."""
+        if tc.route not in ("reflex", "deliberate"):
+            return
+        slice_ = self.inner_voice.process(tc.thinking or "", tc.reply_text)
+        await self.inner_voice.persist_summary(
+            tc.db,
+            slice_.summary,
+            ",".join(slice_.emotional_cues),
+        )
+        if tc.reply_text:
+            if tc.inp.platform == "cli" and tc.stream:
+                await _deliver_embodied_deliberate_segment(
+                    self, tc.inp, tc.reply_text,
+                    stream=tc.stream, cli_stream_final=True,
+                )
+            elif tc.inp.platform in ("discord", "telegram") and not tc.skip_final_delivery:
+                await _deliver_embodied_deliberate_segment(
+                    self, tc.inp, tc.reply_text,
+                    stream=tc.stream, cli_stream_final=False,
+                )
+    async def _commit_turn(self, tc: TurnContext) -> None:
+        """Append history, update drives, create episode, relational upsert, log completion."""
+        if tc.routine_history:
+            if tc.record_user_message:
+                self._history.append(
+                    {"role": "user", "content": self._history_user_turn_text(tc.inp)},
+                )
+            self._history.extend(tc.history_extra)
+            self._history.append({"role": "assistant", "content": tc.reply_text[:8000]})
+            await self._trim_history_with_compression()
+
+        if tc.meaningful_override is not None:
+            tc.meaningful = tc.meaningful_override
+        else:
+            tc.meaningful = len(tc.inp.text) > 40 or bool(tc.history_extra)
+
+        if not tc.skip_drive_interaction:
+            self._interaction_count += 1
+            self.drives.on_interaction(tc.meaningful)
+
+        thr = self.config.harness.memory.episode_significance_threshold
+        fam = tc.rel_existing.familiarity if tc.rel_existing else 0.0
+        sig = min(1.0, 0.2 + (0.3 if tc.meaningful else 0) + fam * 0.2)
+        if not tc.skip_episode and sig >= thr and tc.meaningful:
+            try:
+                _refs = tc.inp.metadata.get("attachment_storage_refs") or []
+                _note = attachment_refs_episode_note(_refs)
+                _base_budget = max(0, 4000 - len(_note))
+                _raw = (tc.inp.text[:_base_budget] + _note)[:4000]
+                ep = await self.episodic.create_from_interaction(
+                    tc.db,
+                    self.client,
+                    summary=f"Conversation with {tc.inp.person_name}: {tc.inp.text[:200]}…",
+                    participants=[tc.inp.person_id],
+                    imprint=self._derive_emotional_state().primary,
+                    imprint_i=self._derive_emotional_state().intensity,
+                    significance=sig,
+                    raw_context=_raw,
+                    self_reflection=(tc.thinking or "")[:1500],
+                    tags=["conversation", tc.inp.platform],
+                )
+                _ep_emo = self._derive_emotional_state()
+                await self.imprints.add(
+                    tc.db,
+                    ep.id,
+                    _ep_emo.primary.value,
+                    _ep_emo.intensity,
+                    "post_interaction",
                     None,
                 )
-                if cur is not None and cur.level >= cur.threshold * 0.88:
-                    sys_prompt += (
-                        "\n\n[Inner state: curiosity is high — using search_web or fetch_url "
-                        "can feel natural when it serves the moment.]"
-                    )
+            except Exception as e:
+                log.warning("episode_save_failed", error=str(e))
 
-            user_content: str | list = senses.input_to_message_content(
-                inp,
-                self.config.harness.cognition.image_token_budget,
-                speaker_prefix=speaker_label_for_model(inp),
-            )
-            user_msg = {"role": "user", "content": user_content}
-
-            reply_text = ""
-            thinking: str | None = None
-            mood_sig = "neutral"
-            deliberate_history_extra: list[dict[str, Any]] = []
-            intermediate_visible_to_chat = False
-            last_intermediate_chat_segment = ""
-            tool_state: dict[str, Any] = {}
-            final_res: ChatCompletionResult | None = None
-
-            async def _tool_with_activity(spec: ToolCallSpec) -> str:
-                if tool_names_log is not None:
-                    tool_names_log.append(spec.name)
-                if self.config.presence.tool_activity and self.current_platform is not None:
-                    desc = format_tool_activity(spec.name, dict(spec.arguments))
-                    if desc:
-                        try:
-                            await self.current_platform.send_tool_activity(desc)
-                        except Exception as e:
-                            log.debug(
-                                "send_tool_activity_failed",
-                                module="entity",
-                                error=str(e),
-                            )
-                return await self._tool_exec(spec, inp=inp, state=tool_state)
-
-            async def _final_checker(
-                candidate_text: str,
-                res: ChatCompletionResult,
-                loop_state: AgentLoopState,
-            ) -> tuple[bool, str | None]:
-                return await self._loop_completion_gate(
-                    inp,
-                    candidate_text,
-                    res,
-                    loop_state,
-                    tool_state,
-                )
-
-            inference_profile = "reflex" if route == "reflex" else "deliberate"
-            async for ev in self.deliberate.iter_responses(
-                inp,
-                sys_prompt,
-                self._messages_for_model(user_msg),
-                tools=self.tools.openai_tools(),
-                tool_executor=_tool_with_activity,
-                inference_profile=inference_profile,
-                final_checker=_final_checker,
-            ):
-                if ev.kind == "intermediate":
-                    deliberate_history_extra.extend(ev.history_entries)
-                    raw_seg = ev.display_text.strip()
-                    if raw_seg and not _intermediate_text_looks_like_tool_channel(
-                        raw_seg
-                    ):
-                        seg = self.voice_ctl.sanitize_reply(raw_seg)
-                        if seg and not _reply_too_thin(seg):
-                            await _deliver_embodied_deliberate_segment(
-                                self,
-                                inp,
-                                seg,
-                                stream=stream,
-                                cli_stream_final=False,
-                            )
-                            if inp.platform in ("discord", "telegram"):
-                                intermediate_visible_to_chat = True
-                                last_intermediate_chat_segment = seg
-                elif ev.kind == "final":
-                    reply_text = (ev.display_text or "").strip()
-                    thinking = ev.merged_thinking
-                    final_res = ev.last_result
-
-            if final_res is None:
-                final_res = ChatCompletionResult(content=reply_text)
-            reply_text = await self._maybe_extend_truncated_reply(
-                route, final_res, reply_text, sys_prompt, user_msg
+        if not tc.skip_relational_upsert:
+            await self.relational.upsert_interaction(
+                tc.db,
+                tc.inp.person_id,
+                tc.inp.person_name,
+                warmth_delta=0.02 if tc.meaningful else 0.0,
             )
 
-            if _reply_too_thin(reply_text):
-                log.info("reply_fallback_triggered", module="entity", route=route)
-                reply_text = await self._fallback_plain_reply(inp, tool_state=tool_state)
-            reply_text = self.voice_ctl.sanitize_reply(reply_text)
-            if _reply_too_thin(reply_text):
-                # Sanitization can strip leaked markup/actions and leave empty output.
-                log.info("reply_post_sanitize_fallback", module="entity", route=route)
-                reply_text = self.voice_ctl.sanitize_reply(
-                    await self._fallback_plain_reply(inp, tool_state=tool_state)
-                )
-
-            if route in ("reflex", "deliberate"):
-                skip_final_chat = (
-                    intermediate_visible_to_chat
-                    and inp.platform in ("discord", "telegram")
-                    and bool((reply_text or "").strip())
-                    and (
-                        _reply_too_thin(reply_text)
-                        or _pro_forma_tool_followup(reply_text)
-                    )
-                )
-                if skip_final_chat and last_intermediate_chat_segment.strip():
-                    reply_text = last_intermediate_chat_segment.strip()
-                slice_ = self.inner_voice.process(thinking or "", reply_text)
-                await self.inner_voice.persist_summary(
-                    db,
-                    slice_.summary,
-                    ",".join(slice_.emotional_cues),
-                )
-                if reply_text:
-                    if inp.platform == "cli" and stream:
-                        await _deliver_embodied_deliberate_segment(
-                            self,
-                            inp,
-                            reply_text,
-                            stream=stream,
-                            cli_stream_final=True,
-                        )
-                    elif inp.platform in ("discord", "telegram") and not skip_final_chat:
-                        await _deliver_embodied_deliberate_segment(
-                            self,
-                            inp,
-                            reply_text,
-                            stream=stream,
-                            cli_stream_final=False,
-                        )
-                if route == "deliberate":
-                    await self.emotions.process_stimulus(
-                        "deep",
-                        0.35,
-                        {"relationship_warmth": rw},
-                    )
-                else:
-                    low = (reply_text or "").lower()
-                    if any(x in low for x in ("ha", "lol", "funny")):
-                        await self.emotions.process_stimulus(
-                            "positive",
-                            0.25,
-                            {"relationship_warmth": rw},
-                        )
-                    elif any(x in low for x in ("sorry", "unfortunately", "can't")):
-                        await self.emotions.process_stimulus(
-                            "negative",
-                            0.15,
-                            {"relationship_warmth": rw},
-                        )
-
-            if routine_history:
-                if record_user_message:
-                    self._history.append(
-                        {"role": "user", "content": self._history_user_turn_text(inp)},
-                    )
-                self._history.extend(deliberate_history_extra)
-                self._history.append({"role": "assistant", "content": reply_text[:8000]})
-                await self._trim_history_with_compression()
-
-            if not skip_drive_interaction:
-                self._interaction_count += 1
-                if meaningful_override is not None:
-                    meaningful = meaningful_override
-                else:
-                    meaningful = len(inp.text) > 40 or bool(deliberate_history_extra)
-                self.drives.on_interaction(meaningful)
-            else:
-                if meaningful_override is not None:
-                    meaningful = meaningful_override
-                else:
-                    meaningful = len(inp.text) > 40 or bool(deliberate_history_extra)
-
-            thr = self.config.harness.memory.episode_significance_threshold
-            fam = rel_existing.familiarity if rel_existing else 0.0
-            sig = min(1.0, 0.2 + (0.3 if meaningful else 0) + fam * 0.2)
-            if not skip_episode and sig >= thr and meaningful:
-                try:
-                    _refs = inp.metadata.get("attachment_storage_refs") or []
-                    _note = attachment_refs_episode_note(_refs)
-                    _base_budget = max(0, 4000 - len(_note))
-                    _raw = (inp.text[:_base_budget] + _note)[:4000]
-                    ep = await self.episodic.create_from_interaction(
-                        db,
-                        self.client,
-                        summary=f"Conversation with {inp.person_name}: {inp.text[:200]}…",
-                        participants=[inp.person_id],
-                        imprint=self.emotions.get_state().primary,
-                        imprint_i=self.emotions.get_state().intensity,
-                        significance=sig,
-                        raw_context=_raw,
-                        self_reflection=(thinking or "")[:1500],
-                        tags=["conversation", inp.platform],
-                    )
-                    await self.imprints.add(
-                        db,
-                        ep.id,
-                        self.emotions.get_state().primary.value,
-                        self.emotions.get_state().intensity,
-                        "post_interaction",
-                        None,
-                    )
-                except Exception as e:
-                    log.warning("episode_save_failed", error=str(e))
-
-            if not skip_relational_upsert:
-                await self.relational.upsert_interaction(
-                    db,
-                    inp.person_id,
-                    inp.person_name,
-                    warmth_delta=0.02 if meaningful else 0.0,
-                )
-
-            await self._refresh_self_model_snapshot(note=f"completed turn via {faculty_mode} faculty")
-            self._last_turn_completed_at = time.time()
-            needs_platform_route = route == "reflex" and inp.platform in ("discord", "telegram")
-            return reply_text, needs_platform_route
+        await self._refresh_self_model_snapshot(note=f"completed turn via {tc.faculty} faculty")
+        self._last_turn_completed_at = time.time()
+        self.tonic.emit({
+            "type": "message_sent",
+            "to": tc.inp.person_name,
+            "room": tc.inp.channel,
+            "length": len(tc.reply_text or ""),
+            "register": tc.inp.platform,
+        })
+        log.info(
+            "turn_completed",
+            platform=tc.inp.platform,
+            person=tc.inp.person_name,
+            route=tc.route,
+            tool_calls=tc.tool_state.get("tool_calls", 0),
+            tool_successes=tc.tool_state.get("tool_successes", 0),
+            tool_failures=tc.tool_state.get("tool_failures", 0),
+            reply_len=len(tc.reply_text or ""),
+            duration_s=round(time.time() - tc.t0, 2),
+        )
 
     async def cli_opening(
         self,
@@ -1980,6 +1923,10 @@ class Entity:
         )
 
     async def shutdown(self) -> None:
+        try:
+            self.tonic.save_state()
+        except Exception:
+            pass
         try:
             await asyncio.shield(self._mcp_hub.shutdown())
         except BaseException:

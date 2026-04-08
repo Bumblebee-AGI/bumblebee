@@ -580,11 +580,21 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
     ec = load_entity_config(entity_name, harness)
     for w in validate_entity_env(ec):
         click.echo(f"Warning: {w}", err=True)
+    _worker_quiet = (
+        "bumblebee.presence.telegram",
+        "bumblebee.presence.discord",
+        "bumblebee.cognition.deliberate",
+        "bumblebee.inference_gateway",
+        "telegram",
+        "httpx",
+        "httpcore",
+    ) if worker_mode else ()
     setup_logging(
         ec.name,
         ec.harness.logging.level,
         ec.log_path(),
         ec.harness.logging.format,
+        console_quiet=_worker_quiet,
     )
     ent = Entity(ec)
     try:

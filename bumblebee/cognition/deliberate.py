@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
@@ -50,10 +51,31 @@ _TOOL_CONTINUATION_USER = (
     "results, call another tool, or state the exact failure. Do not stop at progress chatter."
 )
 
-_POST_TOOL_CONTINUATION_USER = (
-    "Same turn. You have tool results now. Either answer the user from those results, or if a tool "
-    "failed and another tool can fix it, call that tool now. Do not only say you're checking."
-)
+def _build_post_tool_nudge(
+    tool_calls: list[ToolCallSpec],
+    tool_msgs: list[dict[str, Any]],
+    user_text: str,
+) -> str:
+    """Context-aware nudge referencing what tools ran and what the user asked."""
+    if not tool_calls:
+        return (
+            "Same turn. You have tool results now. Either answer the user from those results, "
+            "or if a tool failed and another tool can fix it, call that tool now. "
+            "Do not only say you're checking."
+        )
+    summaries: list[str] = []
+    for tc_spec, tm in zip(tool_calls, tool_msgs):
+        failed = _tool_content_failed(tm.get("content") or "")
+        status = "failed" if failed else "returned results"
+        summaries.append(f"  - {tc_spec.name}: {status}")
+    tool_block = "\n".join(summaries)
+    user_snippet = (user_text or "").strip()[:300]
+    return (
+        f"Same turn. Tool results are ready:\n{tool_block}\n"
+        f"The user asked: {user_snippet}\n"
+        "Answer from these results, call another tool if needed, "
+        "or state exactly what failed. Do not just acknowledge."
+    )
 
 _FINAL_RECOVERY_USER = (
     "Same turn. Your last message did not finish the task. Continue until you either answer the user "
@@ -249,8 +271,17 @@ class DeliberateCognition:
                 }
                 tool_msgs: list[dict[str, Any]] = []
                 tool_failed = False
-                for tc in res.tool_calls:
-                    out = await tool_executor(tc)
+
+                async def _safe_exec(spec: ToolCallSpec) -> str:
+                    try:
+                        return await tool_executor(spec)
+                    except Exception as e:
+                        return json.dumps({"error": str(e)})
+
+                results = await asyncio.gather(
+                    *[_safe_exec(tc) for tc in res.tool_calls]
+                )
+                for tc, out in zip(res.tool_calls, results):
                     tool_failed = tool_failed or _tool_content_failed(out)
                     tool_msgs.append(
                         {
@@ -263,7 +294,9 @@ class DeliberateCognition:
                 loop_state.last_tool_failed = tool_failed
                 follow_user = {
                     "role": "user",
-                    "content": _POST_TOOL_CONTINUATION_USER,
+                    "content": _build_post_tool_nudge(
+                        res.tool_calls, tool_msgs, _inp.text,
+                    ),
                 }
                 msgs = msgs + [assistant_msg] + tool_msgs + [follow_user]
 

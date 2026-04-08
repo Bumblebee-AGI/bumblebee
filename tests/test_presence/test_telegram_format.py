@@ -4,6 +4,8 @@ from bumblebee.presence.platforms.telegram_format import (
     command_menu_items,
     telegram_registered_slash_command_names,
     format_commands_page,
+    format_remote_session_caption,
+    format_session_status_html,
     format_routines_html,
     format_start_html,
     format_tools_html,
@@ -51,6 +53,9 @@ def test_command_menu_items_are_short():
     assert any(name == "start" for name, _ in items)
     assert any(name == "tools" for name, _ in items)
     assert any(name == "routines" for name, _ in items)
+    assert any(name == "session_start" for name, _ in items)
+    assert any(name == "session_status" for name, _ in items)
+    assert any(name == "session_stop" for name, _ in items)
     assert all(len(desc) <= 256 for _, desc in items)
 
 
@@ -60,6 +65,9 @@ def test_telegram_registered_slash_names_include_aliases():
     assert "privacy" in names
     assert "private" in names
     assert "whoami" in names
+    assert "session_start" in names
+    assert "session_status" in names
+    assert "session_stop" in names
     for name, _ in command_menu_items():
         assert name in names
 
@@ -170,3 +178,36 @@ def test_tools_html_lists_registered_tools():
     assert "Active tools" in out
     assert "search_web" in out
     assert "get_current_time" in out
+
+
+def test_session_status_html_handles_empty_and_active():
+    empty = format_session_status_html("Bee", None)
+    assert "No active desktop session" in empty
+    active = format_session_status_html(
+        "Bee",
+        {
+            "session_id": "sess_123",
+            "status": "running",
+            "active_app": "Firefox",
+            "last_action": "opened docs",
+            "summary": "Watching the browser window.",
+        },
+    )
+    assert "sess_123" in active
+    assert "Firefox" in active
+    assert "opened docs" in active
+
+
+def test_remote_session_caption_stays_compact():
+    caption = format_remote_session_caption(
+        "Bee",
+        {
+            "status": "running",
+            "active_app": "Firefox",
+            "last_action": "opened docs",
+            "summary": "Watching the browser window.",
+        },
+    )
+    assert "Bee remote session" in caption
+    assert "Firefox" in caption
+    assert len(caption) <= 1024

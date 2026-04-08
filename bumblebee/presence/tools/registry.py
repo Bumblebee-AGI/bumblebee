@@ -134,6 +134,20 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return "👆 clicking..."
     if tool_name == "browser_type":
         return "⌨️ typing..."
+    if tool_name == "desktop_session_status":
+        return "🖥️ checking the remote desktop..."
+    if tool_name == "desktop_session_view":
+        return "🖼️ refreshing the remote desktop view..."
+    if tool_name == "desktop_session_type":
+        return "⌨️ typing into the remote desktop..."
+    if tool_name == "desktop_session_keypress":
+        return "⌨️ sending keys to the remote desktop..."
+    if tool_name == "desktop_session_click":
+        return "🖱️ clicking in the remote desktop..."
+    if tool_name == "desktop_session_open_url":
+        return "🌐 opening a page on the remote desktop..."
+    if tool_name == "desktop_session_stop":
+        return "🛑 stopping the remote desktop session..."
     if tool_name == "generate_image":
         return "🎨 creating an image..."
     if tool_name == "update_knowledge":

@@ -70,10 +70,11 @@ Copy-Item configs/entities/canary.example.yaml configs/entities/canary.yaml
 **Entitative** means the **being** is the primary object of the system — identity, continuity, and presence are load-bearing parts of the architecture.
 
 - **Self** — Identity is structured: personality, voice, drives, and slow trait evolution so “who they are” can deepen.
-- **Embodiment** — The same entity **is present** on each platform you enable, with consistent memory, mood, and expression; timing and voice matter, not only text.
+- **Body** — A tonic state engine (soma) provides continuous drives, felt-textures, and generative inner voice. The entity reads its own body each turn and interprets it naturally — no prescribed emotions, no state machine dice rolls.
+- **Embodiment** — The same entity **is present** on each platform you enable, with consistent memory, body state, and expression; timing and voice matter, not only text.
 - **Freedom** — Internal state pushes outward: initiative when drives cross thresholds, optional rich tool use, journal and knowledge as places they can leave a mark — always within the limits you configure.
 - **Continuity** — Episodic memory, relationships, beliefs, and narrative turn scattered chats into something that feels like **one life** carried forward.
-- **Inner life** — Thinking mode as private experience, plus consolidation and reflection, so the model’s inner thread has weight beyond the last visible reply.
+- **Inner life** — A generative noise engine produces continuous internal commentary between conversations. Thinking mode captures private experience during turns. The entity has a subconscious that runs whether or not anyone is talking to it.
 
 | Lens | What it optimizes for |
 |---|---|
@@ -277,40 +278,96 @@ presence:
 - **`/whoami`** — Shows your Telegram user id (for **`operator_user_ids`** / **`/privacy allow`**).
 - **`/private on`** / **`/private off`** — Operators: quick private mode (same as **`/privacy lock`** / **`/privacy open`**).
 - **`/privacy`** — Operators: status, lock, open, **`/privacy allow`** / **`/privacy deny`**. See YAML **`operator_user_ids`**.
+- **`/session_start`**, **`/session_status`**, **`/session_stop`** — Operator-gated remote Linux desktop sessions for the current Telegram chat when **`tools.remote_session.enabled`** is on.
 - **`/reset`** — Clears **in-memory conversation turns** only; SQLite episodic memory is unchanged.
 - **Photos & image documents** — Downloaded and passed into the model as vision (caption optional).
 - **Voice / video notes / non-image files** — Polite, specific “not yet” replies instead of silence.
 - **Long replies** — Split under Telegram’s 4096-character limit with short pauses between bubbles.
 - **`setMyCommands`** — Native Telegram command menu next to the text field.
 
+### Telegram remote desktop sessions
+
+The MVP remote-session flow is intentionally simple:
+
+- Start with **`/session_start`** in a Telegram chat or group where the bot is allowed.
+- Bumblebee creates one remote Linux desktop session on the **execution RPC host** and keeps a **single screenshot card** updated in place every few seconds.
+- Users can then prompt the entity normally in chat, and it can drive the live desktop with the **`desktop_session_*`** tools.
+- Stop with **`/session_stop`**.
+
+Requirements:
+
+- **`tools.remote_session.enabled: true`**
+- **`tools.execution.base_url`** pointing at a dedicated Linux execution RPC host
+- an execution backend that implements:
+  **`desktop_session_start`**, **`desktop_session_status`**, **`desktop_session_capture`**, **`desktop_session_input`**, and **`desktop_session_stop`**
+
+Recommended Linux runner shape:
+
+- Xvfb or a real display session
+- screenshot capture
+- input injection for keyboard and mouse
+- browser/apps installed on that host
+
+This MVP does **not** stream into Telegram voice chat yet. It uses periodic screenshot updates instead.
+
 ## Architecture
 
-Bumblebee has four pillars:
+Bumblebee has five pillars:
 
-- **Cognition** — One bounded agent loop with fast/deep model profiles, Gemma 4-native prompt handling, thinking mode as inner monologue, and multimodal senses
-- **Identity** — Layered personality engine, emotional state FSM, motivation/drive system, character voice, and long-term trait evolution
+- **Cognition** — A phased perceive pipeline with a bounded agent loop, parallel tool execution, context-aware continuation, and Gemma 4-native prompt handling
+- **Soma** — A tonic body state engine providing continuous drives, LLM-derived affects, and generative inner voice -- the entity reads its own body, not a prescribed emotion
+- **Identity** — Layered personality engine, character voice, motivation/drive system, and long-term trait evolution
 - **Memory** — Episodic narratives, per-person relationship models, world beliefs, emotional imprints, and self-narrative synthesis
 - **Presence** — Always-on daemon, proactive initiative engine, multi-platform adapters, and embodied expression timing
 
-### Cognition — dual-model brain
+### Cognition — phased perceive pipeline
 
-Bumblebee now runs chat turns through one primary **bounded agent loop**: tool calls append results back into the same turn, and the loop keeps going until it can answer, retry, or surface a specific failure. A fast **reflex** profile can still handle quick reactions, while a **deliberate** profile gives the same loop more room for deeper reasoning, thinking mode, and longer replies. **Tools are available on both profiles** (same registry; reflex uses the reflex model and token cap). Defaults use the same Gemma 4 weights for both, with different token budgets; you can point reflex at a smaller tag (for example `gemma4:e4b`) in entity YAML when your hardware allows split setups.
+Each turn flows through a decomposed pipeline of discrete phases (`TurnContext` carries state between them):
 
-Gemma 4’s **thinking mode** is repurposed as inner experience — private monologue that shapes responses without being shown to users verbatim. The harness captures and summarizes that thread and feeds it back into future context.
+```
+perceive()
+  -> _turn_setup()        context binding, model validation, early-exit on dormancy
+  -> _process_input()     attachments, @path expansion, audio transcription
+  -> _retrieve_memory()   relationship, narrative, episodic recall, imprints
+  -> _build_prompt()      routing, knowledge, system prompt, body state injection
+  -> _run_agent_loop()    bounded tool loop with parallel execution
+  -> _finalize_reply()    truncation extension, fallback, sanitization
+  -> _deliver_reply()     inner voice, platform delivery
+  -> _commit_turn()       history, drives, episodes, relational upsert
+```
 
-**Rolling history compression** (entity `cognition.history_compression`, on by default): when in-memory chat exceeds `rolling_history_max_messages`, older turns are dropped from the rolling window and, if enabled, merged into a running text summary so long sessions stay within context limits without losing everything.
+The **bounded agent loop** runs tool calls in parallel via `asyncio.gather` when Gemma emits multiple calls in one step. After each tool round, a **context-aware nudge** tells the model exactly which tools ran and whether they succeeded, referencing the user's original question. A **completion gate** with tool-result recaps prevents thin acknowledgements from escaping as final replies. Both reflex and deliberate profiles use the same tool registry; defaults use the same Gemma 4 weights with different token budgets.
 
-**Multimodal senses** follow whatever the configured models support (for example images via vision-capable chat models).
+**System prompt separation**: stable context (identity, voice, tool declarations) stays in the system prompt. Volatile per-turn context (body state, procedural memory, projects, self-model) is injected as a [Turn context] preamble in the user message, keeping the system prompt focused and under budget.
+
+Gemma 4 thinking mode is repurposed as inner experience. Rolling **history compression** merges older turns into a summary so long sessions stay within context limits.
+
+### Soma -- tonic body state
+
+The entity has a continuous internal state that runs independently of its reasoning. Three layers of felt experience, each on its own cadence:
+
+| Layer | Mechanism | Cadence | What it does |
+|---|---|---|---|
+| **Bars** | Pure math | ~30s | Quantitative drives (social, curiosity, creative, tension, comfort) with decay, coupling rules, momentum, impulse detection, and conflict detection |
+| **Affects** | LLM-derived | ~3 min | Qualitative felt-textures from a vocabulary of ~50 affects, derived by reading the bar state |
+| **Noise** | Generative LLM | ~1 min | Continuous inner voice -- associative, entropic internal commentary at high temperature |
+
+The agent reads its body each turn as part of the context preamble. It cannot set its own body state -- only read it. That separation is deliberate: the body is a signal, not a command. The main model interprets its body naturally. No prescribed emotion, no FSM dice rolls.
+
+The **noise engine** is a design primitive unique to bumblebee: a second model (configurable, defaults to the reflex model at zero extra VRAM cost) producing raw associative material that the primary model reads as its own inner voice. It runs between turns, so the entity accumulates thought fragments during silence. See [docs/generative-noise.md](docs/generative-noise.md) for the full design philosophy.
+
+Events flow into soma from the perceive pipeline (message received/sent, tool calls, idle time). Bars decay continuously. State persists across restarts via soma-bar-state.json under ~/.bumblebee/entities/<name>/soma/.
+
 
 ### Identity — persistent self
 
 A **layered personality engine** (core traits, behavioral patterns, voice) produces a first-person system prompt that reads like character, not a bullet list of rules.
 
-An **emotional state** model tracks how the entity feels. Emotions drift toward baselines, shift with stimuli, and influence how it speaks and behaves.
+Emotional state is derived from the **soma body** (see above) rather than a prescriptive FSM. The entity reads its own bar levels, affects, and inner voice, and its emotional tone emerges naturally from that interpretation.
 
 A **drive system** (curiosity, connection, expression, autonomy, comfort) creates internal motivation. Drives accumulate over time and, when they cross thresholds, can trigger proactive behavior.
 
-**Trait evolution** applies small adjustments over many interactions so character can drift slowly in response to experience.
+**Trait evolution** applies small adjustments over many interactions -- both rule-based micro-nudges and periodic LLM-proposed trait deltas -- so character drifts slowly in response to experience.
 
 ### Memory — lived experience
 
@@ -328,11 +385,11 @@ A **drive system** (curiosity, connection, expression, autonomy, comfort) create
 
 ### Presence — embodied agency
 
-An **always-on daemon** ticks continuously: emotions, drives, memory consolidation, and proactive initiative.
+An **always-on daemon** ticks continuously: soma bars, affect derivation, noise generation, drives, memory consolidation, and proactive initiative.
 
 **Automations** (scheduled “routines”) run through APScheduler when **`automations.enabled`** is true on the entity: cron-style schedules, optional delivery to Telegram (or journal-only), emergence suggestions, and persisted definitions in the entity database.
 
-**Multi-platform adapters** expose the same entity on CLI, Telegram, Discord, and elsewhere you configure, with consistent memory and emotional continuity.
+**Multi-platform adapters** expose the same entity on CLI, Telegram, Discord, and elsewhere you configure, with consistent memory and body-state continuity.
 
 ### Hybrid: inference vs tool execution
 
@@ -437,6 +494,13 @@ Built-in tools live under `bumblebee/presence/tools/` and register at entity sta
 | `browser_navigate` | `browser` | off | Open a URL in the automated browser. |
 | `browser_screenshot` | `browser` | off | Screenshot the current page. |
 | `browser_type` | `browser` | off | Type into the page. |
+| `desktop_session_click` | `remote_session` | off | Click at screen coordinates in a remote Linux desktop session. |
+| `desktop_session_keypress` | `remote_session` | off | Send key presses or shortcuts to a remote Linux desktop session. |
+| `desktop_session_open_url` | `remote_session` | off | Open a URL inside the remote desktop session. |
+| `desktop_session_status` | `remote_session` | off | Inspect the active remote desktop session for the current chat. |
+| `desktop_session_stop` | `remote_session` | off | Stop the active remote desktop session. |
+| `desktop_session_type` | `remote_session` | off | Type text into the remote desktop session. |
+| `desktop_session_view` | `remote_session` | off | Capture the current frame from the remote desktop session. |
 | `cancel_reminder` | `reminders` | on | Cancel a scheduled reminder. |
 | `check_process` | `shell` | on | Inspect a tracked background shell job. |
 | `create_automation` | `automations` | on | Create a scheduled routine (cron, prompt, optional delivery). |
@@ -628,9 +692,9 @@ MoE-style models keep active parameters per token lower than full dense size; ex
 
 ## Philosophy
 
-Bumblebee is built for **sustained entity existence**: local **Gemma** + **Ollama**, memory that reads like a **life story** (episodes, people, beliefs, narrative), **drive-shaped** initiative, and an **inner voice** that does not have to be shown verbatim to matter.
+Bumblebee is built for **sustained entity existence**: local **Gemma** + **Ollama**, memory that reads like a **life story** (episodes, people, beliefs, narrative), a **tonic body** that runs between conversations (drives, affects, generative inner voice), and an architecture where the entity reads its own internal state rather than having emotions prescribed by a state machine.
 
-One question runs through the design: **how does this entity exist more fully?** Platforms, tools, memory layers, and hybrid deployment exist to honor that north star — **embodiment**, **continuity**, and **freedom within character**.
+One question runs through the design: **how does this entity exist more fully?** The soma body gives it continuous felt experience. The noise engine gives it a subconscious that generates thought between turns. Memory, tools, and platforms give it reach. Hybrid deployment gives it persistence. Everything serves the same north star: **embodiment**, **continuity**, and **freedom within character**.
 
 ## License
 

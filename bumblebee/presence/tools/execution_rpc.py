@@ -38,6 +38,15 @@ log = structlog.get_logger("bumblebee.presence.tools.execution")
 
 _CLIENTS: dict[str, "ExecutionRPCClient"] = {}
 _BG_PROCS: dict[str, dict[str, Any]] = {}
+REMOTE_SESSION_RPC_ACTIONS = frozenset(
+    {
+        "desktop_session_start",
+        "desktop_session_status",
+        "desktop_session_capture",
+        "desktop_session_input",
+        "desktop_session_stop",
+    }
+)
 
 
 @dataclass
@@ -622,12 +631,12 @@ class ExecutionRPCClient:
                 "browser_click",
                 "browser_type",
                 "generate_image",
-            ):
+            ) or action in REMOTE_SESSION_RPC_ACTIONS:
                 return {
                     "ok": False,
                     "error": (
-                        f"{action} requires an RPC execution backend with browser/image capabilities. "
-                        "Set tools.execution.base_url."
+                        f"{action} requires an RPC execution backend with browser/image or remote-session "
+                        "capabilities. Set tools.execution.base_url."
                     ),
                 }
 

@@ -142,6 +142,48 @@ class FirecrawlSettings:
     prefer_for_search: bool = True
 
 
+def default_soma_config() -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "bars": {
+            "variables": [
+                {"name": "social", "initial": 50, "decay_rate": -2.0, "floor": 0, "ceiling": 100},
+                {"name": "curiosity", "initial": 60, "decay_rate": -1.0, "floor": 0, "ceiling": 100},
+                {"name": "creative", "initial": 40, "decay_rate": -1.5, "floor": 0, "ceiling": 100},
+                {"name": "tension", "initial": 20, "decay_rate": -3.0, "floor": 0, "ceiling": 100},
+                {"name": "comfort", "initial": 65, "decay_rate": -0.5, "floor": 0, "ceiling": 100},
+            ],
+            "momentum_window": 6,
+        },
+        "coupling": [
+            {"when": "social > 80", "effect": "curiosity.decay_rate *= 1.5"},
+            {"when": "tension > 70", "effect": "comfort.decay_rate *= 2.0"},
+        ],
+        "event_effects": {
+            "message_received": {"social": 8, "curiosity": 3},
+            "message_sent": {"social": 5, "creative": 2},
+            "action": {"curiosity": 4},
+            "idle": {"social": -1, "curiosity": 1},
+        },
+        "impulses": [
+            {"drive": "social", "threshold": 80, "type": "reach_out", "label": "reach_out", "cooldown_minutes": 30, "relief": {"social": -25}},
+            {"drive": "curiosity", "threshold": 85, "type": "explore", "label": "explore_something", "cooldown_minutes": 20, "relief": {"curiosity": -20}},
+        ],
+        "conflicts": [
+            {"drives": ["curiosity", "comfort"], "threshold": 70, "label": "restless comfort", "tension_per_tick": 0.5, "comfort_per_tick": -0.3},
+        ],
+        "affect_cycle_seconds": 180,
+        "noise": {
+            "enabled": True,
+            "model": "",
+            "cycle_seconds": 60,
+            "temperature": 1.1,
+            "max_tokens": 150,
+            "max_fragments": 8,
+        },
+    }
+
+
 def default_tools_config() -> dict[str, Any]:
     return {
         "shell": {
@@ -196,6 +238,7 @@ class HarnessConfig:
     firecrawl: FirecrawlSettings = field(default_factory=FirecrawlSettings)
     attachments: AttachmentStorageSettings = field(default_factory=AttachmentStorageSettings)
     tools: dict[str, Any] = field(default_factory=default_tools_config)
+    soma: dict[str, Any] = field(default_factory=default_soma_config)
 
 
 @dataclass
@@ -327,6 +370,9 @@ class EntityConfig:
     def self_model_path(self) -> str:
         return _expand("~/.bumblebee/entities/{entity_name}/self_model.json", self.name)
 
+    def soma_dir(self) -> str:
+        return _expand("~/.bumblebee/entities/{entity_name}/soma", self.name)
+
 
 def _merge_dict(base: dict, override: dict) -> dict:
     out = {**base}
@@ -346,6 +392,7 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
     att_raw = {**AttachmentStorageSettings().__dict__, **(d.get("attachments") or {})}
     mem_raw = {**MemoryHarnessSettings().__dict__, **(d.get("memory") or {})}
     tools_raw = _merge_dict(default_tools_config(), d.get("tools") or {})
+    soma_raw = _merge_dict(default_soma_config(), d.get("soma") or {})
     return HarnessConfig(
         deployment=DeploymentSettings(
             **{**DeploymentSettings().__dict__, **(d.get("deployment") or {})}
@@ -367,6 +414,7 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
         firecrawl=FirecrawlSettings(**fc_raw),
         attachments=AttachmentStorageSettings(**att_raw),
         tools=tools_raw if isinstance(tools_raw, dict) else default_tools_config(),
+        soma=soma_raw if isinstance(soma_raw, dict) else default_soma_config(),
     )
 
 
