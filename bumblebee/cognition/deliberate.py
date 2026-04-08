@@ -292,6 +292,18 @@ class DeliberateCognition:
                         }
                     )
                 loop_state.last_tool_failed = tool_failed
+
+                if any(tm.get("content") == "[turn ended]" for tm in tool_msgs):
+                    merged = "\n\n".join(thinking_acc) if thinking_acc else None
+                    yield DeliberateStreamEvent(
+                        kind="final",
+                        display_text=assistant_content.strip(),
+                        history_entries=[],
+                        merged_thinking=merged,
+                        last_result=res,
+                    )
+                    return
+
                 follow_user = {
                     "role": "user",
                     "content": _build_post_tool_nudge(

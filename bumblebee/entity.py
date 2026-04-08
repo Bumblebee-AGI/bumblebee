@@ -65,6 +65,7 @@ from bumblebee.presence.tools.filesystem import (
     write_file,
 )
 from bumblebee.presence.tools import (
+    agency as agency_tools,
     browser as browser_tools,
     code as code_tools,
     execution_ops as execution_ops_tools,
@@ -586,6 +587,9 @@ class Entity:
         return default
 
     def _register_tools(self) -> None:
+        self.tools.register_decorated(agency_tools.think)
+        self.tools.register_decorated(agency_tools.end_turn)
+        self.tools.register_decorated(agency_tools.wait)
         self.tools.register_decorated(web_tools.search_web)
         self.tools.register_decorated(web_tools.fetch_url)
         self.tools.register_decorated(read_file)
@@ -877,6 +881,17 @@ class Entity:
         inp: Input | None = None,
         state: dict[str, Any] | None = None,
     ) -> str:
+        if state is not None:
+            repeat_key = "_consecutive_calls"
+            prev = state.get(repeat_key) or {}
+            if prev.get("tool") == spec.name and prev.get("count", 0) >= 3:
+                log.info("tool_repeat_blocked", tool=spec.name, consecutive=prev["count"])
+                return json.dumps({
+                    "error": f"You have already called {spec.name} {prev['count']} times this turn. "
+                    "Stop retrying. Tell the user what you found (or didn't find), or try a completely "
+                    "different approach. If there's nothing there, just say so."
+                })
+
         tool_t0 = time.time()
         tok = set_tool_runtime(
             ToolRuntimeContext(
@@ -909,6 +924,11 @@ class Entity:
                 state.pop("last_tool_error", None)
             else:
                 state["tool_failures"] = int(state.get("tool_failures") or 0) + 1
+            prev_repeat = state.get("_consecutive_calls") or {}
+            if prev_repeat.get("tool") == spec.name:
+                state["_consecutive_calls"] = {"tool": spec.name, "count": prev_repeat.get("count", 0) + 1}
+            else:
+                state["_consecutive_calls"] = {"tool": spec.name, "count": 1}
             previews = state.setdefault("tool_output_previews", [])
             if isinstance(previews, list):
                 previews.append(
@@ -979,6 +999,8 @@ class Entity:
         tool_state: dict[str, Any],
     ) -> tuple[bool, str | None]:
         """Decide whether the shared agent loop is done with this turn."""
+        if tool_state.get("_end_turn"):
+            return True, None
         visible = (reply_text or "").strip()
         recap = self._gate_tool_recap(tool_state) if loop_state.tool_calls_seen > 0 else ""
         if not visible:
@@ -1798,6 +1820,15 @@ class Entity:
             "length": len(tc.reply_text or ""),
             "register": tc.inp.platform,
         })
+        if tc.tool_state.get("_end_turn_mood"):
+            self.tonic.emit({"type": "mood_declared", "mood": tc.tool_state["_end_turn_mood"]})
+        if tc.tool_state.get("_end_turn_thought"):
+            try:
+                await self.journal.write_entry(
+                    tc.tool_state["_end_turn_thought"], tags=["end_turn"],
+                )
+            except Exception:
+                pass
         log.info(
             "turn_completed",
             platform=tc.inp.platform,
@@ -1808,6 +1839,7 @@ class Entity:
             tool_failures=tc.tool_state.get("tool_failures", 0),
             reply_len=len(tc.reply_text or ""),
             duration_s=round(time.time() - tc.t0, 2),
+            end_turn=bool(tc.tool_state.get("_end_turn")),
         )
 
     async def cli_opening(

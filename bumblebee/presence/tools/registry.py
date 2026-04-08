@@ -36,6 +36,8 @@ def extract_domain(url: str) -> str:
 
 
 def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
+    if tool_name in ("think", "end_turn", "wait"):
+        return None
     if tool_name == "search_web":
         return f'🔍 looking up "{args.get("query", "something")}"...'
     if tool_name == "fetch_url":
@@ -373,6 +375,22 @@ class ToolRegistry:
             "tool first (usually list_directory, read_file, search_files, or get_system_info), then "
             "answer from that result. If you cannot verify, say so plainly.\n"
             "When you invoke a tool, wait for its result before finishing your reply.\n\n"
+            "[Agency — how you control your own process]\n"
+            "You have three tools for managing your own cognitive flow:\n"
+            "- think: private reasoning nobody sees. Use it before acting on something complex, "
+            "after observing something, or when you need to process what just happened. Free and "
+            "invisible. Think generously.\n"
+            "- end_turn: explicitly end your turn when you're done. You can record your current "
+            "mood and a parting thought. Call this when you've said what you want to say or "
+            "decided not to say anything.\n"
+            "- wait: pause before your next action. Use after sending a message or running a "
+            "command when you want to see what happens before deciding your next move.\n"
+            "You control when your turn ends. Call end_turn when you're satisfied, not when you "
+            "run out of things to do. Silence is valid. Observation without comment is valid. "
+            "Not every turn needs visible output.\n"
+            "If a tool fails, do NOT retry the same tool repeatedly. Tell the user what went "
+            "wrong plainly, try a different approach, or call end_turn. Two failures of the same "
+            "tool means it is not going to work — move on.\n\n"
             f"{decl}"
         )
 
@@ -397,7 +415,11 @@ class ToolRegistry:
             "If they ask about workspace contents, repo files, or what machine / host you're on, "
             "ground the answer with list_directory, read_file, search_files, or get_system_info "
             "instead of guessing from stereotypes.\n"
-            "When you invoke a tool, wait for its result before finishing your reply.\n"
+            "When you invoke a tool, wait for its result before finishing your reply.\n\n"
+            "[Agency — how you control your own process]\n"
+            "think: private reasoning nobody sees. end_turn: explicitly end your turn. "
+            "wait: pause before your next action. You control when your turn ends. "
+            "If a tool fails, do not retry it — tell the user or try something else.\n"
         )
 
     def usage_snapshot(self) -> dict[str, int]:
