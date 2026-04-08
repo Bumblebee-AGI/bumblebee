@@ -41,7 +41,7 @@ cognition:
   thinking_mode: true
   temperature: 0.75
   reflex_max_tokens: 1024
-  deliberate_max_tokens: 4096
+  deliberate_max_tokens: 8192
   thinking_budget: 4096
   max_context_tokens: 32768
   escalation_threshold: 0.4
@@ -142,7 +142,7 @@ soma:
     message_received: { social: 8, curiosity: 3 }
     message_sent: { social: 5, creative: 2 }
     action: { curiosity: 4 }
-    idle: { social: -1, curiosity: 1 }
+    idle: { social: -0.015, curiosity: 0.01 }
     idle_cycle: { comfort: 5, tension: -3 }
     mood_declared: { comfort: 2 }
   impulses:
@@ -185,7 +185,7 @@ soma:
 
 # Autonomous wake cycles — the entity wakes on its own, driven by body state.
 autonomy:
-  enabled: false  # enable when ready to let the entity act unprompted
+  enabled: true
   min_cycle_gap_seconds: 600       # minimum time between autonomous cycles
   max_cycles_per_hour: 4
   messages_per_cycle: 2            # hard cap on outgoing messages per autonomous cycle
