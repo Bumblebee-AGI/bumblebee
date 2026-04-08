@@ -125,6 +125,15 @@ class PresenceDaemon:
                 if silence > 60:
                     tonic.emit({"type": "idle", "duration_minutes": silence / 60.0})
                 await tonic.tick_bars(dt_hours)
+                bars_pct = tonic.bars.snapshot_pct()
+                log.info(
+                    "soma_tick",
+                    module="presence",
+                    platform="daemon",
+                    bars={k: v for k, v in bars_pct.items()},
+                    affects=len(tonic._current_affects),
+                    noise_fragments=len(tonic.noise.current_fragments()),
+                )
                 reflex_model = (
                     self.entity.config.cognition.reflex_model
                     or self.entity.config.cognition.deliberate_model
@@ -136,7 +145,7 @@ class PresenceDaemon:
                         num_ctx=self.entity.config.effective_ollama_num_ctx(),
                     )
                 except Exception as e:
-                    log.debug("soma_affect_tick_failed", module="presence", error=str(e))
+                    log.warning("soma_affect_tick_failed", module="presence", error=str(e))
                 try:
                     journal_tail = ""
                     if hasattr(self.entity, "journal") and self.entity.journal.path.is_file():
@@ -157,7 +166,7 @@ class PresenceDaemon:
                         num_ctx=self.entity.config.effective_ollama_num_ctx(),
                     )
                 except Exception as e:
-                    log.debug("soma_noise_tick_failed", module="presence", error=str(e))
+                    log.warning("soma_noise_tick_failed", module="presence", error=str(e))
         except Exception as e:
             log.exception("daemon_heartbeat_error", module="presence", error=str(e))
 

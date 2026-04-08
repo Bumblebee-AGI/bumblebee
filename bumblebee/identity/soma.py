@@ -429,6 +429,11 @@ class AffectEngine:
         affects = self._parse_response(text)
         if affects:
             self._previous_affects = affects
+            log.info(
+                "soma_affects_derived",
+                count=len(affects),
+                names=[a["name"] for a in affects],
+            )
         return self._previous_affects
 
     @staticmethod
@@ -703,6 +708,12 @@ class NoiseEngine:
         new_fragments = _split_noise_fragments(text)
         for f in new_fragments:
             self._fragments.append(f)
+        if new_fragments:
+            log.info(
+                "soma_noise_generated",
+                count=len(new_fragments),
+                fragments=[frag[:80] for frag in new_fragments],
+            )
         return list(self._fragments)
 
 
