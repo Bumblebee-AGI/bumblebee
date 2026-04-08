@@ -306,23 +306,32 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
     )
     en = html.escape(snap.entity_name)
     return (
-        f"🐝 <b>{en}</b> · v{html.escape(app_version)}\n"
-        f"mood · {html.escape(snap.mood_label)} · {html.escape(snap.drive_line)}\n"
-        f"memory · {snap.episode_count} episodes · {snap.people_count} relationship profiles "
-        f"<i>(relational DB — any platform / group / CLI; not your Telegram contact count)</i>\n"
-        f"telegram · {n_telegram_routes} cached route(s) <i>(for send_dm / messaging tools)</i>\n"
-        f"model · {html.escape(snap.reflex_model)} · context · {snap.max_context_tokens // 1000}k\n"
-        f"tools · {snap.tool_count} active · awake · {html.escape(snap.awake_summary)}"
+        f"🐝 <b>{en}</b> · v{html.escape(app_version)}\n\n"
+
+        f"<b>State</b>\n"
+        f"  Mood: {html.escape(snap.mood_label)}\n"
+        f"  Drive: {html.escape(snap.drive_line)}\n"
+        f"  Awake: {html.escape(snap.awake_summary)}\n\n"
+
+        f"<b>Memory</b>\n"
+        f"  {snap.episode_count} episodes\n"
+        f"  {snap.people_count} relationships\n"
+        f"  {n_telegram_routes} telegram route(s)\n\n"
+
+        f"<b>Runtime</b>\n"
+        f"  Model: <code>{html.escape(snap.reflex_model)}</code>\n"
+        f"  Context: {snap.max_context_tokens // 1000}k tokens\n"
+        f"  Tools: {snap.tool_count} active"
     )
 
 
 def format_memories_html(entity_name: str, summaries: list[str]) -> str:
     en = html.escape(entity_name)
     if not summaries:
-        return f"<i>{en}</i> reaches for recent memories; the shelf is still sparse."
-    lines = [f"<i>{en}</i> leafs through recent memories…", ""]
+        return f"<b>Memories</b>\n\n<i>Nothing recalled yet.</i>"
+    lines = [f"<b>Memories</b>\n"]
     for i, s in enumerate(summaries, 1):
-        lines.append(f"{i}. {html.escape(s[:500])}")
+        lines.append(f"  {i}. {html.escape(s[:500])}\n")
     return "\n".join(lines)
 
 
@@ -330,36 +339,51 @@ def format_feelings_html(entity_name: str, state: Any) -> str:
     en = html.escape(entity_name)
     primary = html.escape(state.primary.value)
     pi = f"{state.intensity:.1f}"
-    parts = [f"<i>{en}</i> is feeling <b>{primary}</b> ({pi})"]
+    ago = _fmt_duration(max(0.0, time.time() - state.last_transition))
+    lines = [
+        f"<b>Feelings</b>\n",
+        f"  Primary: <b>{primary}</b> ({pi})",
+    ]
     if state.secondary is not None:
-        parts.append(
-            f"with an undercurrent of {html.escape(state.secondary.value)} "
+        lines.append(
+            f"  Undercurrent: {html.escape(state.secondary.value)} "
             f"({state.secondary_intensity:.1f})"
         )
-    ago = _fmt_duration(max(0.0, time.time() - state.last_transition))
-    parts.append(f"— in this shade for about {html.escape(ago)}.")
-    return " ".join(parts)
+    lines.append(f"  Duration: {html.escape(ago)}")
+    return "\n".join(lines)
+
+
+def _mini_bar(value: float, width: int = 8) -> str:
+    """Tiny visual bar for 0.0-1.0 values."""
+    v = max(0.0, min(1.0, float(value)))
+    filled = round(width * v)
+    return "\u2588" * filled + "\u2591" * (width - filled)
 
 
 def format_me_html(entity_name: str, relationship: Any | None) -> str:
     en = html.escape(entity_name)
     if relationship is None:
         return (
-            f"<i>{en}</i> does not have a relationship profile for you yet.\n\n"
-            "Talk a little more and then check again with <code>/me</code>."
+            f"<b>Relationship</b>\n\n"
+            "<i>No profile yet.</i> Talk a little more and check again with <code>/me</code>."
         )
     first_met_ago = _fmt_duration(max(0.0, time.time() - float(relationship.first_met)))
     last_seen_ago = _fmt_duration(max(0.0, time.time() - float(relationship.last_interaction)))
+
+    fam_bar = _mini_bar(relationship.familiarity)
+    warm_bar = _mini_bar(relationship.warmth)
+    trust_bar = _mini_bar(relationship.trust)
+
     return (
-        "<b>How I hold you in memory</b>\n"
-        f"name · {html.escape(str(relationship.name) or 'unknown')}\n"
-        f"dynamic · {html.escape(str(relationship.dynamic) or 'forming')}\n"
-        f"familiarity · {relationship.familiarity:.2f}\n"
-        f"warmth · {relationship.warmth:.2f}\n"
-        f"trust · {relationship.trust:.2f}\n"
-        f"interactions · {relationship.interaction_count}\n"
-        f"first met · {html.escape(first_met_ago)} ago\n"
-        f"last interaction · {html.escape(last_seen_ago)} ago"
+        f"<b>Relationship</b>\n\n"
+        f"  Name: {html.escape(str(relationship.name) or 'unknown')}\n"
+        f"  Dynamic: {html.escape(str(relationship.dynamic) or 'forming')}\n\n"
+        f"  Familiarity: <code>{fam_bar}</code> {relationship.familiarity:.2f}\n"
+        f"  Warmth:      <code>{warm_bar}</code> {relationship.warmth:.2f}\n"
+        f"  Trust:       <code>{trust_bar}</code> {relationship.trust:.2f}\n\n"
+        f"  Interactions: {relationship.interaction_count}\n"
+        f"  First met: {html.escape(first_met_ago)} ago\n"
+        f"  Last seen: {html.escape(last_seen_ago)} ago"
     )
 
 
@@ -367,13 +391,14 @@ def format_models_html(entity: "Entity") -> str:
     cfg = entity.config
     think = "on" if cfg.cognition.thinking_mode else "off"
     return (
-        "<b>Runtime models</b>\n"
-        f"reflex · <code>{html.escape(cfg.cognition.reflex_model)}</code>\n"
-        f"deliberate · <code>{html.escape(cfg.cognition.deliberate_model)}</code>\n"
-        f"embedding · <code>{html.escape(cfg.harness.models.embedding)}</code>\n"
-        f"thinking mode · {html.escape(think)}\n"
-        f"context window · {cfg.cognition.max_context_tokens // 1000}k tokens\n"
-        f"tools registered · {len(entity.tools.openai_tools())}"
+        "<b>Models</b>\n\n"
+        f"  Reflex: <code>{html.escape(cfg.cognition.reflex_model)}</code>\n"
+        f"  Deliberate: <code>{html.escape(cfg.cognition.deliberate_model)}</code>\n"
+        f"  Embedding: <code>{html.escape(cfg.harness.models.embedding)}</code>\n\n"
+        f"<b>Settings</b>\n\n"
+        f"  Thinking mode: {html.escape(think)}\n"
+        f"  Context window: {cfg.cognition.max_context_tokens:,} tokens\n"
+        f"  Tools registered: {len(entity.tools.openai_tools())}"
     )
 
 
