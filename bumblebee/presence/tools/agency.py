@@ -59,8 +59,12 @@ async def say(message: str) -> str:
         return "[empty message, not sent]"
     if ctx.state is not None:
         count = ctx.state.get("_messages_sent", 0)
-        if count >= 6:
-            return "[message limit reached this turn — save it for later]"
+        budget = ctx.state.get("_message_budget", 6)
+        if count >= budget:
+            return (
+                f"[you've already sent {count} messages this cycle — save it "
+                "for next time. you can still think, observe, or end_turn.]"
+            )
         ctx.state["_messages_sent"] = count + 1
     try:
         await platform.send_message(inp.channel, text)
@@ -78,3 +82,35 @@ async def wait(seconds: int = 3) -> str:
     secs = max(1, min(15, int(seconds)))
     await asyncio.sleep(secs)
     return f"[waited {secs}s]"
+
+
+@tool(
+    "observe",
+    "Look at recent messages in a channel you're present in. Use to see "
+    "what people have been talking about. Defaults to the last active channel.",
+)
+async def observe(channel: str = "", limit: int = 15) -> str:
+    ctx = get_tool_runtime()
+    platform = ctx.platform
+    if platform is None:
+        return "[no active platform to observe]"
+    ch = (channel or "").strip()
+    if not ch and ctx.inp:
+        ch = ctx.inp.channel
+    if not ch:
+        return "[no channel specified]"
+    lim = max(1, min(50, int(limit)))
+    try:
+        msgs = await platform.fetch_recent_messages(ch, lim)
+    except Exception as e:
+        return f"[observe failed: {e}]"
+    if not msgs:
+        return f"[{ch} — no recent messages]"
+    lines: list[str] = []
+    for m in msgs:
+        ts = m.get("timestamp", "")
+        who = m.get("sender", "?")
+        content = m.get("content", "")
+        prefix = f"[{ts}] " if ts else ""
+        lines.append(f"{prefix}{who}: {content}")
+    return f"[{ch} — {len(msgs)} messages]\n" + "\n".join(lines)

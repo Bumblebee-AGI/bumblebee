@@ -1,4 +1,4 @@
-"""Always-on scheduling: heartbeat, drives, initiative, MCP refresh, consolidation."""
+"""Always-on scheduling: heartbeat, drives, autonomy, MCP refresh, consolidation."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from bumblebee.memory.consolidation import ConsolidationJob
 from bumblebee.models import Input
 from bumblebee.presence.automations.engine import AutomationEngine
 from bumblebee.presence.initiative import InitiativeEngine
+from bumblebee.presence.wake_cycle import WakeCycleEngine
 
 log = structlog.get_logger("bumblebee.presence.daemon")
 
@@ -23,6 +24,7 @@ class PresenceDaemon:
         self._scheduler: AsyncIOScheduler | None = None
         self._consolidation = ConsolidationJob(self.cfg)
         self._initiative = InitiativeEngine(self.cfg, entity_facade.client)
+        self._wake_cycle = WakeCycleEngine(self.cfg)
         self._last_consolidation: float = time.time()
         self._last_emergence: float = 0.0
 
@@ -97,27 +99,32 @@ class PresenceDaemon:
             await self.entity.tick()
             now = time.time()
             silence = now - getattr(self.entity, "_last_user_message_at", now)
-            drives = self.entity.drives.tick(silence_seconds=silence)
-            cooldown = float(self.cfg.drives.initiative_cooldown)
-            if drives and self.entity.drives.can_initiate(now, cooldown):
-                d = drives[0]
-                ctx = await self.entity.proactive_context_for_drive(d)
-                msg = await self._initiative.compose_proactive(d, ctx)
-                if msg:
-                    self.entity.drives.register_initiative_time(now)
-                    self.entity.drives.satisfy(d.name, 0.5)
-                    await self.entity.broadcast_proactive(msg)
-                    log.info(
-                        "initiative_sent",
-                        module="presence",
-                        platform="daemon",
-                        drive=d.name,
-                    )
+            drives_crossed = self.entity.drives.tick(silence_seconds=silence)
+
+            # --- Legacy initiative (when autonomy is disabled) ---
+            if not self.cfg.harness.autonomy.enabled:
+                cooldown = float(self.cfg.drives.initiative_cooldown)
+                if drives_crossed and self.entity.drives.can_initiate(now, cooldown):
+                    d = drives_crossed[0]
+                    ctx = await self.entity.proactive_context_for_drive(d)
+                    msg = await self._initiative.compose_proactive(d, ctx)
+                    if msg:
+                        self.entity.drives.register_initiative_time(now)
+                        self.entity.drives.satisfy(d.name, 0.5)
+                        await self.entity.broadcast_proactive(msg)
+                        log.info(
+                            "initiative_sent",
+                            module="presence",
+                            platform="daemon",
+                            drive=d.name,
+                        )
+
             try:
                 await self.entity.refresh_mcp_servers()
             except Exception as e:
                 log.warning("mcp_heartbeat_refresh_failed", module="presence", error=str(e))
-            # --- Tonic body: tick bars, emit idle, refresh affects ---
+
+            # --- Tonic body: tick bars, emit idle, refresh affects, noise ---
             tonic = getattr(self.entity, "tonic", None)
             if tonic is not None:
                 hb_sec = max(5, self._heartbeat_seconds())
@@ -145,7 +152,7 @@ class PresenceDaemon:
                         num_ctx=self.entity.config.effective_ollama_num_ctx(),
                     )
                 except Exception as e:
-                    log.warning("soma_affect_tick_failed", module="presence", error=str(e))
+                    log.debug("soma_affect_tick_failed", module="presence", error=str(e))
                 try:
                     journal_tail = ""
                     if hasattr(self.entity, "journal") and self.entity.journal.path.is_file():
@@ -166,7 +173,25 @@ class PresenceDaemon:
                         num_ctx=self.entity.config.effective_ollama_num_ctx(),
                     )
                 except Exception as e:
-                    log.warning("soma_noise_tick_failed", module="presence", error=str(e))
+                    log.debug("soma_noise_tick_failed", module="presence", error=str(e))
+
+                # --- Autonomous wake cycle evaluation ---
+                if self.cfg.harness.autonomy.enabled:
+                    all_drives = self.entity.drives.all_drives()
+                    dormant = getattr(self.entity, "dormant", False)
+                    reason = self._wake_cycle.should_wake(
+                        tonic=tonic,
+                        drives=all_drives,
+                        silence_seconds=silence,
+                        dormant=dormant,
+                    )
+                    if reason:
+                        await self._wake_cycle.run(
+                            entity=self.entity,
+                            tonic=tonic,
+                            reason=reason,
+                        )
+
         except Exception as e:
             log.exception("daemon_heartbeat_error", module="presence", error=str(e))
 

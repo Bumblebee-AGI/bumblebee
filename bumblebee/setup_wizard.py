@@ -313,6 +313,102 @@ def _run_hybrid_env_and_home(env_path: Path) -> tuple[str, str]:
     return base_url, tok
 
 
+def _railway_volume_exists(service: str, mount: str) -> bool | None:
+    """Check whether *service* has a volume at *mount*. Returns ``None`` when the check cannot run."""
+    b = _railway_bin()
+    if not b:
+        return None
+    r = subprocess.run(
+        [b, "volume", "list"],
+        cwd=_repo_root(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if r.returncode != 0:
+        return None
+    return mount in (r.stdout or "")
+
+
+def _railway_variable_get(service: str, key: str) -> str | None:
+    """Read a single Railway variable. Returns ``None`` if the CLI fails."""
+    b = _railway_bin()
+    if not b:
+        return None
+    r = subprocess.run(
+        [b, "variable", "list", "-s", service],
+        cwd=_repo_root(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if r.returncode != 0:
+        return None
+    for line in (r.stdout or "").splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            if k.strip() == key:
+                return v.strip()
+    return ""
+
+
+def _run_hybrid_volume_setup() -> None:
+    """Ensure the bumblebee-worker has a persistent volume at /app/data."""
+    click.echo("\n--- Persistent volume (worker data that survives redeploys) ---\n")
+    click.echo(
+        "The worker needs a Railway volume mounted at /app/data for knowledge.md,\n"
+        "journal.md, soma state, and any files the entity creates. Without it,\n"
+        "those files are lost every time the container redeploys.\n"
+    )
+
+    has_volume = _railway_volume_exists("bumblebee-worker", "/app/data")
+    if has_volume is None:
+        click.echo("Could not check volumes (Railway CLI unavailable or not linked).")
+        click.echo("Manual step: railway volume add --mount-path /app/data -s bumblebee-worker\n")
+    elif has_volume:
+        click.echo("Volume at /app/data detected — good.\n")
+    else:
+        click.echo("No volume at /app/data found on bumblebee-worker.")
+        if click.confirm("Create one now?", default=True):
+            b = _railway_bin()
+            if b:
+                r = subprocess.run(
+                    [b, "volume", "add", "--mount-path", "/app/data", "-s", "bumblebee-worker"],
+                    cwd=_repo_root(),
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                if r.returncode == 0:
+                    click.echo("Volume created at /app/data.")
+                else:
+                    click.echo(
+                        (r.stderr or r.stdout or "railway volume add failed").strip(),
+                        err=True,
+                    )
+                    click.echo("Create manually: railway volume add --mount-path /app/data -s bumblebee-worker")
+        else:
+            click.echo("Skipped. Create later: railway volume add --mount-path /app/data -s bumblebee-worker\n")
+
+    ws_val = _railway_variable_get("bumblebee-worker", "BUMBLEBEE_EXECUTION_WORKSPACE_DIR")
+    if ws_val is None:
+        click.echo("Could not check variables. Ensure BUMBLEBEE_EXECUTION_WORKSPACE_DIR=/app/data is set.\n")
+    elif ws_val == "/app/data":
+        click.echo("BUMBLEBEE_EXECUTION_WORKSPACE_DIR already set to /app/data.\n")
+    else:
+        click.echo(
+            "BUMBLEBEE_EXECUTION_WORKSPACE_DIR tells the harness where to store knowledge,\n"
+            "journal, soma state, and workspace files. It should point at the volume mount.\n"
+        )
+        if click.confirm("Set BUMBLEBEE_EXECUTION_WORKSPACE_DIR=/app/data on bumblebee-worker?", default=True):
+            _railway_set("bumblebee-worker", ["BUMBLEBEE_EXECUTION_WORKSPACE_DIR=/app/data"])
+            click.echo("Set.\n")
+        else:
+            click.echo("Skipped. Set later: railway variable set -s bumblebee-worker BUMBLEBEE_EXECUTION_WORKSPACE_DIR=/app/data\n")
+
+    click.echo("See docs/hybrid-railway-persistence.md for the full persistence guide.\n")
+
+
 def _run_hybrid_railway(entity_choice: str | None, base_url: str, tok: str) -> None:
     entity = _resolve_entity_name_for_railway(entity_choice)
     if not entity:
@@ -322,46 +418,53 @@ def _run_hybrid_railway(entity_choice: str | None, base_url: str, tok: str) -> N
 
     pg_service = _prompt_line("Railway Postgres plugin service name (for DATABASE_URL reference)", default="Postgres")
 
+    railway_ok = False
     if _railway_bin():
         if not _railway_ok():
             click.echo("Run `railway login` and `railway link` (or init) from the repo root, then re-run setup.", err=True)
-        elif click.confirm("Apply hybrid variables on Railway (bumblebee-worker + bumblebee-api)?", default=True):
-            db_tok = "${{" + pg_service + ".DATABASE_URL}}"
-            _railway_set("bumblebee-worker", [f"DATABASE_URL={db_tok}"])
-            _railway_set("bumblebee-api", [f"DATABASE_URL={db_tok}"])
-            wvars = [
-                "BUMBLEBEE_DEPLOYMENT_MODE=hybrid_railway",
-                "BUMBLEBEE_INFERENCE_PROVIDER=remote_gateway",
-                f"BUMBLEBEE_INFERENCE_BASE_URL={base_url}",
-                f"BUMBLEBEE_ENTITY={entity}",
-                "BUMBLEBEE_RAILWAY_ROLE=worker",
-            ]
-            avs = [
-                "BUMBLEBEE_DEPLOYMENT_MODE=hybrid_railway",
-                "BUMBLEBEE_INFERENCE_PROVIDER=remote_gateway",
-                f"BUMBLEBEE_INFERENCE_BASE_URL={base_url}",
-                f"BUMBLEBEE_ENTITY={entity}",
-                "BUMBLEBEE_RAILWAY_ROLE=api",
-            ]
-            _railway_set("bumblebee-worker", wvars)
-            _railway_set("bumblebee-api", avs)
-            _railway_set_stdin("bumblebee-worker", "BUMBLEBEE_INFERENCE_GATEWAY_TOKEN", tok)
-            _railway_set_stdin("bumblebee-api", "BUMBLEBEE_INFERENCE_GATEWAY_TOKEN", tok)
-            if click.confirm("Set TELEGRAM_TOKEN on bumblebee-worker (from stdin)?", default=False):
-                tg = _prompt_secret("TELEGRAM_TOKEN")
-                if tg:
-                    _railway_set_stdin("bumblebee-worker", "TELEGRAM_TOKEN", tg)
-            if click.confirm("Set DISCORD_TOKEN on bumblebee-worker (from stdin)?", default=False):
-                dc = _prompt_secret("DISCORD_TOKEN")
-                if dc:
-                    _railway_set_stdin("bumblebee-worker", "DISCORD_TOKEN", dc)
-            if click.confirm("Deploy worker + API now (railway up)?", default=False):
-                rb = _railway_bin()
-                if rb:
-                    subprocess.call([rb, "up", "-s", "bumblebee-worker", "-d"], cwd=_repo_root())
-                    subprocess.call([rb, "up", "-s", "bumblebee-api", "-d"], cwd=_repo_root())
+        else:
+            railway_ok = True
+            if click.confirm("Apply hybrid variables on Railway (bumblebee-worker + bumblebee-api)?", default=True):
+                db_tok = "${{" + pg_service + ".DATABASE_URL}}"
+                _railway_set("bumblebee-worker", [f"DATABASE_URL={db_tok}"])
+                _railway_set("bumblebee-api", [f"DATABASE_URL={db_tok}"])
+                wvars = [
+                    "BUMBLEBEE_DEPLOYMENT_MODE=hybrid_railway",
+                    "BUMBLEBEE_INFERENCE_PROVIDER=remote_gateway",
+                    f"BUMBLEBEE_INFERENCE_BASE_URL={base_url}",
+                    f"BUMBLEBEE_ENTITY={entity}",
+                    "BUMBLEBEE_RAILWAY_ROLE=worker",
+                ]
+                avs = [
+                    "BUMBLEBEE_DEPLOYMENT_MODE=hybrid_railway",
+                    "BUMBLEBEE_INFERENCE_PROVIDER=remote_gateway",
+                    f"BUMBLEBEE_INFERENCE_BASE_URL={base_url}",
+                    f"BUMBLEBEE_ENTITY={entity}",
+                    "BUMBLEBEE_RAILWAY_ROLE=api",
+                ]
+                _railway_set("bumblebee-worker", wvars)
+                _railway_set("bumblebee-api", avs)
+                _railway_set_stdin("bumblebee-worker", "BUMBLEBEE_INFERENCE_GATEWAY_TOKEN", tok)
+                _railway_set_stdin("bumblebee-api", "BUMBLEBEE_INFERENCE_GATEWAY_TOKEN", tok)
+                if click.confirm("Set TELEGRAM_TOKEN on bumblebee-worker (from stdin)?", default=False):
+                    tg = _prompt_secret("TELEGRAM_TOKEN")
+                    if tg:
+                        _railway_set_stdin("bumblebee-worker", "TELEGRAM_TOKEN", tg)
+                if click.confirm("Set DISCORD_TOKEN on bumblebee-worker (from stdin)?", default=False):
+                    dc = _prompt_secret("DISCORD_TOKEN")
+                    if dc:
+                        _railway_set_stdin("bumblebee-worker", "DISCORD_TOKEN", dc)
     else:
         click.echo("Railway CLI not on PATH — install it, then use the cheat sheet below.")
+
+    if railway_ok:
+        _run_hybrid_volume_setup()
+
+    if railway_ok and click.confirm("Deploy worker + API now (railway up)?", default=False):
+        rb = _railway_bin()
+        if rb:
+            subprocess.call([rb, "up", "-s", "bumblebee-worker", "-d"], cwd=_repo_root())
+            subprocess.call([rb, "up", "-s", "bumblebee-api", "-d"], cwd=_repo_root())
 
     _print_railway_cheat_sheet(entity, base_url, pg_service)
 

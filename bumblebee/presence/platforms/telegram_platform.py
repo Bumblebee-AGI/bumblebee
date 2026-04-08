@@ -173,6 +173,17 @@ class TelegramPlatform(Platform):
         self._chat_reply_locks_init = asyncio.Lock()
         self._remote_sessions: dict[int, dict[str, Any]] = {}
         self._remote_sessions_lock = asyncio.Lock()
+        self._message_ring: list[dict[str, Any]] = []
+        self._message_ring_cap = 200
+        self._active_summon: dict[str, Any] | None = None
+        try:
+            _auto = entity.config.harness.autonomy
+            _summon_cfg = getattr(_auto, "summon", None)
+            self._summon_enabled = bool(_summon_cfg and getattr(_summon_cfg, "enabled", False))
+            self._summon_timeout = float(getattr(_summon_cfg, "timeout_seconds", 30) or 30)
+        except (AttributeError, TypeError):
+            self._summon_enabled = False
+            self._summon_timeout = 30.0
 
         self._register_handlers()
 
@@ -524,6 +535,82 @@ class TelegramPlatform(Platform):
             return None
         self.last_chat_id = str(chat.id)
         return chat.id
+
+    def _record_message_to_ring(self, update: Update) -> None:
+        msg = update.message or update.edited_message
+        if not msg:
+            return
+        u = update.effective_user
+        sender = _telegram_display_name(u) if u else "unknown"
+        text = (msg.text or msg.caption or "").strip()
+        if not text:
+            return
+        ts = msg.date.isoformat() if msg.date else ""
+        self._message_ring.append({
+            "channel": str(msg.chat_id),
+            "sender": sender,
+            "content": text[:500],
+            "timestamp": ts,
+        })
+        if len(self._message_ring) > self._message_ring_cap:
+            self._message_ring = self._message_ring[-self._message_ring_cap:]
+
+    async def fetch_recent_messages(
+        self,
+        channel: str,
+        limit: int = 15,
+    ) -> list[dict[str, Any]]:
+        ch = str(channel)
+        matching = [m for m in self._message_ring if m["channel"] == ch]
+        return matching[-limit:]
+
+    # --- Summon system ---
+
+    def open_summon(self, channel: str, user_id: str) -> None:
+        """After responding in a group, stay present for follow-up messages."""
+        if not self._summon_enabled:
+            return
+        self._active_summon = {
+            "channel": str(channel),
+            "participants": {str(user_id)},
+            "opened_at": time.time(),
+        }
+        log.info("summon_opened", channel=channel, timeout=self._summon_timeout)
+
+    def close_summon(self) -> None:
+        if self._active_summon:
+            log.info("summon_closed", channel=self._active_summon.get("channel"))
+        self._active_summon = None
+
+    def _refresh_summon(self) -> None:
+        if self._active_summon:
+            self._active_summon["opened_at"] = time.time()
+
+    def _is_summon_active(self, channel: str) -> bool:
+        if not self._active_summon:
+            return False
+        if str(self._active_summon["channel"]) != str(channel):
+            return False
+        elapsed = time.time() - float(self._active_summon.get("opened_at", 0))
+        if elapsed > self._summon_timeout:
+            self.close_summon()
+            return False
+        return True
+
+    async def _check_summon_relevance(self, text: str, sender: str) -> bool:
+        """Lightweight check: is this follow-up message meant for the entity?"""
+        if not self._active_summon:
+            return False
+        if sender in self._active_summon.get("participants", set()):
+            return True
+        lower = text.lower()
+        entity_name = self._entity.config.name.lower()
+        if entity_name in lower:
+            return True
+        for word in ("you", "your", "yeah", "yes", "no", "what", "how", "why", "lol", "haha", "ok"):
+            if lower.strip() == word or lower.startswith(word + " "):
+                return True
+        return False
 
     async def _take_update_if_fresh(self, update: Update) -> bool:
         """First delivery of ``update_id`` returns True; retries/duplicates return False."""
@@ -1045,15 +1132,41 @@ class TelegramPlatform(Platform):
         msg = update.message
         _ = context
         self._remember_last_chat(update)
-        log.info("telegram_inbound", platform="telegram", chat_id=msg.chat_id, kind="text")
+        self._record_message_to_ring(update)
+
         u = update.effective_user
+        channel = str(msg.chat_id)
+        sender_name = _telegram_display_name(u)
+        text = msg.text or ""
+
+        # --- Summon continuation: respond to follow-ups without @mention ---
+        is_summon_continuation = False
+        if self._is_summon_active(channel):
+            sender_id = str(u.id) if u else ""
+            relevant = await self._check_summon_relevance(text, sender_id)
+            if relevant:
+                is_summon_continuation = True
+                self._refresh_summon()
+                if u:
+                    self._active_summon["participants"].add(str(u.id))
+                log.info(
+                    "summon_continuation",
+                    platform="telegram",
+                    chat_id=msg.chat_id,
+                    sender=sender_name,
+                )
+
+        log.info("telegram_inbound", platform="telegram", chat_id=msg.chat_id, kind="text")
         inp = Input(
-            text=msg.text,
+            text=text,
             person_id=str(u.id) if u else "unknown",
-            person_name=_telegram_display_name(u),
-            channel=str(msg.chat_id),
+            person_name=sender_name,
+            channel=channel,
             platform="telegram",
-            metadata=self._telegram_msg_meta_with_session(msg),
+            metadata={
+                **self._telegram_msg_meta_with_session(msg),
+                "summon_continuation": is_summon_continuation,
+            },
         )
         await self._run_callback(inp)
 
@@ -1215,6 +1328,8 @@ class TelegramPlatform(Platform):
         chat_id = int(channel)
         text = content[:4096]
         await self.app.bot.send_message(chat_id=chat_id, text=text)
+        if self._summon_enabled and chat_id < 0:
+            self.open_summon(channel, "self")
 
     async def send_audio(self, channel: str, path: str) -> bool:
         p = Path(path)

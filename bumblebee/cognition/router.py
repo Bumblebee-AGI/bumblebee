@@ -230,7 +230,7 @@ class CognitionRouter:
         emotional: EmotionalState,
         context: ContextPackage,
     ) -> tuple[RouteKind, ContextPackage]:
-        if inp.platform == "automation":
+        if inp.platform in ("automation", "autonomous"):
             context.reflex_hint = "deliberate"
             return "deliberate", context
         if self.entity.cognition.always_deliberate:

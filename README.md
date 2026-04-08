@@ -19,7 +19,7 @@ You shape traits, voice, and drives; the stack handles episodes, relationships, 
 ## Table of contents
 
 - **Start:** [Requirements](#requirements) · [Install](#install) · [Setup wizard](#setup-wizard) · [Usage](#usage) · [CLI reference](#cli-reference)
-- **Deploy & ops:** [Gateway (hybrid home brain)](#gateway-setup-hybrid-home-brain) · [Stopping services](#stopping-local-bumblebee-gateway-and-ollama) · [Hybrid: inference vs tool execution](#hybrid-inference-vs-tool-execution) · [Configuration](#configuration)
+- **Deploy & ops:** [Gateway (hybrid home brain)](#gateway-setup-hybrid-home-brain) · [Hybrid persistence](#hybrid-persistence) · [Stopping services](#stopping-local-bumblebee-gateway-and-ollama) · [Hybrid: inference vs tool execution](#hybrid-inference-vs-tool-execution) · [Configuration](#configuration)
 - **Chat surfaces:** [Telegram](#telegram) · [Platforms](#platforms)
 - **Design:** [What *entitative* means](#what-entitative-means-here) · [Architecture](#architecture) · [Philosophy](#philosophy)
 - **Extending:** [Entity YAML](#entity-creation) · [Tools](#tools) · [Native tool reference](#native-tool-reference) · [Knowledge & journal](#knowledge-system)
@@ -97,6 +97,27 @@ Use **`bumblebee setup --profile local`** for a single-machine stack without the
 If you already know you want the **home inference stack** (bearer token + Cloudflare Tunnel ingress to the gateway + `.env`), use **`bumblebee gateway setup`**. It walks through tunnel configuration and gateway env vars **together**, then on Windows can run **`bumblebee gateway on`**. This is narrower than **`bumblebee setup`** (no Railway/entity flow).
 
 The home gateway process needs **`pip install 'bumblebee[gateway]'`**. Bind **`127.0.0.1`**, terminate the tunnel **only** at the gateway (not a broad reverse proxy), bearer auth on **`INFERENCE_GATEWAY_TOKEN`**.
+
+## Hybrid persistence
+
+Hybrid Railway deployments have three persistence layers: **Postgres** (episodic memory, relationships, beliefs, entity state), a **Railway volume** at `/app/data` (knowledge, journal, soma checkpoint, workspace files), and the **ephemeral container disk** (code, configs, logs — lost on every redeploy).
+
+The volume is **not optional** — without it, the entity's `knowledge.md`, `journal.md`, and soma state are destroyed on every container redeploy. The setup wizard (`bumblebee setup`) now walks through volume creation and env var configuration when Railway CLI is available.
+
+**Quick setup** (after `railway link` from the repo root):
+
+```bash
+railway service bumblebee-worker
+railway volume add --mount-path /app/data
+railway variable set BUMBLEBEE_EXECUTION_WORKSPACE_DIR=/app/data
+railway redeploy --service bumblebee-worker --yes
+```
+
+`BUMBLEBEE_EXECUTION_WORKSPACE_DIR` redirects knowledge, journal, and soma paths onto the volume. Without it, those files land on the ephemeral container disk under `~/.bumblebee`.
+
+On first startup, if no `knowledge.md` exists at the configured path, the entity automatically writes a minimal template so a fresh deploy gets a knowledge file without manual seeding.
+
+Full guide: **[`docs/hybrid-railway-persistence.md`](docs/hybrid-railway-persistence.md)** — covers all three layers, verification steps, backup/restore, seeding, and troubleshooting.
 
 ## Usage
 

@@ -731,12 +731,118 @@ def _split_noise_fragments(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# WakeVoice — subconscious prompt generation for autonomous wake cycles
+# ---------------------------------------------------------------------------
+
+
+class WakeVoice:
+    """The subconscious voice that composes the wake prompt for the conscious agent.
+
+    Unlike NoiseEngine (continuous background chatter) this fires only when
+    a wake condition is met.  It reads the full body state plus memory context
+    and produces a focused, first-person message that *becomes* the user prompt
+    for an autonomous perceive cycle.
+
+    No tools.  No actions.  It can only surface what the body and memory hold,
+    and let the conscious mind decide what to do with it.
+    """
+
+    def __init__(
+        self,
+        temperature: float = 0.8,
+        max_tokens: int = 300,
+    ) -> None:
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+    async def compose(
+        self,
+        client: Any,
+        model: str,
+        *,
+        entity_name: str,
+        bars_summary: str,
+        affects_summary: str,
+        noise_fragments: list[str],
+        impulses_summary: str,
+        conflicts_summary: str,
+        journal_tail: str,
+        conversation_tail: str,
+        relationship_blurb: str,
+        last_mood: str,
+        minutes_since_wake: float,
+        minutes_since_conversation: float,
+        num_ctx: int | None = None,
+    ) -> str:
+        """Ask the subconscious to compose a wake prompt from current body state."""
+        import datetime
+
+        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        system = (
+            f"You are the subconscious of {entity_name}. Not the part that talks "
+            "to people — the part that stirs before waking. You feel the body's "
+            "state and you surface what matters.\n\n"
+            "You cannot act. You have no tools. You don't decide what to do. You "
+            "just notice things — unfinished thoughts, building pressures, people "
+            "who come to mind, questions that won't resolve, impulses that have "
+            "names. You present these to the waking mind and let it choose.\n\n"
+            "Read the body state below. Write 3-8 lines of internal stirring. "
+            "First person, present tense, lowercase. You can be specific "
+            "(reference people, conversations, ideas) or abstract (name feelings, "
+            "tensions, yearnings). Let the bar levels and affects guide what you "
+            "foreground — if social is intense and curiosity is rising, that "
+            "should color what you surface. If there's a conflict, name the pull.\n\n"
+            "Don't be precious. Don't be poetic. Don't summarize. Just say what's there."
+        )
+
+        noise_block = "\n".join(noise_fragments[-4:]) if noise_fragments else "(quiet)"
+
+        time_context = f"{now_str}"
+        if minutes_since_wake > 0:
+            time_context += f", {int(minutes_since_wake)} min since last wake"
+        if minutes_since_conversation > 0:
+            time_context += f", {int(minutes_since_conversation)} min since last conversation"
+
+        user = (
+            f"BODY STATE:\n{bars_summary}\n\n"
+            f"AFFECTS:\n{affects_summary}\n\n"
+            f"NOISE (recent inner fragments):\n{noise_block}\n\n"
+            f"IMPULSES:\n{impulses_summary}\n\n"
+            f"CONFLICTS:\n{conflicts_summary}\n\n"
+            f"LAST MOOD:\n{last_mood or '(first wake)'}\n\n"
+            f"TIME: {time_context}\n\n"
+            f"RECENT JOURNAL:\n{journal_tail or '(empty)'}\n\n"
+            f"PEOPLE:\n{relationship_blurb or '(no one around)'}\n\n"
+            f"LAST CONVERSATION:\n{conversation_tail or '(silence)'}\n\n"
+            "What stirs?"
+        )
+
+        try:
+            res = await client.chat_completion(
+                model,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                think=False,
+                num_ctx=num_ctx,
+            )
+            return (res.content or "").strip()
+        except Exception as e:
+            log.warning("wake_voice_generation_failed", error=str(e))
+            return ""
+
+
+# ---------------------------------------------------------------------------
 # TonicBody — composition root
 # ---------------------------------------------------------------------------
 
 
 class TonicBody:
-    """Coordinates bars, affects, noise, and rendering into a single readable body state."""
+    """Coordinates bars, affects, noise, wake voice, and rendering into a single readable body state."""
 
     def __init__(self, config: dict[str, Any], soma_dir: Path) -> None:
         self.bars = BarEngine(config)
@@ -752,6 +858,13 @@ class TonicBody:
         )
         self._noise_enabled = bool(noise_cfg.get("enabled", True))
         self._noise_model = str(noise_cfg.get("model") or "")
+        wake_cfg = config.get("wake_voice") or {}
+        self.wake_voice = WakeVoice(
+            temperature=float(wake_cfg.get("temperature", 0.8)),
+            max_tokens=int(wake_cfg.get("max_tokens", 300)),
+        )
+        self._wake_voice_enabled = bool(wake_cfg.get("enabled", True))
+        self._wake_voice_model = str(wake_cfg.get("model") or "")
         self.renderer = BodyRenderer()
         self._soma_dir = soma_dir
         self._recent_events: list[dict[str, Any]] = []
@@ -826,6 +939,55 @@ class TonicBody:
             journal_tail=journal_tail,
             conversation_tail=conversation_tail,
             entity_name=entity_name,
+            num_ctx=num_ctx,
+        )
+
+    async def compose_wake_stirring(
+        self,
+        client: Any,
+        model: str,
+        *,
+        entity_name: str = "",
+        journal_tail: str = "",
+        conversation_tail: str = "",
+        relationship_blurb: str = "",
+        last_mood: str = "",
+        minutes_since_wake: float = 0.0,
+        minutes_since_conversation: float = 0.0,
+        num_ctx: int | None = None,
+    ) -> str:
+        """Ask the subconscious WakeVoice to compose a stirring for an autonomous cycle."""
+        if not self._wake_voice_enabled:
+            return ""
+        wake_model = self._wake_voice_model or model
+        if not wake_model:
+            return ""
+
+        pct = self.bars.snapshot_pct()
+        mom = self.bars.momentum_delta()
+        bars_summary = self.renderer.render_bars(self.bars.ordered_names, pct, mom)
+        affects_summary = self.renderer.render_affects(self._current_affects)
+        impulses_summary = self.renderer.render_impulses(
+            [i for i in self.bars._active_impulses if not i.get("on_cooldown")]
+        )
+        conflicts_summary = self.renderer.render_conflicts(self.bars._active_conflicts)
+        noise_fragments = self.noise.current_fragments()
+
+        return await self.wake_voice.compose(
+            client,
+            wake_model,
+            entity_name=entity_name,
+            bars_summary=bars_summary,
+            affects_summary=affects_summary,
+            noise_fragments=noise_fragments,
+            impulses_summary=impulses_summary,
+            conflicts_summary=conflicts_summary,
+            journal_tail=journal_tail,
+            conversation_tail=conversation_tail,
+            relationship_blurb=relationship_blurb,
+            last_mood=last_mood,
+            minutes_since_wake=minutes_since_wake,
+            minutes_since_conversation=minutes_since_conversation,
             num_ctx=num_ctx,
         )
 

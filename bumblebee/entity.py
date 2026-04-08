@@ -594,6 +594,7 @@ class Entity:
         self.tools.register_decorated(agency_tools.say)
         self.tools.register_decorated(agency_tools.end_turn)
         self.tools.register_decorated(agency_tools.wait)
+        self.tools.register_decorated(agency_tools.observe)
         self.tools.register_decorated(web_tools.search_web)
         self.tools.register_decorated(web_tools.fetch_url)
         self.tools.register_decorated(read_file)
@@ -912,8 +913,10 @@ class Entity:
             reset_tool_runtime(tok)
         parsed = None
         ok = True
+        is_free_tool = spec.name in ("think", "observe")
         if state is not None:
-            state["tool_calls"] = int(state.get("tool_calls") or 0) + 1
+            if not is_free_tool:
+                state["tool_calls"] = int(state.get("tool_calls") or 0) + 1
             state["last_tool_name"] = spec.name
             try:
                 parsed = json.loads(out)
@@ -1661,6 +1664,8 @@ class Entity:
 
     async def _run_agent_loop(self, tc: TurnContext) -> None:
         """Iterate the deliberate agent loop, executing tools and collecting intermediate output."""
+        if tc.inp.platform == "autonomous":
+            tc.tool_state["_message_budget"] = self.config.harness.autonomy.messages_per_cycle
         desktop_session = tc.inp.metadata.get("desktop_session") if isinstance(tc.inp.metadata, dict) else None
         if isinstance(desktop_session, dict):
             session_id = str(desktop_session.get("session_id") or "").strip()
@@ -1846,6 +1851,13 @@ class Entity:
                 )
             except Exception:
                 pass
+        private_thoughts = tc.tool_state.get("private_thoughts")
+        if private_thoughts:
+            for thought_text in private_thoughts[-3:]:
+                try:
+                    await self.journal.write_entry(thought_text, tags=["thought"])
+                except Exception:
+                    pass
         try:
             await self.tonic.save_state_db(tc.db)
         except Exception as e:

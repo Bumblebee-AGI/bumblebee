@@ -164,6 +164,8 @@ def default_soma_config() -> dict[str, Any]:
             "message_sent": {"social": 5, "creative": 2},
             "action": {"curiosity": 4},
             "idle": {"social": -1, "curiosity": 1},
+            "idle_cycle": {"comfort": 5, "tension": -3},
+            "mood_declared": {"comfort": 2},
         },
         "impulses": [
             {"drive": "social", "threshold": 80, "type": "reach_out", "label": "reach_out", "cooldown_minutes": 30, "relief": {"social": -25}},
@@ -181,7 +183,37 @@ def default_soma_config() -> dict[str, Any]:
             "max_tokens": 150,
             "max_fragments": 8,
         },
+        "wake_voice": {
+            "enabled": True,
+            "model": "",
+            "temperature": 0.8,
+            "max_tokens": 300,
+        },
     }
+
+
+@dataclass
+class SummonSettings:
+    enabled: bool = True
+    timeout_seconds: int = 30
+
+
+@dataclass
+class AutonomySettings:
+    """Autonomous wake cycle configuration."""
+
+    enabled: bool = False
+    min_cycle_gap_seconds: int = 600
+    max_cycles_per_hour: int = 4
+    messages_per_cycle: int = 2
+    base_wake_interval_min: int = 20
+    base_wake_interval_max: int = 45
+    silence_threshold_seconds: int = 120
+    impulse_wake: bool = True
+    drive_wake: bool = True
+    conflict_wake: bool = True
+    noise_wake: bool = False
+    summon: SummonSettings = field(default_factory=SummonSettings)
 
 
 def default_tools_config() -> dict[str, Any]:
@@ -239,6 +271,7 @@ class HarnessConfig:
     attachments: AttachmentStorageSettings = field(default_factory=AttachmentStorageSettings)
     tools: dict[str, Any] = field(default_factory=default_tools_config)
     soma: dict[str, Any] = field(default_factory=default_soma_config)
+    autonomy: AutonomySettings = field(default_factory=AutonomySettings)
 
 
 @dataclass
@@ -402,6 +435,11 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
     mem_raw = {**MemoryHarnessSettings().__dict__, **(d.get("memory") or {})}
     tools_raw = _merge_dict(default_tools_config(), d.get("tools") or {})
     soma_raw = _merge_dict(default_soma_config(), d.get("soma") or {})
+    auto_raw = d.get("autonomy") or {}
+    summon_raw = auto_raw.pop("summon", None) or {}
+    autonomy = AutonomySettings(
+        **{**AutonomySettings().__dict__, "summon": SummonSettings(**{**SummonSettings().__dict__, **summon_raw}), **{k: v for k, v in auto_raw.items() if k != "summon"}},
+    )
     return HarnessConfig(
         deployment=DeploymentSettings(
             **{**DeploymentSettings().__dict__, **(d.get("deployment") or {})}
@@ -424,6 +462,7 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
         attachments=AttachmentStorageSettings(**att_raw),
         tools=tools_raw if isinstance(tools_raw, dict) else default_tools_config(),
         soma=soma_raw if isinstance(soma_raw, dict) else default_soma_config(),
+        autonomy=autonomy,
     )
 
 

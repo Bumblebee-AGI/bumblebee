@@ -85,3 +85,15 @@ class Platform(ABC):
     async def clear_remote_session_card(self, channel: str) -> None:
         """Forget any live remote-session card bookkeeping for the channel."""
         return None
+
+    async def fetch_recent_messages(
+        self,
+        channel: str,
+        limit: int = 15,
+    ) -> list[dict[str, Any]]:
+        """Retrieve recent messages from a channel for the observe tool.
+
+        Returns list of dicts with keys: sender, content, timestamp (ISO str).
+        Default implementation returns empty — platforms override as able.
+        """
+        return []

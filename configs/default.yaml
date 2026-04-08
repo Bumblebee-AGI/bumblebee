@@ -130,6 +130,8 @@ soma:
     message_sent: { social: 5, creative: 2 }
     action: { curiosity: 4 }
     idle: { social: -1, curiosity: 1 }
+    idle_cycle: { comfort: 5, tension: -3 }
+    mood_declared: { comfort: 2 }
   impulses:
     - drive: social
       threshold: 80
@@ -159,6 +161,31 @@ soma:
     temperature: 1.1
     max_tokens: 150
     max_fragments: 8
+  # Subconscious wake voice — generates the prompt for autonomous wake cycles.
+  # Fires only when a wake condition is met. Reads the full body state + memory
+  # and composes a first-person stirring that the conscious agent receives on wake.
+  wake_voice:
+    enabled: true
+    model: ""  # empty uses reflex model
+    temperature: 0.8
+    max_tokens: 300
+
+# Autonomous wake cycles — the entity wakes on its own, driven by body state.
+autonomy:
+  enabled: false  # enable when ready to let the entity act unprompted
+  min_cycle_gap_seconds: 600       # minimum time between autonomous cycles
+  max_cycles_per_hour: 4
+  messages_per_cycle: 2            # hard cap on outgoing messages per autonomous cycle
+  base_wake_interval_min: 20       # randomized fallback timer range (minutes)
+  base_wake_interval_max: 45
+  silence_threshold_seconds: 120   # don't wake during active conversation
+  impulse_wake: true               # wake when soma impulses fire
+  drive_wake: true                 # wake when drives cross threshold
+  conflict_wake: true              # wake on active soma conflicts
+  noise_wake: false                # wake on unresolved noise fragments (experimental)
+  summon:
+    enabled: true
+    timeout_seconds: 30
 
 tools:
   shell:

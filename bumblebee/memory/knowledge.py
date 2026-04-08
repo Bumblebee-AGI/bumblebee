@@ -21,6 +21,33 @@ def knowledge_file_path(entity: EntityConfig) -> Path:
     return Path(entity.knowledge_path()).expanduser().resolve()
 
 
+_KNOWLEDGE_TEMPLATE = """\
+## [locked] about yourself
+{entity_name} is an entity running on the Bumblebee harness.
+
+## notes
+(empty — the entity will fill this in as it learns)
+"""
+
+
+def seed_knowledge_if_missing(entity: EntityConfig) -> bool:
+    """Write a minimal knowledge.md template if none exists. Returns True when a file was created."""
+    p = knowledge_file_path(entity)
+    if p.is_file():
+        return False
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(
+            _KNOWLEDGE_TEMPLATE.format(entity_name=entity.name),
+            encoding="utf-8",
+        )
+        log.info("knowledge_seeded", entity=entity.name, path=str(p))
+        return True
+    except OSError as exc:
+        log.warning("knowledge_seed_failed", entity=entity.name, error=str(exc))
+        return False
+
+
 def _is_h2_header(line: str) -> bool:
     s = line.strip()
     if not s.startswith("##"):
