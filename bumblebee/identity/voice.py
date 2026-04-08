@@ -131,6 +131,11 @@ class VoiceController:
     def sanitize_reply(self, text: str) -> str:
         t = strip_stage_directions(text)
         t = _strip_degenerate_repetition(t)
+        vis, cot = gemma.separate_plaintext_chain_of_thought(t)
+        if cot and vis:
+            t = vis
+        elif cot and not vis:
+            t = ""
         while t.startswith("---"):
             t = t[3:].lstrip("\n").lstrip()
         while t.startswith(">"):
