@@ -63,8 +63,9 @@ _GEMMA_LEAK_TAIL = re.compile(
 )
 
 # Informal tool-like tags Gemma sometimes emits as plain text instead of proper tool calls.
+# The closing > is optional -- Gemma often emits <thought\n without closing the bracket.
 _INFORMAL_TOOL_TAGS = re.compile(
-    r"</?(?:thought|think|end_turn|say|wait|tool_call|tool_response)[^>]*>",
+    r"</?(?:thought|think|end_turn|say|wait|tool_call|tool_response)[^>\n]*>?",
     re.IGNORECASE,
 )
 
