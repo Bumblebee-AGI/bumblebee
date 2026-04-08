@@ -133,6 +133,8 @@ class VoiceController:
         t = _strip_degenerate_repetition(t)
         while t.startswith("---"):
             t = t[3:].lstrip("\n").lstrip()
+        while t.startswith(">"):
+            t = t[1:].lstrip()
         return apply_voice_outgoing_substitutions(t, self.entity.personality.voice)
 
     def meta_for_response(
