@@ -67,6 +67,7 @@ from bumblebee.presence.tools.filesystem import (
 from bumblebee.presence.tools import (
     agency as agency_tools,
     browser as browser_tools,
+    send_file as send_file_tools,
     code as code_tools,
     execution_ops as execution_ops_tools,
     imagegen as imagegen_tools,
@@ -597,6 +598,7 @@ class Entity:
         self.tools.register_decorated(search_files)
         self.tools.register_decorated(write_file)
         self.tools.register_decorated(append_file)
+        self.tools.register_decorated(send_file_tools.send_file)
         self.tools.register_decorated(time_tools.get_current_time)
         self.tools.register_decorated(discovery_tools.search_tools)
         self.tools.register_decorated(discovery_tools.describe_tool)

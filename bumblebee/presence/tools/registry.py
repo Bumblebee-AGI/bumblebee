@@ -114,6 +114,9 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "write_file":
         name = Path(str(args.get("path", "file") or "file")).name
         return f"✏️ writing {name}..."
+    if tool_name == "send_file":
+        name = Path(str(args.get("path", "file") or "file")).name
+        return f"📎 sending {name}..."
     if tool_name == "append_file":
         name = Path(str(args.get("path", "file") or "file")).name
         return f"📎 appending to {name}..."
