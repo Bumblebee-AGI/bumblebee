@@ -62,6 +62,12 @@ _GEMMA_LEAK_TAIL = re.compile(
     re.IGNORECASE,
 )
 
+# Informal tool-like tags Gemma sometimes emits as plain text instead of proper tool calls.
+_INFORMAL_TOOL_TAGS = re.compile(
+    r"</?(?:thought|think|end_turn|wait|tool_call|tool_response)[^>]*>",
+    re.IGNORECASE,
+)
+
 
 def strip_leaked_control_tokens(text: str) -> str:
     """Remove Gemma control token literals from strings shown to humans (mangled duplicates, orphans)."""
@@ -81,6 +87,7 @@ def strip_leaked_control_tokens(text: str) -> str:
         if nxt == t:
             break
         t = nxt
+    t = _INFORMAL_TOOL_TAGS.sub("", t).strip()
     return t
 
 
