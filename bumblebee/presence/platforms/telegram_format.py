@@ -121,6 +121,12 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         category="Runtime",
     ),
     TelegramCommandSpec(
+        name="context",
+        summary="Context window usage — tokens consumed and remaining",
+        usage="/context",
+        category="Runtime",
+    ),
+    TelegramCommandSpec(
         name="reset",
         summary="Clear rolling chat turns (keeps SQLite memory)",
         usage="/reset",

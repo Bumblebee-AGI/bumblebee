@@ -208,6 +208,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("tools", self._on_tools_command), group=_g)
         self.app.add_handler(CommandHandler("routines", self._on_routines_command), group=_g)
         self.app.add_handler(CommandHandler("ping", self._on_ping_command), group=_g)
+        self.app.add_handler(CommandHandler("context", self._on_context_command), group=_g)
         self.app.add_handler(CommandHandler("reset", self._on_reset_command), group=_g)
         self.app.add_handler(CommandHandler("session_start", self._on_session_start), group=_g)
         self.app.add_handler(CommandHandler("session_status", self._on_session_status), group=_g)
@@ -1011,6 +1012,57 @@ class TelegramPlatform(Platform):
             return
         _ = context
         await self._reply_html(update, format_ping_html(self._app_version))
+
+    async def _on_context_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        if not await self._check_allowed(update, notify=True):
+            return
+        _ = context
+        ent = self._entity
+        cfg = ent.config
+        max_ctx = int(cfg.cognition.max_context_tokens or cfg.harness.cognition.max_context_tokens)
+        history = getattr(ent, "_history", [])
+        summary = (getattr(ent, "_history_rolling_summary", "") or "").strip()
+
+        history_chars = sum(len(str(m.get("content", ""))) for m in history)
+        summary_chars = len(summary)
+        history_tokens_est = (history_chars + summary_chars) // 4
+
+        soma_body = ent.tonic.render_body() if hasattr(ent, "tonic") else ""
+        soma_tokens_est = len(soma_body) // 4
+
+        sys_prompt_est = int(cfg.cognition.system_prompt_char_limit or 12000) // 4
+        total_est = history_tokens_est + soma_tokens_est + sys_prompt_est
+        remaining_est = max(0, max_ctx - total_est)
+        pct_used = min(100, int(total_est / max_ctx * 100)) if max_ctx > 0 else 0
+
+        bar_width = 20
+        filled = int(bar_width * pct_used / 100)
+        bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
+
+        body = (
+            f"<b>Context window</b>\n\n"
+            f"<code>{bar} {pct_used}%</code>\n\n"
+            f"<b>Budget:</b> {max_ctx:,} tokens\n"
+            f"<b>Estimated used:</b> ~{total_est:,}\n"
+            f"<b>Estimated remaining:</b> ~{remaining_est:,}\n\n"
+            f"<b>Breakdown:</b>\n"
+            f"  System prompt: ~{sys_prompt_est:,} tokens\n"
+            f"  Conversation: ~{history_tokens_est:,} tokens ({len(history)} messages)\n"
+            f"  Body state: ~{soma_tokens_est:,} tokens\n"
+        )
+        if summary:
+            body += f"  Rolling summary: ~{summary_chars // 4:,} tokens\n"
+        body += (
+            f"\n<b>Config:</b>\n"
+            f"  max_context_tokens: {max_ctx:,}\n"
+            f"  deliberate_max_tokens: {int(cfg.cognition.deliberate_max_tokens or cfg.harness.cognition.deliberate_max_tokens):,}\n"
+            f"  reflex_max_tokens: {cfg.harness.cognition.reflex_max_tokens:,}\n"
+            f"  history messages: {len(history)} / {cfg.cognition.rolling_history_max_messages}\n"
+            f"  compression: {'on' if cfg.cognition.history_compression.enabled else 'off'}"
+        )
+        await self._reply_html(update, body)
 
     async def _on_reset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):
