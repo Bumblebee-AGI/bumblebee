@@ -54,6 +54,8 @@ def _build_post_tool_nudge(
     tool_calls: list[ToolCallSpec],
     tool_msgs: list[dict[str, Any]],
     user_text: str,
+    *,
+    already_sent: list[str] | None = None,
 ) -> str:
     """Context-aware nudge referencing what tools ran and what the user asked."""
     if not tool_calls:
@@ -69,16 +71,24 @@ def _build_post_tool_nudge(
         summaries.append(f"  - {tc_spec.name}: {status}")
     tool_block = "\n".join(summaries)
     user_snippet = (user_text or "").strip()[:300]
+
+    sent_block = ""
+    if already_sent:
+        sent_lines = "\n".join(f"  > {m[:120]}" for m in already_sent[-4:])
+        sent_block = f"You already told the user:\n{sent_lines}\nDon't repeat yourself. Continue from where you left off.\n"
+
     multi = len(tool_calls) >= 2
     if multi:
         return (
             f"Same turn. Tool results are ready:\n{tool_block}\n"
+            f"{sent_block}"
             f"The user asked: {user_snippet}\n"
             "Share each finding using say() as a separate short message. "
             "Don't bundle into one wall of text. Then call end_turn."
         )
     return (
         f"Same turn. Tool results are ready:\n{tool_block}\n"
+        f"{sent_block}"
         f"The user asked: {user_snippet}\n"
         "Answer from these results, call another tool if needed, "
         "or state exactly what failed. Do not just acknowledge."
@@ -237,6 +247,7 @@ class DeliberateCognition:
             step_budget=self._agent_step_cap(),
             user_requested_tools="use tools" in (_inp.text or "").lower(),
         )
+        _messages_sent_to_user: list[str] = []
         for step_idx in range(loop_state.step_budget):
             loop_state.step_index = step_idx + 1
             res = await self.client.chat_completion(
@@ -305,10 +316,20 @@ class DeliberateCognition:
                     )
                     return
 
+                for tc in res.tool_calls:
+                    if tc.name == "say":
+                        msg = tc.arguments.get("message", "")
+                        if msg:
+                            _messages_sent_to_user.append(str(msg)[:200])
+                vis = _visible_assistant_text(res)
+                if vis and vis not in ("[thought recorded]", "[turn ended]"):
+                    _messages_sent_to_user.append(vis[:200])
+
                 follow_user = {
                     "role": "user",
                     "content": _build_post_tool_nudge(
                         res.tool_calls, tool_msgs, _inp.text,
+                        already_sent=_messages_sent_to_user if _messages_sent_to_user else None,
                     ),
                 }
                 msgs = msgs + [assistant_msg] + tool_msgs + [follow_user]

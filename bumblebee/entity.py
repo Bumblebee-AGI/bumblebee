@@ -1833,6 +1833,7 @@ class Entity:
                             stream=tc.stream, cli_stream_final=False,
                         )
                         tc.tool_state["_messages_sent"] = msg_count + 1
+                        tc.tool_state.setdefault("_sent_messages", []).append(seg)
                         if tc.inp.platform in ("discord", "telegram"):
                             tc.intermediate_sent = True
                             tc.last_intermediate = seg

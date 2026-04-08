@@ -66,6 +66,7 @@ async def say(message: str) -> str:
                 "for next time. you can still think, observe, or end_turn.]"
             )
         ctx.state["_messages_sent"] = count + 1
+        ctx.state.setdefault("_sent_messages", []).append(text)
     try:
         await platform.send_message(inp.channel, text)
     except Exception as e:
