@@ -344,7 +344,10 @@ class EntityConfig:
         return (self.harness.memory.database_url or "").strip()
 
     def knowledge_path(self) -> str:
-        """Curated knowledge markdown (optional): beside SQLite file, or under ~/.bumblebee when using DATABASE_URL."""
+        """Curated knowledge markdown: persistent volume when available, else beside DB file."""
+        ws = (os.environ.get("BUMBLEBEE_EXECUTION_WORKSPACE_DIR") or "").strip()
+        if ws:
+            return str(Path(ws) / "knowledge.md")
         if self.database_url():
             return _expand("~/.bumblebee/entities/{entity_name}/knowledge.md", self.name)
         return str(Path(self.db_path()).expanduser().parent / "knowledge.md")
@@ -359,6 +362,9 @@ class EntityConfig:
         return self.cognition.ollama_num_ctx()
 
     def journal_path(self) -> str:
+        ws = (os.environ.get("BUMBLEBEE_EXECUTION_WORKSPACE_DIR") or "").strip()
+        if ws:
+            return str(Path(ws) / "journal.md")
         return _expand("~/.bumblebee/entities/{entity_name}/journal.md", self.name)
 
     def skills_dir(self) -> str:
@@ -371,6 +377,9 @@ class EntityConfig:
         return _expand("~/.bumblebee/entities/{entity_name}/self_model.json", self.name)
 
     def soma_dir(self) -> str:
+        ws = (os.environ.get("BUMBLEBEE_EXECUTION_WORKSPACE_DIR") or "").strip()
+        if ws:
+            return str(Path(ws) / "soma")
         return _expand("~/.bumblebee/entities/{entity_name}/soma", self.name)
 
 
