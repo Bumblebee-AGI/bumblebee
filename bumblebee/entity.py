@@ -1126,27 +1126,34 @@ class Entity:
         """Decide whether the shared agent loop is done with this turn."""
         if tool_state.get("_end_turn"):
             return True, None
+        if tool_state.get("_messages_sent", 0) > 0:
+            return True, None
+        agency_only = {"think", "say", "end_turn", "wait"}
+        real_tool_calls = sum(
+            1 for p in (tool_state.get("tool_output_previews") or [])
+            if isinstance(p, dict) and p.get("tool") not in agency_only
+        )
         visible = (reply_text or "").strip()
-        recap = self._gate_tool_recap(tool_state) if loop_state.tool_calls_seen > 0 else ""
+        recap = self._gate_tool_recap(tool_state) if real_tool_calls > 0 else ""
         if not visible:
-            if loop_state.tool_calls_seen > 0 or finish_reason_hint(res):
+            if real_tool_calls > 0 or finish_reason_hint(res):
                 return False, (
                     f"Same turn. You haven't answered yet.\n{recap}\n"
                     "Answer from these results, call another tool, or state the exact failure."
                 )
-            return False, "Same turn. You haven't answered the user yet. Continue."
+            return False, "Same turn. You haven't answered the user yet. Use say() to respond."
         if reply_looks_like_progress_only(visible):
             return False, (
                 f"Same turn. That was progress chatter, not the final answer.\n{recap}\n"
                 "Continue until you can answer from results or state the exact failure."
             )
-        if pro_forma_tool_followup(visible) and loop_state.tool_calls_seen > 0:
+        if pro_forma_tool_followup(visible) and real_tool_calls > 0:
             return False, (
                 f"Same turn. A one-word acknowledgement is not enough.\n{recap}\n"
                 "Answer the user from the tool results or explain the exact failure."
             )
         explicit_grounding = user_explicitly_requests_tool_grounding(inp.text)
-        if explicit_grounding and loop_state.tool_calls_seen <= 0:
+        if explicit_grounding and real_tool_calls <= 0:
             return False, (
                 "Same turn. The user explicitly asked you to use tools. Call the relevant tool now, "
                 "then answer from the result."
@@ -1159,7 +1166,7 @@ class Entity:
                 )
         needs_grounding_judgment = (
             explicit_grounding
-            or loop_state.tool_calls_seen > 0
+            or real_tool_calls > 0
             or loop_state.last_tool_failed
         )
         if needs_grounding_judgment:

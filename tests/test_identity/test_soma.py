@@ -53,9 +53,9 @@ class TestBarEngineInit:
         bars = BarEngine(_default_bar_config())
         pct = bars.snapshot_pct()
         assert pct["social"] == 50
-        assert pct["curiosity"] == 60
+        assert pct["curiosity"] == 50
         assert pct["creative"] == 40
-        assert pct["tension"] == 20
+        assert pct["tension"] == 15
         assert pct["comfort"] == 65
 
     def test_empty_config_produces_no_bars(self):

@@ -109,21 +109,21 @@ soma:
     variables:
       - name: social
         initial: 50
-        decay_rate: -2.0
+        decay_rate: -15.0
         floor: 0
         ceiling: 100
       - name: curiosity
-        initial: 60
-        decay_rate: -1.0
+        initial: 50
+        decay_rate: -10.0
         floor: 0
         ceiling: 100
       - name: creative
         initial: 40
-        decay_rate: -1.5
+        decay_rate: -12.0
         floor: 0
         ceiling: 100
       - name: tension
-        initial: 20
+        initial: 15
         decay_rate: -3.0
         floor: 0
         ceiling: 100
@@ -139,12 +139,12 @@ soma:
     - when: "tension > 70"
       effect: "comfort.decay_rate *= 2.0"
   event_effects:
-    message_received: { social: 8, curiosity: 3 }
-    message_sent: { social: 5, creative: 2 }
-    action: { curiosity: 4 }
+    message_received: { social: 3, curiosity: 1 }
+    message_sent: { social: 2, creative: 1 }
+    action: { curiosity: 2 }
     idle: { social: -0.015, curiosity: 0.01 }
-    idle_cycle: { comfort: 5, tension: -3 }
-    mood_declared: { comfort: 2 }
+    idle_cycle: { comfort: 3, tension: -2 }
+    mood_declared: { comfort: 1 }
   impulses:
     - drive: social
       threshold: 80
