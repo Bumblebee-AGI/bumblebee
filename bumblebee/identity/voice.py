@@ -102,12 +102,35 @@ def apply_voice_outgoing_substitutions(text: str, voice: Mapping[str, Any] | Non
     return t
 
 
+def _strip_degenerate_repetition(text: str, max_repeats: int = 3) -> str:
+    """Detect and truncate degenerate repetition loops (model stuck repeating a phrase)."""
+    if not text or len(text) < 80:
+        return text
+    lines = text.splitlines()
+    if len(lines) < max_repeats + 2:
+        return text
+    seen: dict[str, int] = {}
+    first_degen_idx = -1
+    for i, line in enumerate(lines):
+        key = line.strip().lower().replace("_", " ").replace("-", " ")
+        if not key or len(key) < 3:
+            continue
+        seen[key] = seen.get(key, 0) + 1
+        if seen[key] >= max_repeats and first_degen_idx == -1:
+            first_degen_idx = i - max_repeats + 1
+    if first_degen_idx <= 0:
+        return text
+    truncated = "\n".join(lines[:max(1, first_degen_idx)]).strip()
+    return truncated if truncated else ""
+
+
 class VoiceController:
     def __init__(self, entity: EntityConfig) -> None:
         self.entity = entity
 
     def sanitize_reply(self, text: str) -> str:
         t = strip_stage_directions(text)
+        t = _strip_degenerate_repetition(t)
         return apply_voice_outgoing_substitutions(t, self.entity.personality.voice)
 
     def meta_for_response(
