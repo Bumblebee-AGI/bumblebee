@@ -64,7 +64,13 @@ _GEMMA_LEAK_TAIL = re.compile(
 
 # Informal tool-like tags Gemma sometimes emits as plain text instead of proper tool calls.
 _INFORMAL_TOOL_TAGS = re.compile(
-    r"</?(?:thought|think|end_turn|wait|tool_call|tool_response)[^>]*>",
+    r"</?(?:thought|think|end_turn|say|wait|tool_call|tool_response)[^>]*>",
+    re.IGNORECASE,
+)
+
+# Raw function-call-style leaks: say{message:...}, think{thought:...}, end_turn{...}
+_INFORMAL_TOOL_CALLS = re.compile(
+    r"(?:say|think|end_turn|wait)\s*\{[^}]{0,500}\}",
     re.IGNORECASE,
 )
 
@@ -88,6 +94,7 @@ def strip_leaked_control_tokens(text: str) -> str:
             break
         t = nxt
     t = _INFORMAL_TOOL_TAGS.sub("", t).strip()
+    t = _INFORMAL_TOOL_CALLS.sub("", t).strip()
     return t
 
 
