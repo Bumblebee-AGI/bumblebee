@@ -40,8 +40,8 @@ models:
 cognition:
   thinking_mode: true
   temperature: 0.75
-  reflex_max_tokens: 512
-  deliberate_max_tokens: 2048
+  reflex_max_tokens: 1024
+  deliberate_max_tokens: 4096
   thinking_budget: 4096
   max_context_tokens: 32768
   escalation_threshold: 0.4
