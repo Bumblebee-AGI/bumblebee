@@ -583,7 +583,6 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
     _worker_quiet = (
         "bumblebee.presence.telegram",
         "bumblebee.presence.discord",
-        "bumblebee.cognition.deliberate",
         "bumblebee.inference_gateway",
         "telegram",
         "httpx",

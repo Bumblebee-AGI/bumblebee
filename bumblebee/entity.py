@@ -47,7 +47,7 @@ from bumblebee.memory.beliefs import BeliefStore
 from bumblebee.memory.episodic import EpisodicMemory
 from bumblebee.memory.imprints import ImprintStore
 from bumblebee.memory.journal import Journal
-from bumblebee.memory.knowledge import KnowledgeStore
+from bumblebee.memory.knowledge import KnowledgeStore, seed_knowledge_if_missing
 from bumblebee.memory.narrative import NarrativeMemory, NarrativeSynthesizer
 from bumblebee.memory.procedural import ProceduralMemoryStore
 from bumblebee.memory.projects import ProjectLedger
@@ -253,6 +253,7 @@ class Entity:
         self.evolution = EvolutionEngine(config)
         self.voice_ctl = VoiceController(config)
         self.episodic = EpisodicMemory(config, self.store)
+        seed_knowledge_if_missing(config)
         self.knowledge = KnowledgeStore(config, self.client)
         self.procedural = ProceduralMemoryStore(config, self.client)
         self.projects = ProjectLedger(Path(self.config.projects_path()))
@@ -1539,6 +1540,8 @@ class Entity:
         knowledge_sections = await self.knowledge.query(
             self._recent_conversation_for_knowledge(tc.inp),
         )
+        if knowledge_sections:
+            log.info("knowledge_retrieved", sections=len(knowledge_sections))
         procedural_sections = await self.procedural.query(
             self._recent_conversation_for_knowledge(tc.inp),
             limit=3,
@@ -1594,6 +1597,7 @@ class Entity:
         soma_body = self.tonic.render_body()
         if soma_body:
             preamble_parts.append(f"[Body]\n{soma_body}")
+            log.info("soma_body_injected", body_len=len(soma_body))
         if procedural_sections:
             preamble_parts.append(
                 "[Procedural memory that may help right now]\n" + "\n\n".join(procedural_sections)
