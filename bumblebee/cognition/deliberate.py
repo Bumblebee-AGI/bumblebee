@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
@@ -70,14 +69,13 @@ def _build_post_tool_nudge(
         summaries.append(f"  - {tc_spec.name}: {status}")
     tool_block = "\n".join(summaries)
     user_snippet = (user_text or "").strip()[:300]
-    multi = len(tool_calls) >= 3
+    multi = len(tool_calls) >= 2
     if multi:
         return (
             f"Same turn. Tool results are ready:\n{tool_block}\n"
             f"The user asked: {user_snippet}\n"
-            "You got multiple results. Use say() to share each finding as a separate "
-            "short message — don't bundle everything into one wall of text. Share the "
-            "most interesting result first, then the others. Call end_turn when done."
+            "Share each finding using say() as a separate short message. "
+            "Don't bundle into one wall of text. Then call end_turn."
         )
     return (
         f"Same turn. Tool results are ready:\n{tool_block}\n"
@@ -280,17 +278,11 @@ class DeliberateCognition:
                 }
                 tool_msgs: list[dict[str, Any]] = []
                 tool_failed = False
-
-                async def _safe_exec(spec: ToolCallSpec) -> str:
+                for tc in res.tool_calls:
                     try:
-                        return await tool_executor(spec)
+                        out = await tool_executor(tc)
                     except Exception as e:
-                        return json.dumps({"error": str(e)})
-
-                results = await asyncio.gather(
-                    *[_safe_exec(tc) for tc in res.tool_calls]
-                )
-                for tc, out in zip(res.tool_calls, results):
+                        out = json.dumps({"error": str(e)})
                     tool_failed = tool_failed or _tool_content_failed(out)
                     tool_msgs.append(
                         {
