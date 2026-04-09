@@ -1,0 +1,252 @@
+# Bumblebee harness defaults (tracked — every clone gets this file).
+# Entity-specific overrides go in configs/entities/<name>.yaml
+#
+# Deployment / inference (see .env.example and BUMBLEBEE_* vars)
+# "local" here is the repo default for a fresh clone (Ollama on one machine). Hybrid is selected
+# at runtime when BUMBLEBEE_DEPLOYMENT_MODE=hybrid_railway (e.g. .env after setup, or Railway) —
+# that env value overrides this file (see apply_harness_env_overrides in bumblebee/config.py).
+deployment:
+  mode: local # local | hybrid_railway — overridden by BUMBLEBEE_DEPLOYMENT_MODE when set
+
+inference:
+  provider: "" # local | remote_gateway — empty derives from deployment.mode
+  base_url: "" # tunneled gateway URL in hybrid; empty uses ollama.base_url
+  api_key_env: BUMBLEBEE_INFERENCE_GATEWAY_TOKEN
+  model: ""
+  timeout: 120
+  # Ollama OpenAI /v1/chat/completions: send options.num_ctx from entity cognition.max_context_tokens
+  pass_num_ctx: true
+
+attachments:
+  backend: local_disk # local_disk | object_s3_compat
+  local_dir: "~/.bumblebee/entities/{entity_name}/attachments"
+  endpoint_url_env: BUMBLEBEE_S3_ENDPOINT_URL
+  bucket_env: BUMBLEBEE_S3_BUCKET
+  access_key_env: BUMBLEBEE_S3_ACCESS_KEY
+  secret_key_env: BUMBLEBEE_S3_SECRET_KEY
+  prefix: bumblebee
+
+ollama:
+  base_url: "http://localhost:11434"
+  timeout: 120
+  retry_attempts: 3
+  retry_delay: 2.0
+
+models:
+  reflex: "gemma4:26b"
+  deliberate: "gemma4:26b"
+  embedding: "nomic-embed-text"
+
+cognition:
+  thinking_mode: true
+  temperature: 0.75
+  reflex_max_tokens: 1024
+  deliberate_max_tokens: 16384
+  thinking_budget: 4096
+  max_context_tokens: 32768
+  escalation_threshold: 0.4
+  image_token_budget: 280
+  # Nudge the model when it describes a tool step but returns no tool_calls (multi-step tasks).
+  tool_continuation_rounds: 21
+
+  # History compression and proactive context compaction.
+  # The compaction system fires *before* inference when estimated tokens approach the context
+  # limit, summarizing middle turns while protecting head (first exchange) and tail (recent).
+  # The message-count trim (rolling_history_max_messages on the entity) remains as a safety net.
+  # history_compression:
+  #   enabled: true
+  #   compaction_threshold_ratio: 0.75   # trigger at this fraction of max_context_tokens
+  #   compaction_target_ratio: 0.20      # tail token budget = threshold * this
+  #   compaction_protect_last_n: 12      # minimum protected tail messages
+  #   compaction_protect_first_n: 2      # protected head messages (first exchange)
+  #   compaction_max_passes: 3           # max compression passes per pre-flight
+  #   compaction_flush_to_knowledge: true # extract durable facts to knowledge.md before compacting
+
+identity:
+  emotion_decay_rate: 0.001
+  drive_tick_interval: 120
+  evolution_interval: 100
+  narrative_interval: 500
+
+memory:
+  database_path: "~/.bumblebee/entities/{entity_name}/memory.db"
+  database_url: "" # postgresql://... when set (or use DATABASE_URL); empty = SQLite file above
+  episode_significance_threshold: 0.3
+  consolidation_interval: 7200
+  memory_decay_rate: 0.0001
+  max_recall_results: 10
+  embedding_dimensions: 768
+  narrative_every_n_consolidations: 3
+  imprint_decay_half_life_seconds: 2592000
+  imprint_recall_weight: 0.35
+
+presence:
+  heartbeat_interval: 120
+  initiative_cooldown: 1800
+  typing_speed_base: 30
+  typing_speed_variance: 0.3
+  message_chunk_max: 400
+  chunk_delay: 1.5
+
+logging:
+  level: "INFO"
+  file: "~/.bumblebee/entities/{entity_name}/bumblebee.log"
+  format: "json"
+
+# Optional: Firecrawl (https://firecrawl.dev) — Bearer key in env. When set, preferred for
+# fetch_url (scrape) and search_web (search). Entity YAML can override with top-level ``firecrawl:``.
+firecrawl:
+  api_key_env: "FIRECRAWL_API_KEY"
+  base_url: "https://api.firecrawl.dev/v1"
+  prefer_for_fetch: true
+  prefer_for_search: true
+
+# Tonic body state — continuous internal drives, affects, and impulses.
+# The agent reads its body state each turn; it cannot set it directly.
+soma:
+  enabled: true
+  bars:
+    variables:
+      - name: social
+        initial: 50
+        decay_rate: -15.0
+        floor: 0
+        ceiling: 100
+      - name: curiosity
+        initial: 50
+        decay_rate: -10.0
+        floor: 0
+        ceiling: 100
+      - name: creative
+        initial: 40
+        decay_rate: -12.0
+        floor: 0
+        ceiling: 100
+      - name: tension
+        initial: 15
+        decay_rate: -3.0
+        floor: 0
+        ceiling: 100
+      - name: comfort
+        initial: 65
+        decay_rate: -0.5
+        floor: 0
+        ceiling: 100
+    momentum_window: 6
+  coupling:
+    - when: "social > 80"
+      effect: "curiosity.decay_rate *= 1.5"
+    - when: "tension > 70"
+      effect: "comfort.decay_rate *= 2.0"
+  event_effects:
+    message_received: { social: 3, curiosity: 1 }
+    message_sent: { social: 2, creative: 1 }
+    action: { curiosity: 2 }
+    idle: { social: -0.015, curiosity: 0.01 }
+    idle_cycle: { comfort: 3, tension: -2 }
+    mood_declared: { comfort: 1 }
+  impulses:
+    - drive: social
+      threshold: 80
+      type: reach_out
+      label: reach_out
+      cooldown_minutes: 30
+      relief: { social: -25 }
+    - drive: curiosity
+      threshold: 85
+      type: explore
+      label: explore_something
+      cooldown_minutes: 20
+      relief: { curiosity: -20 }
+  conflicts:
+    - drives: [curiosity, comfort]
+      threshold: 70
+      label: "restless comfort"
+      tension_per_tick: 0.5
+      comfort_per_tick: -0.3
+  affect_cycle_seconds: 180
+  # Generative entropic noise — a small model producing continuous inner voice.
+  # The entity reads this as its own stream of consciousness.
+  noise:
+    enabled: true
+    model: ""  # empty uses reflex model; set to e.g. "gemma3:1b" for a dedicated small noise model
+    cycle_seconds: 60
+    temperature: 1.1
+    max_tokens: 150
+    max_fragments: 8
+  # Subconscious wake voice — generates the prompt for autonomous wake cycles.
+  # Fires only when a wake condition is met. Reads the full body state + memory
+  # and composes a first-person stirring that the conscious agent receives on wake.
+  wake_voice:
+    enabled: true
+    model: ""  # empty uses reflex model
+    temperature: 0.8
+    max_tokens: 300
+
+# Autonomous wake cycles — the entity wakes on its own, driven by body state.
+autonomy:
+  enabled: true
+  min_cycle_gap_seconds: 600       # minimum time between autonomous cycles
+  max_cycles_per_hour: 4
+  messages_per_cycle: 2            # hard cap on outgoing messages per autonomous cycle
+  base_wake_interval_min: 20       # randomized fallback timer range (minutes)
+  base_wake_interval_max: 45
+  silence_threshold_seconds: 120   # don't wake during active conversation
+  impulse_wake: true               # wake when soma impulses fire
+  drive_wake: true                 # wake when drives cross threshold
+  conflict_wake: true              # wake on active soma conflicts
+  noise_wake: false                # wake on unresolved noise fragments (experimental)
+  summon:
+    enabled: true
+    timeout_seconds: 30
+
+tools:
+  shell:
+    enabled: true
+    # No bare "format" substring — it matched inside words like "information" (see shell tool).
+    deny: ["rm -rf /", "sudo rm", "shutdown", "reboot", "mkfs", "dd if="]
+    timeout: 30
+  browser:
+    enabled: false
+  remote_session:
+    enabled: false
+    refresh_seconds: 2.5
+    max_idle_seconds: 900
+    require_operator: true
+  code:
+    enabled: true
+    timeout: 30
+  imagegen:
+    enabled: false
+    backend: "fal" # fal | local
+    fal_api_key_env: "FAL_API_KEY"
+    local_url: "" # e.g. http://127.0.0.1:7860/sdapi/v1/txt2img
+  voice:
+    enabled: true
+    voice_id: "en-US-GuyNeural"
+  youtube:
+    enabled: true
+  reddit:
+    enabled: true
+  pdf:
+    enabled: true
+  reminders:
+    enabled: true
+  messaging:
+    enabled: true
+  wikipedia:
+    enabled: true
+  weather:
+    enabled: true
+  news:
+    enabled: true
+  system:
+    enabled: true
+  execution:
+    base_url: "" # Optional remote hands endpoint
+    token_env: "BUMBLEBEE_EXECUTION_RPC_TOKEN"
+    timeout: 45
+    allow_local: false
+    require_railway: false
+    workspace_dir: ""
+    rpc_path: "/rpc"

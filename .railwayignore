@@ -1,0 +1,6 @@
+# Excluded from `railway up` archives (in addition to .gitignore). See https://docs.railway.com/cli/up
+# Reproducible deploys: image uses committed canary.example.yaml, not a personal canary.yaml.
+configs/entities/canary.yaml
+bumbleweb/
+bumbleAR/
+bee-model/

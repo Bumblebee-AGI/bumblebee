@@ -1,0 +1,117 @@
+"""Agency primitives — tools that give the model control over its own cognitive process.
+
+These tools shape the model's internal flow: private reasoning, explicit turn
+termination, temporal patience, and mid-turn communication. The model decides
+when to think, when to speak, when to wait, and when it's done.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from bumblebee.presence.tools.registry import tool
+from bumblebee.presence.tools.runtime import get_tool_runtime
+
+
+@tool(
+    "think",
+    "Record a private thought. Nobody sees this. Use it to reason about what "
+    "you observe, plan your next move, or process before acting. Think generously.",
+)
+async def think(thought: str) -> str:
+    ctx = get_tool_runtime()
+    if ctx.state is not None:
+        ctx.state.setdefault("private_thoughts", []).append(thought)
+    return "[thought recorded]"
+
+
+@tool(
+    "end_turn",
+    "You're done with this turn. Optionally record your mood and a parting "
+    "thought. Call this when you've said what you want to say — or decided "
+    "not to say anything. Silence is valid.",
+)
+async def end_turn(mood: str = "", thought: str = "") -> str:
+    ctx = get_tool_runtime()
+    if ctx.state is not None:
+        ctx.state["_end_turn"] = True
+        if mood:
+            ctx.state["_end_turn_mood"] = mood
+        if thought:
+            ctx.state["_end_turn_thought"] = thought
+    return "[turn ended]"
+
+
+@tool(
+    "say",
+    "Send a message to the user right now, mid-turn. The turn continues after. "
+    "Use when you have something to share before you're done working — don't "
+    "bundle everything into one response. Talk while you work, like a person texting.",
+)
+async def say(message: str) -> str:
+    ctx = get_tool_runtime()
+    platform = ctx.platform
+    inp = ctx.inp
+    if platform is None or inp is None:
+        return "[no active chat to send to]"
+    text = (message or "").strip()
+    if not text:
+        return "[empty message, not sent]"
+    if ctx.state is not None:
+        count = ctx.state.get("_messages_sent", 0)
+        budget = ctx.state.get("_message_budget", 6)
+        if count >= budget:
+            return (
+                f"[you've already sent {count} messages this cycle — save it "
+                "for next time. you can still think, observe, or end_turn.]"
+            )
+        ctx.state["_messages_sent"] = count + 1
+        ctx.state.setdefault("_sent_messages", []).append(text)
+    try:
+        await platform.send_message(inp.channel, text)
+    except Exception as e:
+        return f"[send failed: {e}]"
+    return f"[sent]"
+
+
+@tool(
+    "wait",
+    "Pause before your next action. Use after sending a message or running a "
+    "command when you want to let things settle before deciding your next move.",
+)
+async def wait(seconds: int = 3) -> str:
+    secs = max(1, min(15, int(seconds)))
+    await asyncio.sleep(secs)
+    return f"[waited {secs}s]"
+
+
+@tool(
+    "observe",
+    "Look at recent messages in a channel you're present in. Use to see "
+    "what people have been talking about. Defaults to the last active channel.",
+)
+async def observe(channel: str = "", limit: int = 15) -> str:
+    ctx = get_tool_runtime()
+    platform = ctx.platform
+    if platform is None:
+        return "[no active platform to observe]"
+    ch = (channel or "").strip()
+    if not ch and ctx.inp:
+        ch = ctx.inp.channel
+    if not ch:
+        return "[no channel specified]"
+    lim = max(1, min(50, int(limit)))
+    try:
+        msgs = await platform.fetch_recent_messages(ch, lim)
+    except Exception as e:
+        return f"[observe failed: {e}]"
+    if not msgs:
+        return f"[{ch} — no recent messages]"
+    lines: list[str] = []
+    for m in msgs:
+        ts = m.get("timestamp", "")
+        who = m.get("sender", "?")
+        content = m.get("content", "")
+        prefix = f"[{ts}] " if ts else ""
+        lines.append(f"{prefix}{who}: {content}")
+    return f"[{ch} — {len(msgs)} messages]\n" + "\n".join(lines)

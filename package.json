@@ -1,0 +1,8 @@
+{
+  "name": "bumblebee-ops",
+  "private": true,
+  "scripts": {
+    "deploy:canary": "railway up -d -s bumblebee-worker && railway up -d -s bumblebee-api",
+    "ollama:reset": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\ollama-reset.ps1"
+  }
+}
