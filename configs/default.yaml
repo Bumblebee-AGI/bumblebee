@@ -47,7 +47,7 @@ cognition:
   escalation_threshold: 0.4
   image_token_budget: 280
   # Nudge the model when it describes a tool step but returns no tool_calls (multi-step tasks).
-  tool_continuation_rounds: 4
+  tool_continuation_rounds: 21
 
   # History compression and proactive context compaction.
   # The compaction system fires *before* inference when estimated tokens approach the context

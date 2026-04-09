@@ -188,7 +188,7 @@ class DeliberateCognition:
 
     def _agent_step_cap(self) -> int:
         """Primary bounded loop budget for a single user turn."""
-        return max(3, min(16, 4 + self._tool_continuation_rounds_cap()))
+        return max(3, min(25, 4 + self._tool_continuation_rounds_cap()))
 
     def _build_messages(
         self,
