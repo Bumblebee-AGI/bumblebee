@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
+import os
+import shutil
 from pathlib import Path
+
+
+def find_cloudflared_executable() -> str | None:
+    """Resolve ``cloudflared`` on PATH, with a WinGet shim path on Windows."""
+    w = shutil.which("cloudflared")
+    if w:
+        return w
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            link = Path(local) / "Microsoft" / "WinGet" / "Links" / "cloudflared.exe"
+            if link.is_file():
+                return str(link)
+    return None
 
 
 def default_cloudflared_config_path() -> Path:

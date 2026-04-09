@@ -1,7 +1,8 @@
 """Interactive harness setup: ``bumblebee setup``.
 
 Default path: **hybrid** — Ollama + inference gateway + Cloudflare tunnel at home, body on Railway.
-Can run ``gateway.ps1`` (Windows), ``npm run ollama:reset``, and ``railway`` CLI when available.
+Can run ``gateway.ps1`` (Windows), ``npm run ollama:reset``, automated ``cloudflared`` tunnel + DNS,
+and ``railway`` CLI when available.
 """
 
 from __future__ import annotations
@@ -15,7 +16,10 @@ import click
 
 from bumblebee.config import project_configs_dir
 from bumblebee.genesis import creator
-from bumblebee.utils.cloudflared_config import default_cloudflared_config_path, tunnel_https_url_from_config
+from bumblebee.utils.cloudflared_config import default_cloudflared_config_path
+from bumblebee.utils.gateway_health_probe import print_gateway_health_block
+from bumblebee.utils.setup_preflight import collect_preflight, format_preflight_text
+from bumblebee.utils.tunnel_url_prompt import prompt_public_gateway_base_url
 from bumblebee.utils.dotenv_merge import merge_dotenv_keys
 from bumblebee.utils.gateway_script import gateway_script_available, run_gateway_script
 
@@ -92,6 +96,53 @@ def _railway_ok() -> bool:
         timeout=60,
     )
     return r.returncode == 0
+
+
+def _railway_linked() -> bool:
+    b = _railway_bin()
+    if not b:
+        return False
+    r = subprocess.run(
+        [b, "status"],
+        cwd=_repo_root(),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if r.returncode != 0:
+        return False
+    return "Project:" in (r.stdout or "")
+
+
+def _ensure_railway_cli_ready() -> bool:
+    """Ensure logged in and linked when the user wants Railway automation."""
+    b = _railway_bin()
+    if not b:
+        return False
+    if not _railway_ok():
+        click.echo("Railway CLI needs a login.")
+        if click.confirm("Run `railway login` now?", default=True):
+            subprocess.call([b, "login"], cwd=_repo_root())
+        if not _railway_ok():
+            click.echo("Still not logged in — run `railway login` from the repo root and retry.", err=True)
+            return False
+    if not _railway_linked():
+        click.echo(
+            "This folder must be linked to your Railway project (the one with bumblebee-worker / bumblebee-api)."
+        )
+        if click.confirm("Run `railway link` now?", default=True):
+            subprocess.call([b, "link"], cwd=_repo_root())
+        if not _railway_linked():
+            click.echo(
+                "Still not linked — from repo root: `railway link` and pick the project with your services.",
+                err=True,
+            )
+            return False
+    return True
+
+
+DEFAULT_GATEWAY_HOST = "127.0.0.1"
+DEFAULT_GATEWAY_PORT = 8010
 
 
 def _railway_set(service: str, pairs: list[str]) -> bool:
@@ -219,11 +270,19 @@ def _run_local_flow(env_path: Path) -> None:
     click.echo(f"\nUpdated {env_path} ({len(updates)} key(s))")
 
 
-def _run_hybrid_env_and_home(env_path: Path) -> tuple[str, str]:
+def _run_hybrid_env_and_home(
+    env_path: Path,
+    *,
+    gateway_host: str,
+    gateway_port: int,
+    skip_tunnel_bootstrap: bool,
+) -> tuple[str, str]:
     click.echo("\n--- Hybrid (home brain + Railway body) ---\n")
     click.echo(
-        "Brain: Ollama + bumblebee inference gateway + Cloudflare Tunnel on this machine.\n"
-        "Body: bumblebee worker (+ API) on Railway with Postgres. Use Railway CLI from repo root (railway variable, railway up).\n"
+        "What you are setting up:\n"
+        "  • Home: Ollama + the inference gateway + a Cloudflare Tunnel (your GPU stays here).\n"
+        "  • Cloud: Railway worker + API + Postgres (always-on presence and storage).\n"
+        "The tunnel must expose only the gateway URL — not a generic reverse proxy.\n"
     )
 
     updates: dict[str, str] = {}
@@ -240,18 +299,13 @@ def _run_hybrid_env_and_home(env_path: Path) -> tuple[str, str]:
     updates["BUMBLEBEE_INFERENCE_GATEWAY_TOKEN"] = tok
 
     cf_path = default_cloudflared_config_path()
-    detected = tunnel_https_url_from_config(cf_path)
-    if detected:
-        click.echo(f"Tunnel URL from {cf_path}: {detected}")
-        if click.confirm("Use this as BUMBLEBEE_INFERENCE_BASE_URL?", default=True):
-            base_url = detected
-        else:
-            base_url = _prompt_line("Public gateway URL (https://…, no path)").rstrip("/")
-    else:
-        click.echo(f"No hostname found in {cf_path} (configure ingress hostname: there).")
-        base_url = _prompt_line("Public gateway URL (https://…, tunnel → gateway only)").rstrip("/")
-    if not base_url:
-        raise click.ClickException("BUMBLEBEE_INFERENCE_BASE_URL is required for hybrid mode.")
+    base_url = prompt_public_gateway_base_url(
+        cf_path=cf_path,
+        gateway_host=gateway_host,
+        gateway_port=gateway_port,
+        skip_tunnel_bootstrap=skip_tunnel_bootstrap,
+        required=True,
+    )
     updates["BUMBLEBEE_DEPLOYMENT_MODE"] = "hybrid_railway"
     updates["BUMBLEBEE_INFERENCE_PROVIDER"] = "remote_gateway"
     updates["BUMBLEBEE_INFERENCE_BASE_URL"] = base_url
@@ -293,10 +347,11 @@ def _run_hybrid_env_and_home(env_path: Path) -> tuple[str, str]:
         if rc != 0:
             click.echo(f"npm run ollama:reset exited {rc} (install Node/npm or run scripts/ollama-reset.ps1).", err=True)
 
+    gateway_rc: int | None = None
     if gateway_script_available():
         if click.confirm("Start home stack now (ollama + inference gateway + cloudflared)?", default=True):
-            rc = run_gateway_script("on")
-            if rc != 0:
+            gateway_rc = run_gateway_script("on")
+            if gateway_rc != 0:
                 click.echo(
                     "gateway on failed — fix cloudflared config (~/.cloudflared/config.yml) and run: bumblebee gateway on",
                     err=True,
@@ -308,6 +363,19 @@ def _run_hybrid_env_and_home(env_path: Path) -> tuple[str, str]:
             "\nHome stack: on Windows run `bumblebee gateway on` after cloudflared is configured.\n"
             "Else: ollama serve, then INFERENCE_GATEWAY_TOKEN=… py -m bumblebee.inference_gateway, "
             "then cloudflared tunnel run …\n"
+        )
+
+    if click.confirm(
+        "Run gateway health checks (GET /health with your token — local"
+        + (" + tunnel" if base_url else "")
+        + ")?",
+        default=(gateway_rc is None or gateway_rc == 0),
+    ):
+        print_gateway_health_block(
+            gateway_host=gateway_host,
+            gateway_port=gateway_port,
+            public_base_url=base_url,
+            token=tok,
         )
 
     return base_url, tok
@@ -420,9 +488,7 @@ def _run_hybrid_railway(entity_choice: str | None, base_url: str, tok: str) -> N
 
     railway_ok = False
     if _railway_bin():
-        if not _railway_ok():
-            click.echo("Run `railway login` and `railway link` (or init) from the repo root, then re-run setup.", err=True)
-        else:
+        if _ensure_railway_cli_ready():
             railway_ok = True
             if click.confirm("Apply hybrid variables on Railway (bumblebee-worker + bumblebee-api)?", default=True):
                 db_tok = "${{" + pg_service + ".DATABASE_URL}}"
@@ -460,7 +526,10 @@ def _run_hybrid_railway(entity_choice: str | None, base_url: str, tok: str) -> N
     if railway_ok:
         _run_hybrid_volume_setup()
 
-    if railway_ok and click.confirm("Deploy worker + API now (railway up)?", default=False):
+    if railway_ok and click.confirm(
+        "Deploy worker + API now (`railway up` — publishes to your Railway project)?",
+        default=True,
+    ):
         rb = _railway_bin()
         if rb:
             subprocess.call([rb, "up", "-s", "bumblebee-worker", "-d"], cwd=_repo_root())
@@ -471,7 +540,13 @@ def _run_hybrid_railway(entity_choice: str | None, base_url: str, tok: str) -> N
     click.echo("Inference: tunnel must end at the gateway only; see .env.example and bumblebee/inference_gateway/.")
 
 
-def run_setup_wizard(*, profile: str = "ask") -> None:
+def run_setup_wizard(
+    *,
+    profile: str = "ask",
+    gateway_host: str = DEFAULT_GATEWAY_HOST,
+    gateway_port: int = DEFAULT_GATEWAY_PORT,
+    skip_tunnel_bootstrap: bool = False,
+) -> None:
     root = _repo_root()
     env_path = _dotenv_path()
 
@@ -479,7 +554,9 @@ def run_setup_wizard(*, profile: str = "ask") -> None:
     click.echo(click.style("Bumblebee setup", fg="cyan", bold=True))
     click.echo(
         "Default path: hybrid — Ollama + gateway + Cloudflare tunnel at home, worker on Railway.\n"
-        "Reference: .env.example, configs/default.yaml\n"
+        "This wizard can create the tunnel + DNS + config when `cloudflared` is installed, "
+        "and push env vars / deploy via the Railway CLI when you are logged in and linked.\n"
+        "Reference: README.md (Hybrid deployment), .env.example, configs/default.yaml\n"
     )
     click.echo(f"Repo: {root}")
     click.echo(f".env: {env_path}\n")
@@ -503,7 +580,17 @@ def run_setup_wizard(*, profile: str = "ask") -> None:
     hybrid_base: str | None = None
     hybrid_tok: str | None = None
     if p == "hybrid":
-        hybrid_base, hybrid_tok = _run_hybrid_env_and_home(env_path)
+        click.echo(click.style("\nReadiness (fix any ✗ before continuing)\n", fg="cyan", bold=True))
+        click.echo(format_preflight_text(collect_preflight(repo_root=root)))
+        click.echo("")
+        gh = gateway_host.strip() or DEFAULT_GATEWAY_HOST
+        gp = gateway_port if gateway_port > 0 else DEFAULT_GATEWAY_PORT
+        hybrid_base, hybrid_tok = _run_hybrid_env_and_home(
+            env_path,
+            gateway_host=gh,
+            gateway_port=gp,
+            skip_tunnel_bootstrap=skip_tunnel_bootstrap,
+        )
     elif p == "local":
         _run_local_flow(env_path)
     else:

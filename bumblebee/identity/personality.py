@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from bumblebee.models import EmotionalState
 from bumblebee.utils.clock import time_context_block
@@ -302,7 +302,7 @@ class PersonalityEngine:
         )
         try:
             res = await client.chat_completion(
-                self.entity.harness.models.deliberate,
+                self.entity.effective_deliberate_model(),
                 [
                     {
                         "role": "system",

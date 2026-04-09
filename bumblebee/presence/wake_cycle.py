@@ -14,6 +14,12 @@ from typing import Any
 
 import structlog
 
+from bumblebee.cognition.poker_grounding import compose_grounded_poker_disposition
+from bumblebee.cognition.poker_prompts import (
+    load_poker_deck,
+    resolve_deck_path,
+    select_poker_prompt,
+)
 from bumblebee.config import AutonomySettings, EntityConfig
 from bumblebee.identity.desire import infer_desires
 from bumblebee.identity.drives import Drive
@@ -146,16 +152,26 @@ class WakeCycleEngine:
         )
 
         try:
-            stirring = await self._compose_stirring(entity, tonic, previous_wake_at=previous_wake_at)
-            context = self._build_context(entity, tonic, stirring, reason)
+            stirring, poker_disposition = await self._compose_stirring(
+                entity, tonic, previous_wake_at=previous_wake_at
+            )
+            context = self._build_context(
+                entity, tonic, stirring, reason, poker_disposition=poker_disposition
+            )
             await self._run_perceive(entity, context)
         except Exception as e:
             log.exception("autonomous_cycle_failed", error=str(e))
         finally:
             self._running = False
 
-    async def _compose_stirring(self, entity: Any, tonic: Any, *, previous_wake_at: float) -> str:
-        """Ask the subconscious WakeVoice to compose the wake prompt."""
+    async def _compose_stirring(
+        self, entity: Any, tonic: Any, *, previous_wake_at: float
+    ) -> tuple[str, str | None]:
+        """Compose wake stirring and optional poker disposition (internal prompt)."""
+        pp = self.cfg.harness.autonomy.poker_prompts
+        poker_disposition: str | None = None
+        replace_voice = bool(pp.enabled) and str(pp.mode or "").strip().lower() == "replace_wake_voice"
+
         journal_tail = ""
         if hasattr(entity, "journal") and entity.journal.path.is_file():
             try:
@@ -185,16 +201,61 @@ class WakeCycleEngine:
         except Exception:
             pass
 
+        reflex_model = (
+            entity.config.cognition.reflex_model
+            or entity.config.cognition.deliberate_model
+        )
+        num_ctx = entity.config.effective_ollama_num_ctx()
+
+        poker_seed: str | None = None
+        if pp.enabled:
+            path = resolve_deck_path(entity.config.name, pp.prompts_path)
+            deck = load_poker_deck(path)
+            picked = select_poker_prompt(
+                deck,
+                time_weighted=bool(pp.time_weighted),
+            )
+            if picked:
+                poker_seed = picked.text
+                log.info(
+                    "poker_prompt_selected",
+                    energy=picked.energy,
+                    mode=pp.mode,
+                    deck=str(path),
+                )
+
+        if poker_seed:
+            if bool(pp.ground_with_gen):
+                gm = (pp.grounding_model or "").strip() or reflex_model
+                client = getattr(entity, "client", None)
+                if gm and client:
+                    poker_disposition = await compose_grounded_poker_disposition(
+                        client,
+                        gm,
+                        tonic,
+                        seed=poker_seed,
+                        entity_name=entity.config.name,
+                        journal_tail=journal_tail,
+                        conversation_tail=conv_tail.strip(),
+                        relationship_blurb=relationship_blurb,
+                        temperature=float(pp.grounding_temperature),
+                        max_tokens=int(pp.grounding_max_tokens),
+                        num_ctx=num_ctx,
+                    )
+                    log.info("poker_prompt_grounded", used_gen=True, model=gm)
+                else:
+                    poker_disposition = poker_seed
+            else:
+                poker_disposition = poker_seed
+
+        if replace_voice and poker_disposition:
+            return poker_disposition, None
+
         last_mood = ""
         lc = getattr(entity, "_last_conversation", {}) or {}
         now = time.time()
         minutes_since_wake = (now - previous_wake_at) / 60.0 if previous_wake_at > 0 else 0.0
         minutes_since_conversation = (now - float(lc.get("at", 0))) / 60.0 if lc.get("at") else 0.0
-
-        reflex_model = (
-            entity.config.cognition.reflex_model
-            or entity.config.cognition.deliberate_model
-        )
 
         stirring = await tonic.compose_wake_stirring(
             entity.client,
@@ -206,13 +267,22 @@ class WakeCycleEngine:
             last_mood=last_mood,
             minutes_since_wake=minutes_since_wake,
             minutes_since_conversation=minutes_since_conversation,
-            num_ctx=entity.config.effective_ollama_num_ctx(),
+            num_ctx=num_ctx,
         )
 
         if not stirring:
             stirring = "(the subconscious is quiet — nothing specific stirs)"
 
-        return stirring
+        if replace_voice and not poker_disposition:
+            log.warning(
+                "poker_prompt_replace_mode_no_prompt",
+                deck=str(resolve_deck_path(entity.config.name, pp.prompts_path)),
+            )
+
+        if poker_disposition and not replace_voice:
+            return stirring, poker_disposition
+
+        return stirring, None
 
     def _build_context(
         self,
@@ -220,8 +290,10 @@ class WakeCycleEngine:
         tonic: Any,
         stirring: str,
         reason: str,
+        *,
+        poker_disposition: str | None = None,
     ) -> str:
-        """Assemble the full autonomous context around the WakeVoice stirring."""
+        """Assemble the full autonomous context around optional poker + WakeVoice stirring."""
         import datetime
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
@@ -235,17 +307,44 @@ class WakeCycleEngine:
         parts = [
             f"[AUTONOMOUS WAKE — {now_str}, reason: {reason}]",
             "",
-            "[Your subconscious stirring]",
-            stirring,
-            "",
-            f"[World]",
-            f"Platforms you're present on: {channels_str}",
-            "",
-            "[Top desire pressures]",
-            self._render_desire_block(),
-            "",
-            "You just woke up. Your body woke you — read what stirs and decide what to do.",
         ]
+        if poker_disposition:
+            pp = self.cfg.harness.autonomy.poker_prompts
+            gen_note = ""
+            if bool(pp.ground_with_gen):
+                gen_note = (
+                    " It may have been woven from a deck impulse plus your generative noise (GEN) and recent "
+                    "experience — taste, not a script."
+                )
+            parts.extend(
+                [
+                    "[Internal disposition — private; not shown to users. Treat it as loose permission to exercise "
+                    "agency: explore the real digital world with your tools when it resonates — find, do, research, "
+                    "build, reach out, learn, try something new."
+                    + gen_note
+                    + " Turn it into a concrete step only when it fits; otherwise ignore or only use think().]",
+                    poker_disposition,
+                    "",
+                ]
+            )
+        parts.extend(
+            [
+                "[Your subconscious stirring]",
+                stirring,
+                "",
+                f"[World]",
+            ]
+        )
+        parts.extend(
+            [
+                f"Platforms you're present on: {channels_str}",
+                "",
+                "[Top desire pressures]",
+                self._render_desire_block(),
+                "",
+                "You just woke up. Your body woke you — read what stirs and decide what to do.",
+            ]
+        )
 
         if self._auto.allow_tool_calls_on_wake:
             parts.extend(

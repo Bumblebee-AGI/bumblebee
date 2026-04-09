@@ -413,7 +413,7 @@ class TestKnowledgeFlush:
 class TestConfigWiring:
     def test_defaults(self):
         hc = HistoryCompressionSettings()
-        assert hc.compaction_threshold_ratio == 0.50
+        assert hc.compaction_threshold_ratio == 0.75
         assert hc.compaction_target_ratio == 0.20
         assert hc.compaction_protect_last_n == 12
         assert hc.compaction_protect_first_n == 2

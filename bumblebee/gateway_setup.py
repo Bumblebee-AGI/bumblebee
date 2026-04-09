@@ -6,9 +6,7 @@ gateway (Ollama stays behind the gateway). Windows can finish with ``bumblebee g
 
 from __future__ import annotations
 
-import os
 import secrets
-import shutil
 from pathlib import Path
 
 import click
@@ -16,7 +14,9 @@ import click
 from bumblebee.config import project_configs_dir
 from bumblebee.utils.cloudflared_config import default_cloudflared_config_path, tunnel_https_url_from_config
 from bumblebee.utils.dotenv_merge import merge_dotenv_keys
+from bumblebee.utils.gateway_health_probe import print_gateway_health_block
 from bumblebee.utils.gateway_script import gateway_script_available, run_gateway_script
+from bumblebee.utils.tunnel_url_prompt import prompt_public_gateway_base_url
 
 
 def _repo_root() -> Path:
@@ -61,19 +61,6 @@ def _prompt_line(prompt: str, *, default: str | None = None) -> str:
     return (v or "").strip()
 
 
-def _cloudflared_executable() -> str | None:
-    w = shutil.which("cloudflared")
-    if w:
-        return w
-    if os.name == "nt":
-        local = os.environ.get("LOCALAPPDATA", "")
-        if local:
-            link = Path(local) / "Microsoft" / "WinGet" / "Links" / "cloudflared.exe"
-            if link.is_file():
-                return str(link)
-    return None
-
-
 def _print_config_template(*, tunnel_name: str, gateway_host: str, gateway_port: int) -> None:
     svc = f"http://{gateway_host}:{gateway_port}"
     click.echo("")
@@ -107,6 +94,7 @@ def run_gateway_setup_wizard(
     cloudflared_config: str,
     gateway_host: str,
     gateway_port: int,
+    skip_tunnel_bootstrap: bool = False,
 ) -> None:
     root = _repo_root()
     env_path = _dotenv_path()
@@ -150,30 +138,19 @@ def run_gateway_setup_wizard(
     if not tok:
         raise click.ClickException("A gateway token is required.")
 
-    click.echo(click.style("— Step 2 — Cloudflare Tunnel (while the token above is in mind)", fg="green"))
+    click.echo(click.style("— Step 2 — Cloudflare Tunnel (public HTTPS → gateway)", fg="green"))
     click.echo(
-        "On this machine:\n"
-        "  1) Install cloudflared (e.g. Windows: winget install Cloudflare.cloudflared).\n"
-        "  2) cloudflared tunnel login\n"
-        f"  3) cloudflared tunnel create {tunnel_name}\n"
-        "  4) Route DNS to the tunnel (dashboard or `cloudflared tunnel route dns …`).\n"
-        "  5) Edit config so ingress sends your public hostname to the gateway URL only.\n"
+        "Same automation as `bumblebee setup` hybrid: optional `cloudflared tunnel` + DNS + config.yml.\n"
+        "Manual template below only if you skip automation and have no config yet.\n"
     )
-    exe = _cloudflared_executable()
-    if exe:
-        click.echo(f"cloudflared found: {exe}")
-    else:
-        click.echo(
-            click.style("cloudflared not found on PATH.", fg="yellow")
-            + " Install it, then re-run this wizard or continue manually.\n"
-        )
-
-    if cf_path.is_file():
-        click.echo(f"Config exists: {cf_path}")
-        detected = tunnel_https_url_from_config(cf_path)
-        if detected:
-            click.echo(f"Detected tunnel URL: {detected}")
-    else:
+    base_url = prompt_public_gateway_base_url(
+        cf_path=cf_path,
+        gateway_host=gateway_host,
+        gateway_port=gateway_port,
+        skip_tunnel_bootstrap=skip_tunnel_bootstrap,
+        required=False,
+    )
+    if not base_url and not cf_path.is_file():
         click.echo(click.style(f"Config missing: {cf_path}", fg="yellow"))
         _print_config_template(
             tunnel_name=tunnel_name,
@@ -184,8 +161,7 @@ def run_gateway_setup_wizard(
             "When the file exists, `bumblebee gateway on` runs:\n"
             f'  cloudflared tunnel run {tunnel_name}\n'
         )
-
-    if click.confirm("Show the config template again?", default=False):
+    if click.confirm("Show the manual config template again?", default=False):
         _print_config_template(
             tunnel_name=tunnel_name,
             gateway_host=gateway_host,
@@ -202,18 +178,10 @@ def run_gateway_setup_wizard(
     ollama = ollama.rstrip("/")
 
     click.echo(click.style("— Step 4 — Write .env", fg="green"))
-    detected = tunnel_https_url_from_config(cf_path) if cf_path.is_file() else ""
-    if detected:
-        click.echo(f"From config: {detected}")
-        if click.confirm("Use as BUMBLEBEE_INFERENCE_BASE_URL?", default=True):
-            base_url = detected
-        else:
-            base_url = _prompt_line("Public tunnel URL (https://…, no path)").rstrip("/")
-    else:
-        base_url = _prompt_line(
-            "Public tunnel URL (https://…, no path) — set after DNS/config is ready",
-            default="",
-        ).rstrip("/")
+    if not base_url and cf_path.is_file():
+        detected = tunnel_https_url_from_config(cf_path)
+        if detected and click.confirm(f"Use tunnel URL from config as BUMBLEBEE_INFERENCE_BASE_URL? ({detected})", default=True):
+            base_url = detected.rstrip("/")
 
     updates: dict[str, str] = {
         "INFERENCE_GATEWAY_TOKEN": tok,
@@ -286,4 +254,12 @@ def run_gateway_setup_wizard(
     if base_url:
         click.echo("Verify through the tunnel (after cloudflared is up):")
         click.echo(f'  curl -sS -H "Authorization: Bearer <token>" {base_url}/health\n')
-    click.echo("Hybrid: .env.example + configs/default.yaml (deployment / inference).\n")
+    click.echo("Hybrid: README.md (Hybrid deployment), .env.example, configs/default.yaml.\n")
+
+    if click.confirm("Run gateway health checks now?", default=True):
+        print_gateway_health_block(
+            gateway_host=gateway_host,
+            gateway_port=gateway_port,
+            public_base_url=base_url,
+            token=tok,
+        )

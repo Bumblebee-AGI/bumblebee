@@ -16,6 +16,7 @@ from bumblebee.identity.soma import (
     BodyRenderer,
     NoiseEngine,
     TonicBody,
+    _EBB_TIER_ORDER,
     _bar_glyphs,
     _felt_level,
     _momentum_arrow,
@@ -693,3 +694,55 @@ class TestTonicBodyNoise:
         client = _MockNoiseClient("the silence has a texture to it\n\ncuriosity pulling sideways")
         await body.maybe_tick_noise(client, "small-model", entity_name="canary")
         assert len(body.noise.current_fragments()) == 2
+
+
+# ---------------------------------------------------------------------------
+# Soma ebb — salience-tiered body rendering
+# ---------------------------------------------------------------------------
+
+
+class TestSomaEbb:
+    def test_compute_salience_bounded(self):
+        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+        assert 0.0 <= body.compute_salience() <= 1.0
+
+    def test_resolve_presentation_autonomous_floors_quiet(self):
+        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+        tier = body.resolve_presentation(salience=0.05, route="deliberate", platform="autonomous")
+        assert _EBB_TIER_ORDER[tier] >= _EBB_TIER_ORDER["normal"]
+
+    def test_resolve_presentation_reflex_softens_vs_deliberate(self):
+        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+        for name in body.bars.ordered_names:
+            body.bars._values[name] = 95.0
+        body.bars._clamp_all()
+        sal = body.compute_salience()
+        d = body.resolve_presentation(salience=sal, route="deliberate", platform="cli")
+        r = body.resolve_presentation(salience=sal, route="reflex", platform="cli")
+        assert _EBB_TIER_ORDER[d] >= _EBB_TIER_ORDER[r]
+
+    def test_render_quiet_compact_bars_and_noise_cap(self):
+        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+        body.noise._fragments.clear()
+        for i in range(5):
+            body.noise._fragments.append(f"fragment {i}")
+        out = body.render_body(presentation="quiet")
+        assert " · " in out.split("## Affects")[0]
+        noise_block = out.split("## Noise\n")[1].split("\n\n##")[0]
+        assert noise_block.count("\n") == 0
+        assert "fragment 4" in noise_block
+
+    def test_ebb_disabled_always_full_layout(self):
+        cfg = _default_bar_config()
+        cfg["ebb"] = {"enabled": False}
+        body = TonicBody(cfg, Path("/tmp/soma-test"))
+        full = body.render_body(presentation="quiet")
+        bars_block = full.split("## Bars\n")[1].split("\n\n##")[0]
+        assert bars_block.count("\n") >= 4
+
+    def test_should_skip_post_turn_noise_returns_bool(self):
+        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+        assert isinstance(
+            body.should_skip_post_turn_noise(route="deliberate", platform="cli"),
+            bool,
+        )

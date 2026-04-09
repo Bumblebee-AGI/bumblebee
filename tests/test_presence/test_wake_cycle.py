@@ -23,6 +23,22 @@ def test_build_context_mentions_tool_venture_when_enabled() -> None:
     assert "Use any relevant tools" in text
 
 
+def test_build_context_includes_internal_disposition_when_poker_set() -> None:
+    eng = _engine(allow_tools=True)
+    text = eng._build_context(
+        _entity(),
+        tonic=None,
+        stirring="stir",
+        reason="timer",
+        poker_disposition="notice the loose end",
+    )
+    assert "[Internal disposition" in text
+    assert "loose permission" in text
+    assert "generative noise (GEN)" in text
+    assert "notice the loose end" in text
+    assert "[Your subconscious stirring]" in text
+
+
 def test_build_context_constrains_tools_when_disabled() -> None:
     eng = _engine(allow_tools=False)
     text = eng._build_context(_entity(), tonic=None, stirring="stir", reason="timer")

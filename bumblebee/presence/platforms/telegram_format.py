@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import html
+import os
+import re
 import time
+from pathlib import Path
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -293,6 +296,69 @@ def format_commands_page(
     return "\n".join(lines), page, total
 
 
+_STATUS_RULE = "\u2500" * 22
+
+
+def _status_section(title: str, lines: list[str]) -> str:
+    """Telegram HTML block: bold title, rule, bullet rows."""
+    body = "\n".join(f"• {line}" for line in lines)
+    return f"<b>{html.escape(title)}</b>\n{_STATUS_RULE}\n{body}"
+
+
+def _extract_bars_section_markdown(full_md: str) -> str:
+    """Return markdown under ``## Bars`` until the next ``## `` heading."""
+    if "## Bars" not in full_md:
+        return ""
+    start = full_md.find("## Bars") + len("## Bars")
+    chunk = full_md[start:].lstrip("\n\r")
+    m = re.search(r"^## ", chunk, flags=re.MULTILINE)
+    if m:
+        chunk = chunk[: m.start()]
+    return chunk.strip()
+
+
+def _status_body_md_section(entity: "Entity") -> str:
+    """Bars text from ``body.md`` (or live tonic render) plus local vs hybrid + host context."""
+    cfg = entity.config
+    body_path = Path(cfg.soma_dir()) / "body.md"
+    md_text = ""
+    from_file = False
+    try:
+        if body_path.is_file():
+            md_text = body_path.read_text(encoding="utf-8")
+            from_file = True
+    except OSError:
+        pass
+    if not md_text.strip():
+        try:
+            md_text = entity.tonic.render_body()
+        except Exception:
+            md_text = ""
+
+    bars_raw = _extract_bars_section_markdown(md_text) if md_text else ""
+    if not bars_raw.strip():
+        bars_raw = "(empty — no ## Bars section)"
+
+    mode = (cfg.harness.deployment.mode or "local").strip().lower()
+    deploy = "hybrid" if mode == "hybrid_railway" else "local"
+    on_railway = bool((os.environ.get("RAILWAY_ENVIRONMENT") or "").strip())
+    host = "Railway" if on_railway else "local host"
+    src_note = "read from disk" if from_file else "live render (not yet flushed to disk)"
+    path_disp = str(body_path)
+    if len(path_disp) > 64:
+        path_disp = "…" + path_disp[-60:]
+
+    prov = (
+        f"Deployment <code>{html.escape(deploy)}</code> · host <code>{html.escape(host)}</code> · "
+        f"{html.escape(src_note)} · <code>{html.escape(path_disp)}</code>"
+    )
+
+    return (
+        f"<b>Bars (body.md)</b>\n{_STATUS_RULE}\n"
+        f"• {prov}\n<pre>{html.escape(bars_raw)}</pre>"
+    )
+
+
 async def build_status_html(entity: "Entity", app_version: str) -> str:
     async with entity.store.session() as db:
         n_ep = await entity.store.count_episodes(db)
@@ -363,47 +429,81 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
         people_count=n_people,
     )
     en = html.escape(snap.entity_name)
-    return (
-        f"🐝 <b>{en}</b> · v{html.escape(app_version)}\n\n"
-        f"<b>Architecture</b>\n"
-        f"  SOMA: <code>online</code> · {len(bar_names)} bars · {affects_count} affects · {noise_count} noise fragments\n"
-        f"  Somatic appraisal: <code>{'enabled' if appraisal_enabled else 'disabled'}</code>\n"
-        f"  GEN: <code>{'enabled' if gen_enabled else 'disabled'}</code> · {html.escape(gen_cadence)} · "
-        f"temp {gen_temp:.2f} · max_tokens {gen_max_tokens}\n"
-        f"  GEN model: <code>{html.escape(gen_model_effective)}</code>\n\n"
-        f"<b>State</b>\n"
-        f"  Dominant bar: {html.escape(top_bar)}\n"
-        f"  Legacy mood bridge: {html.escape(snap.mood_label)}\n"
-        f"  Legacy drive bridge: {html.escape(snap.drive_line)}\n"
-        f"  Active conflicts: {active_conflicts}\n"
-        f"  Active impulses: {active_impulses}\n"
-        f"  Awake: {html.escape(snap.awake_summary)}\n\n"
-        f"<b>Autonomy & wake</b>\n"
-        f"  Autonomy: <code>{'enabled' if auto.enabled else 'disabled'}</code>\n"
-        f"  Wake signals: impulse={auto.impulse_wake}, drive={auto.drive_wake}, conflict={auto.conflict_wake}, "
-        f"noise={auto.noise_wake}, desire={auto.desire_wake}\n"
-        f"  Desire threshold: {auto.desire_wake_threshold:.2f} · max desires: {auto.max_desires_considered}\n"
-        f"  Tool calls on wake: {'yes' if auto.allow_tool_calls_on_wake else 'no'}\n\n"
-
-        f"<b>Memory</b>\n"
-        f"  {snap.episode_count} episodes\n"
-        f"  {snap.people_count} relationships\n"
-        f"  {n_telegram_routes} telegram route(s)\n\n"
-        f"<b>Cognition</b>\n"
-        f"  History compression: <code>{'enabled' if hc.enabled else 'disabled'}</code>\n"
-        f"  Compression threshold: {hc.compaction_threshold_ratio:.2f} · target: {hc.compaction_target_ratio:.2f}\n"
-        f"  Rolling messages cap: {cfg.cognition.rolling_history_max_messages}\n\n"
-        f"<b>Memory pipeline</b>\n"
-        f"  Distillation: <code>{'enabled' if dist.enabled else 'disabled'}</code> · cycle {int(dist.cycle_seconds)}s\n"
-        f"  Daemon/automations loop: <code>{'running' if daemon_running else 'inactive'}</code>\n"
-        f"  State hydration: {'ready' if state_hydrated else 'pending'} · SOMA DB restore: "
-        f"{'done' if soma_db_restored else 'pending'}\n\n"
-
-        f"<b>Runtime</b>\n"
-        f"  Model: <code>{html.escape(snap.reflex_model)}</code>\n"
-        f"  Context: {snap.max_context_tokens // 1000}k tokens\n"
-        f"  Tools: {snap.tool_count} active"
+    wake_tf = (
+        f"impulse=<code>{auto.impulse_wake}</code>, drive=<code>{auto.drive_wake}</code>, "
+        f"conflict=<code>{auto.conflict_wake}</code>, noise=<code>{auto.noise_wake}</code>, "
+        f"desire=<code>{auto.desire_wake}</code>"
     )
+    hydrate = "ready" if state_hydrated else "pending"
+    soma_restore = "done" if soma_db_restored else "pending"
+    sections = [
+        _status_section(
+            "Architecture",
+            [
+                f"SOMA <code>online</code> · {len(bar_names)} bars · {affects_count} affects · "
+                f"{noise_count} noise fragments",
+                f"Somatic appraisal <code>{'enabled' if appraisal_enabled else 'disabled'}</code>",
+                f"GEN <code>{'enabled' if gen_enabled else 'disabled'}</code> · {html.escape(gen_cadence)} · "
+                f"temp {gen_temp:.2f} · max_tokens {gen_max_tokens}",
+                f"GEN model <code>{html.escape(gen_model_effective)}</code>",
+            ],
+        ),
+        _status_body_md_section(entity),
+        _status_section(
+            "State",
+            [
+                f"Dominant bar — {html.escape(top_bar)}",
+                f"Mood (legacy bridge) — {html.escape(snap.mood_label)}",
+                f"Drive (legacy bridge) — {html.escape(snap.drive_line)}",
+                f"Active conflicts — {active_conflicts} · impulses — {active_impulses}",
+                f"Awake — {html.escape(snap.awake_summary)}",
+            ],
+        ),
+        _status_section(
+            "Autonomy & wake",
+            [
+                f"Autonomy <code>{'enabled' if auto.enabled else 'disabled'}</code>",
+                f"Wake signals — {wake_tf}",
+                f"Desire threshold {auto.desire_wake_threshold:.2f} · max desires {auto.max_desires_considered}",
+                "Tool calls on wake — "
+                f"<code>{'yes' if auto.allow_tool_calls_on_wake else 'no'}</code>",
+            ],
+        ),
+        _status_section(
+            "Memory",
+            [
+                f"{snap.episode_count} episodes",
+                f"{snap.people_count} relationships",
+                f"{n_telegram_routes} telegram route(s)",
+            ],
+        ),
+        _status_section(
+            "Cognition",
+            [
+                f"History compression <code>{'enabled' if hc.enabled else 'disabled'}</code>",
+                f"Compression threshold {hc.compaction_threshold_ratio:.2f} · target {hc.compaction_target_ratio:.2f}",
+                f"Rolling messages cap {cfg.cognition.rolling_history_max_messages}",
+            ],
+        ),
+        _status_section(
+            "Memory pipeline",
+            [
+                f"Distillation <code>{'enabled' if dist.enabled else 'disabled'}</code> · cycle {int(dist.cycle_seconds)}s",
+                f"Daemon / automations <code>{'running' if daemon_running else 'inactive'}</code>",
+                f"State hydration <code>{hydrate}</code> · SOMA DB restore <code>{soma_restore}</code>",
+            ],
+        ),
+        _status_section(
+            "Runtime",
+            [
+                f"Model <code>{html.escape(snap.reflex_model)}</code>",
+                f"Context window {snap.max_context_tokens // 1000}k tokens",
+                f"Tools — {snap.tool_count} active",
+            ],
+        ),
+    ]
+    header = f"🐝 <b>{en}</b> · <code>v{html.escape(app_version)}</code>"
+    return f"{header}\n\n" + "\n\n".join(sections)
 
 
 def format_memories_html(entity_name: str, summaries: list[str]) -> str:

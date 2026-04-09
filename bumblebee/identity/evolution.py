@@ -84,7 +84,7 @@ class EvolutionEngine:
         raw_json: dict[str, Any] = {}
         try:
             res = await client.chat_completion(
-                self.entity.harness.models.deliberate,
+                self.entity.effective_deliberate_model(),
                 [
                     {
                         "role": "system",

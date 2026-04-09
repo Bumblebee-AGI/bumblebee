@@ -667,6 +667,7 @@ class Entity:
         if self._tool_enabled("journal", True):
             self.tools.register_decorated(journal_tools.read_journal)
             self.tools.register_decorated(journal_tools.write_journal)
+            self.tools.register_decorated(journal_tools.send_journal_file)
         if self._tool_enabled("system", True):
             self.tools.register_decorated(system_info_tools.get_system_info)
             self.tools.register_decorated(repo_update_tools.update_bumblebee_from_upstream)
@@ -1828,6 +1829,14 @@ class Entity:
     async def _tick_noise_post_turn(self, tc: TurnContext) -> None:
         """Regenerate noise fragments after a turn so GEN stays current during active conversation."""
         try:
+            soma_cfg = self.config.harness.soma
+            if isinstance(soma_cfg, dict) and soma_cfg.get("enabled", True):
+                if self.tonic.should_skip_post_turn_noise(
+                    route=tc.route,
+                    platform=tc.inp.platform,
+                ):
+                    log.debug("post_turn_noise_skipped_ebb_quiet")
+                    return
             reflex_model = (
                 self.config.cognition.reflex_model
                 or self.config.cognition.deliberate_model
@@ -2051,10 +2060,24 @@ class Entity:
 
         # --- context preamble: volatile per-turn context ---
         preamble_parts: list[str] = []
-        soma_body = self.tonic.render_body()
+        soma_body = ""
+        soma_cfg = self.config.harness.soma
+        if isinstance(soma_cfg, dict) and soma_cfg.get("enabled", True):
+            salience = self.tonic.compute_salience()
+            presentation = self.tonic.resolve_presentation(
+                salience=salience,
+                route=tc.route,
+                platform=tc.inp.platform,
+            )
+            soma_body = self.tonic.render_body(presentation=presentation)
+            log.info(
+                "soma_body_injected",
+                body_len=len(soma_body),
+                soma_presentation=presentation,
+                soma_salience=round(salience, 4),
+            )
         if soma_body:
             preamble_parts.append(f"[Body]\n{soma_body}")
-            log.info("soma_body_injected", body_len=len(soma_body))
         if procedural_sections:
             preamble_parts.append(
                 "[Procedural memory that may help right now]\n" + "\n\n".join(procedural_sections)
@@ -2152,7 +2175,7 @@ class Entity:
             tc.inp,
             tc.sys_prompt,
             self._messages_for_model(tc.user_msg),
-            tools=self.tools.openai_tools(),
+            tools=self.tools.openai_tools() if self.config.cognition.use_api_tools else None,
             tool_executor=_tool_with_activity,
             inference_profile=inference_profile,
             final_checker=_final_checker,

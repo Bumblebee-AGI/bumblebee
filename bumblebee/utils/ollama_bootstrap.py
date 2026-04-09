@@ -162,7 +162,6 @@ def _required_model_names(ec: EntityConfig) -> list[str]:
     for m in (
         ec.cognition.reflex_model,
         ec.cognition.deliberate_model,
-        ec.harness.models.deliberate,
         ec.harness.models.embedding,
     ):
         if m and m not in seen:

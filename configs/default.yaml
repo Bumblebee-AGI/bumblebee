@@ -41,9 +41,9 @@ cognition:
   thinking_mode: true
   temperature: 0.75
   reflex_max_tokens: 1024
-  deliberate_max_tokens: 16384
+  deliberate_max_tokens: 32768
   thinking_budget: 4096
-  max_context_tokens: 32768
+  max_context_tokens: 65536
   escalation_threshold: 0.4
   image_token_budget: 280
   # Nudge the model when it describes a tool step but returns no tool_calls (multi-step tasks).
@@ -191,6 +191,23 @@ soma:
     model: ""  # empty uses reflex model
     temperature: 0.8
     max_tokens: 300
+  # Ebb — scale how much body + GEN appears in the prompt (continuous state, bursty salience).
+  ebb:
+    enabled: true
+    weights:
+      bar_deviation: 0.38
+      conflict: 0.22
+      impulse: 0.18
+      affect_load: 0.12
+      noise_fill: 0.10
+    quiet_below: 0.30      # salience below this → quiet tier (minimal body/GEN in prompt)
+    high_above: 0.58       # salience at or above → full body layout
+    reflex_salience_scale: 0.75   # reflex routes feel quieter before tier mapping
+    autonomous_minimum: normal    # floor for autonomous/automation turns: quiet | normal | high
+    quiet_max_noise_lines: 1
+    normal_max_noise_lines: 3
+    high_max_noise_lines: 4       # 0 = default to 4
+    skip_post_turn_noise_when_quiet: true   # skip GEN tick after turn when tier is quiet
 
 # Autonomous wake cycles — the entity wakes on its own, driven by body state.
 autonomy:
@@ -209,6 +226,17 @@ autonomy:
   desire_wake_threshold: 0.72      # 0..1 urgency threshold for desire-triggered wake
   max_desires_considered: 3        # how many top desire pressures to surface in wake context
   allow_tool_calls_on_wake: true   # if true, wake cycles may use tools to explore/act
+  # Optional internal disposition prompts — large bundled deck in configs/poker_prompts/default.yaml
+  poker_prompts:
+    enabled: false
+    time_weighted: true
+    mode: blend              # blend | replace_wake_voice (latter skips LLM wake stirring)
+    prompts_path: ""        # empty = bundled default; or e.g. poker_prompts/custom.yaml under configs/
+    # Fuse deck seed with GEN (noise) + soma context — emergent nudge, not a fixed script
+    ground_with_gen: true
+    grounding_model: ""      # empty = reflex model
+    grounding_temperature: 0.72
+    grounding_max_tokens: 300
   summon:
     enabled: true
     timeout_seconds: 30

@@ -65,7 +65,7 @@ class NarrativeSynthesizer:
         beliefs_payload: list[dict[str, Any]],
         traits: dict[str, float],
     ) -> Optional[str]:
-        model = self.entity.harness.models.deliberate
+        model = self.entity.effective_deliberate_model()
         prev = await self._mem.latest_row_full(conn)
         prev_story = prev[2] if prev else ""
 

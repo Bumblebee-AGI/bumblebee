@@ -18,7 +18,10 @@ from bumblebee.presence.tools.execution_rpc import (
 @tool(
     "send_file",
     "Send a file from your workspace to the user as an attachment in the current "
-    "chat. Works on Telegram and Discord. The user receives the file as a download.",
+    "chat (Telegram/Discord download). Use this when they ask to send, attach, or upload a file "
+    "(e.g. 'send me journal.md', 'give me knowledge.md'). Path is relative to workspace root "
+    "(e.g. journal.md, knowledge.md, soma/soma-state.json). Do not use read_file alone for that—"
+    "send_file delivers the file.",
 )
 async def send_file(path: str, message: str = "") -> str:
     ctx = require_tool_runtime()

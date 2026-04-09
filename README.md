@@ -82,10 +82,11 @@ A continuous internal-experience engine independent of conversation, implemented
 
 - **Bar engine** — quantitative drive bars with natural decay, momentum, inter-bar coupling (`when`/`effect` DSL), impulses, and conflicts. Bars tick on a configurable cadence whether or not the entity is in conversation.
 - **Affect engine** — periodically derives felt affects from a vocabulary of ~50 textures via an LLM pass against current bar state and recent context.
-- **Generative Entropic Noise (GEN)** — a second model (or the reflex model at high temperature) produces raw associative thought fragments between turns, giving the entity a continuous stream of consciousness. Configurable cycle time, temperature, and fragment budget.
+- **Generative Entropic Noise (GEN)** — a second model (or the reflex model at high temperature) produces raw associative thought fragments between turns, giving the entity a continuous stream of consciousness. Configurable cycle time, temperature, and fragment budget. Those fragments are also the raw material for **optional poker grounding** on autonomous wake: when `autonomy.poker_prompts.ground_with_gen` is enabled, a short reflex pass weaves a deck seed together with GEN, soma events, and recent memory context so the wake disposition is anchored in what the entity is actually living (see **Presence → Autonomous wake**).
 - **Wake voice** — subconscious stirring that generates prompts for autonomous wake cycles; the entity can initiate conversation on its own when internal state warrants it.
+- **Ebb** (`soma.ebb`) — salience-based scaling of how much **body + GEN** is injected into each **perceive** prompt. Bars, affects, conflicts, impulses, and GEN keep updating in the background; a 0–1 **salience** score (weighted blend of deviation from resting bar values, active conflict/impulse intensity, affect load, and GEN buffer fill) maps to **quiet**, **normal**, or **high** presentation. Quiet tiers use compact drive lines and fewer noise fragments; high matches the full markdown layout. **Reflex** turns multiply salience by `reflex_salience_scale` so routine replies stay lighter. **Autonomous** and **automation** platforms apply `autonomous_minimum` (default **normal**) so internal wake cycles are not stuck in whisper mode. The on-disk `body.md` flush and operator-facing renders still use the full layout. With `skip_post_turn_noise_when_quiet: true`, GEN is not regenerated after a turn when the tier is quiet, so the subconscious does not constantly shout during calm chat. Set `ebb.enabled: false` to always inject the full body block (legacy behavior). Defaults live in `configs/default.yaml`.
 
-The entity reads a rendered body-state summary each turn. It sees its own drives, affects, and noise — but cannot set bar values directly. That separation is deliberate: the body provides signal the mind interprets, not commands it executes.
+The entity reads a rendered body-state summary each turn (tier chosen as above when ebb is enabled). It sees its own drives, affects, and noise — but cannot set bar values directly. That separation is deliberate: the body provides signal the mind interprets, not commands it executes.
 
 ### Identity
 
@@ -117,7 +118,8 @@ Storage backends: **SQLite** by default (local file per entity), **Postgres** wh
 ### Presence
 
 - **Daemon** — APScheduler-based heartbeat that ticks soma bars, refreshes affects and noise, runs memory consolidation, checks wake-cycle triggers, and refreshes MCP server connections.
-- **Wake cycles** — autonomous conversation initiation triggered by impulse, drive threshold, internal conflict, noise salience, or timer. The wake voice generates a first-person stirring prompt; the entity then runs a full perceive cycle against it.
+- **Autonomous wake** — when `autonomy.enabled` is true and silence/rate limits allow, the daemon runs a full `perceive` cycle without an external user message. Triggers include soma impulses, drives over threshold, active conflicts, synthesized desire pressure, optional noise salience, and a randomized timer between `base_wake_interval_min` and `base_wake_interval_max`. Context includes the wake reason, platform channels, top desire pressures, and **wake voice** (`soma.wake_voice`): an LLM-composed first-person stirring from body state + memory tails.
+- **Poker prompts** (optional, `autonomy.poker_prompts`) — a YAML **deck of loose seeds** in `configs/poker_prompts/` (bundled `default.yaml`, or your own via `prompts_path`). Seeds bias the cycle toward real-world agency: explore, research, build, message, learn, try something new — always as **taste**, not scripted homework. One line is selected per wake (**time-of-day weighted** across `low` / `medium` / `high` energy). With **`ground_with_gen: true`** (default when poker is enabled in config), `bumblebee/cognition/poker_grounding.py` runs a short reflex call that **braids that seed with GEN fragments, recent soma events, journal tail, last conversation, and relationship blurbs**, so the internal disposition emerges from perception instead of the static file alone. **`mode: blend`** keeps wake voice and the disposition block; **`replace_wake_voice`** skips the wake-voice LLM and uses only the (optionally grounded) disposition. Set `poker_prompts.enabled: true` in harness YAML to turn this on.
 - **Initiative engine** — proactive messaging when drives cross thresholds (non-autonomy path).
 - **Embodiment** — message chunking, typing simulation, and platform-native delivery pacing.
 - **Automations** — cron-style routines with emergence (the entity can create its own scheduled routines). Automations fire as synthetic `Input` with `platform="automation"`.
@@ -161,7 +163,7 @@ cognition:
   always_deliberate: true
   thinking_mode: false
   temperature: 0.75
-  max_context_tokens: 16384
+  max_context_tokens: 32768
 
 presence:
   tool_activity: true
@@ -309,9 +311,9 @@ cognition:
   thinking_mode: true
   temperature: 0.75
   reflex_max_tokens: 1024
-  deliberate_max_tokens: 16384
+  deliberate_max_tokens: 32768
   thinking_budget: 4096
-  max_context_tokens: 32768
+  max_context_tokens: 65536
   escalation_threshold: 0.4
   tool_continuation_rounds: 21
 
@@ -323,7 +325,7 @@ memory:
 soma:
   noise:
     enabled: true
-    cycle_seconds: 60
+    cycle_seconds: 90
     temperature: 1.1
     max_tokens: 150
     max_fragments: 8
@@ -331,13 +333,41 @@ soma:
     enabled: true
     temperature: 0.8
     max_tokens: 300
+  ebb:
+    enabled: true
+    # Weights for salience (bar deviation, conflict, impulse, affect load, noise fill) — see configs/default.yaml
+    quiet_below: 0.30              # below → quiet tier in prompt
+    high_above: 0.58               # at/above → full bars + noise cap
+    reflex_salience_scale: 0.75
+    autonomous_minimum: normal     # quiet | normal | high — floor for autonomous/automation turns
+    quiet_max_noise_lines: 1
+    normal_max_noise_lines: 3
+    high_max_noise_lines: 4
+    skip_post_turn_noise_when_quiet: true
 
 autonomy:
   enabled: true
-  wake_on_impulse: true
-  wake_on_drive: true
-  wake_on_conflict: true
-  wake_on_noise: true
+  min_cycle_gap_seconds: 600
+  max_cycles_per_hour: 4
+  base_wake_interval_min: 20
+  base_wake_interval_max: 45
+  silence_threshold_seconds: 120
+  impulse_wake: true
+  drive_wake: true
+  conflict_wake: true
+  noise_wake: false
+  desire_wake: true
+  desire_wake_threshold: 0.72
+  allow_tool_calls_on_wake: true
+  poker_prompts:
+    enabled: false          # set true to use deck + optional GEN grounding
+    time_weighted: true
+    mode: blend              # blend | replace_wake_voice
+    prompts_path: ""         # default: configs/poker_prompts/default.yaml
+    ground_with_gen: true
+    grounding_model: ""
+    grounding_temperature: 0.72
+    grounding_max_tokens: 300
 ```
 
 ### Environment
@@ -391,7 +421,7 @@ Gemma 4 uses Mixture-of-Experts — active parameters per token are lower than t
 
 ```
 bumblebee/
-├── cognition/         # perceive pipeline, routing, agent loop, compaction, senses, inner voice
+├── cognition/         # perceive pipeline, routing, agent loop, compaction, senses, inner voice, poker grounding
 ├── identity/          # personality, drives, emotions, evolution, soma (tonic body), voice
 ├── memory/            # episodic, relational, beliefs, imprints, narrative, consolidation, knowledge, journal
 ├── presence/          # daemon, wake cycles, initiative, embodiment, platforms, automations
@@ -408,6 +438,7 @@ bumblebee/
 └── main.py            # CLI entry point
 configs/
 ├── default.yaml       # harness defaults
+├── poker_prompts/     # optional autonomous wake seed decks (YAML)
 └── entities/          # per-entity YAML overrides
 ```
 

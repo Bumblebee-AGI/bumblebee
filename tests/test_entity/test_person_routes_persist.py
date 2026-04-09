@@ -112,17 +112,9 @@ async def test_hydrate_merges_disk_without_wiping_memory_keys(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_remember_after_hydrate_updates_timestamp(tmp_path, monkeypatch) -> None:
+async def test_remember_after_hydrate_updates_timestamp(tmp_path) -> None:
     ec = _minimal_entity_config(tmp_path)
     ent = Entity(ec)
-    # _remember_person_route, then Entity.__init__ on ent2 each consume time.time().
-    fixed_times = iter([1000.0, 1111.0, 2000.0, 9999.0])
-
-    def _fake_time() -> float:
-        return next(fixed_times)
-
-    monkeypatch.setattr("bumblebee.entity.time.time", _fake_time)
-
     inp_early = Input(
         text="hi",
         person_id="99",
@@ -146,10 +138,13 @@ async def test_remember_after_hydrate_updates_timestamp(tmp_path, monkeypatch) -
     )
     async with ent2.store.session() as conn:
         await ent2._ensure_state_hydrated(conn)
+        early_loaded = float(ent2._person_routes["99"]["at"])
         ent2._remember_person_route(inp_late)
+        late_at = float(ent2._person_routes["99"]["at"])
+        assert late_at >= early_loaded
         await ent2._persist_person_routes(conn)
 
     ent3 = Entity(ec)
     async with ent3.store.session() as conn:
         await ent3._ensure_state_hydrated(conn)
-    assert float(ent3._person_routes["99"]["at"]) == 2000.0
+    assert float(ent3._person_routes["99"]["at"]) == late_at

@@ -1,5 +1,3 @@
-import time
-
 import pytest
 
 from bumblebee.config import HarnessConfig, entity_from_dict
@@ -26,7 +24,7 @@ def entity_config():
 
 def test_drive_tick_and_cooldown(entity_config):
     ds = DriveSystem(entity_config)
-    now = time.time()
+    now = ds._last_initiative + 11.0
     assert ds.can_initiate(now, 10)
     ds.register_initiative_time(now)
     assert not ds.can_initiate(now + 5, 10)

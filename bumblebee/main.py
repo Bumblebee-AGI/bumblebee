@@ -201,6 +201,25 @@ def cli() -> None:
     help="hybrid = home Ollama + gateway + Cloudflare tunnel + Railway (default when asking); local = single machine.",
 )
 @click.option(
+    "--gateway-host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Host the inference gateway listens on (tunnel ingress must point here).",
+)
+@click.option(
+    "--gateway-port",
+    default=8010,
+    show_default=True,
+    type=int,
+    help="Port for the inference gateway (used when writing cloudflared config).",
+)
+@click.option(
+    "--skip-tunnel-bootstrap",
+    is_flag=True,
+    default=False,
+    help="Do not offer automated cloudflared tunnel + DNS + config.yml.",
+)
+@click.option(
     "--mode",
     "legacy_mode",
     type=click.Choice(["ask", "quick", "full"], case_sensitive=False),
@@ -208,7 +227,13 @@ def cli() -> None:
     hidden=True,
     help="Deprecated: use --profile. quick→local, full→hybrid.",
 )
-def cmd_setup(profile: str, legacy_mode: str | None) -> None:
+def cmd_setup(
+    profile: str,
+    legacy_mode: str | None,
+    gateway_host: str,
+    gateway_port: int,
+    skip_tunnel_bootstrap: bool,
+) -> None:
     """Interactive setup wizard (.env, gateway stack, Railway, entity)."""
     from bumblebee.setup_wizard import run_setup_wizard
 
@@ -219,7 +244,12 @@ def cmd_setup(profile: str, legacy_mode: str | None) -> None:
         resolved = "hybrid"
     elif legacy_mode == "ask":
         resolved = "ask"
-    run_setup_wizard(profile=resolved)
+    run_setup_wizard(
+        profile=resolved,
+        gateway_host=gateway_host,
+        gateway_port=gateway_port,
+        skip_tunnel_bootstrap=skip_tunnel_bootstrap,
+    )
 
 
 @cli.command("create")
@@ -238,11 +268,18 @@ def cmd_gateway() -> None:
 @click.option("--cloudflared-config", default="", help="Path to cloudflared config.yml (default: ~/.cloudflared/config.yml).")
 @click.option("--gateway-host", default="127.0.0.1", show_default=True)
 @click.option("--gateway-port", default=8010, show_default=True, type=int)
+@click.option(
+    "--skip-tunnel-bootstrap",
+    is_flag=True,
+    default=False,
+    help="Do not offer automated cloudflared tunnel + DNS + config.yml.",
+)
 def cmd_gateway_setup(
     tunnel_name: str,
     cloudflared_config: str,
     gateway_host: str,
     gateway_port: int,
+    skip_tunnel_bootstrap: bool,
 ) -> None:
     """Interactive wizard: bearer token, tunnel config, .env, then optional gateway on (Windows)."""
     from bumblebee.gateway_setup import run_gateway_setup_wizard
@@ -252,6 +289,7 @@ def cmd_gateway_setup(
         cloudflared_config=cloudflared_config,
         gateway_host=gateway_host,
         gateway_port=gateway_port,
+        skip_tunnel_bootstrap=skip_tunnel_bootstrap,
     )
 
 

@@ -271,14 +271,6 @@ def test_build_status_html_reports_soma_gen_snapshot():
         def current_fragments(self):
             return ["thinking about that deploy note"]
 
-    class _Tonic:
-        bars = _Bars()
-        noise = _Noise()
-        _noise_enabled = True
-        _noise_model = ""
-        _current_affects = [{"name": "fascination", "intensity": 0.7}]
-        _appraisal_enabled = True
-
     class _Cog:
         reflex_model = "gemma3:4b"
         max_context_tokens = 32000
@@ -292,6 +284,9 @@ def test_build_status_html_reports_soma_gen_snapshot():
         history_compression = _HistoryCompression()
 
     class _Harness:
+        class _Deployment:
+            mode = "local"
+
         class _Autonomy:
             enabled = True
             impulse_wake = True
@@ -310,6 +305,7 @@ def test_build_status_html_reports_soma_gen_snapshot():
 
             distillation = _Distillation()
 
+        deployment = _Deployment()
         autonomy = _Autonomy()
         memory = _Memory()
 
@@ -318,6 +314,25 @@ def test_build_status_html_reports_soma_gen_snapshot():
         cognition = _Cog()
         harness = _Harness()
         raw = {"created": "2026-04-09T00:00:00Z"}
+
+        def soma_dir(self):
+            return __import__("tempfile").gettempdir() + "/bumblebee-test-soma-status"
+
+    class _Tonic:
+        bars = _Bars()
+        noise = _Noise()
+        _noise_enabled = True
+        _noise_model = ""
+        _current_affects = [{"name": "fascination", "intensity": 0.7}]
+        _appraisal_enabled = True
+
+        def render_body(self):
+            return (
+                "## Bars\n"
+                "social     █████░░░░░  moderate  —\n"
+                "curiosity  █████░░░░░  moderate  —\n\n"
+                "## Affects\n(flat)\n"
+            )
 
     class _Entity:
         store = _Store()
@@ -335,9 +350,12 @@ def test_build_status_html_reports_soma_gen_snapshot():
     assert "Architecture" in out
     assert "SOMA" in out
     assert "GEN" in out
-    assert "Autonomy & wake" in out
+    assert "Autonomy &amp; wake" in out
     assert "Cognition" in out
     assert "Memory pipeline" in out
-    assert "Daemon/automations loop" in out
-    assert "Dominant bar: social 72%" in out
-    assert "GEN model: <code>gemma3:4b</code>" in out
+    assert "Daemon / automations" in out
+    assert "Dominant bar — social 72%" in out
+    assert "GEN model <code>gemma3:4b</code>" in out
+    assert "Bars (body.md)" in out
+    assert "Deployment <code>local</code>" in out
+    assert "moderate" in out

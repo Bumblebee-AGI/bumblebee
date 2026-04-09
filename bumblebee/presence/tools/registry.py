@@ -43,6 +43,8 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "fetch_url":
         domain = extract_domain(str(args.get("url", "") or ""))
         return f"🌐 reading something on {domain}..." if domain else "🌐 reading that page..."
+    if tool_name == "send_journal_file":
+        return "📎 sending journal.md..."
     if tool_name == "read_file":
         filename = Path(str(args.get("path", "") or "")).name
         sl = int(args.get("start_line") or 0)
@@ -398,6 +400,12 @@ class ToolRegistry:
             "You have a persistent knowledge base. Call update_knowledge when you learn something "
             "worth keeping — names, preferences, corrections, project context. "
             "Don't wait to be asked. A conversation that teaches you something should leave a trace.\n\n"
+            "[Workspace & files]\n"
+            "Paths are relative to your workspace root (same tree as journal.md and knowledge.md). "
+            "If the user asks for **journal.md as a file** or attachment, call **send_journal_file** "
+            "first — it uses the real journal path on disk. For other files use **send_file**. "
+            "Do not stop after read_file or list_directory when they want a download. "
+            "**read_journal** returns recent entry chunks; **read_file** is for raw text in your reply.\n\n"
             "[Grounding]\n"
             "Questions about the workspace, files, or host state: use tools first, then answer "
             "from results. Don't guess from priors.\n"
@@ -421,7 +429,9 @@ class ToolRegistry:
             "say() = visible message. think() = private. end_turn() = done. wait() = pause.\n"
             "Use the tool calling API — never write tool names as text.\n\n"
             "[Memory]\n"
-            "update_knowledge when you learn something worth keeping. Don't wait to be asked.\n"
+            "update_knowledge when you learn something worth keeping. Don't wait to be asked.\n\n"
+            "[Files]\n"
+            "User wants journal.md as a download → send_journal_file(). Other files → send_file(path).\n"
         )
 
     def usage_snapshot(self) -> dict[str, int]:

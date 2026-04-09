@@ -1347,6 +1347,24 @@ class WakeVoice:
 
 
 # ---------------------------------------------------------------------------
+# Soma ebb — salience-scaled body presentation (quiet / normal / high)
+# ---------------------------------------------------------------------------
+
+_EBB_TIER_ORDER = {"quiet": 0, "normal": 1, "high": 2}
+
+
+def _ebb_parse_floor(raw: str) -> str:
+    s = (raw or "normal").strip().lower()
+    if s in _EBB_TIER_ORDER:
+        return s
+    return "normal"
+
+
+def _ebb_tier_at_least(tier: str, floor: str) -> str:
+    return tier if _EBB_TIER_ORDER[tier] >= _EBB_TIER_ORDER[floor] else floor
+
+
+# ---------------------------------------------------------------------------
 # TonicBody — composition root
 # ---------------------------------------------------------------------------
 
@@ -1388,6 +1406,31 @@ class TonicBody:
         self._current_affects: list[dict[str, Any]] = []
         self._tick_count = 0
         self._save_every = 6
+
+        ebb_cfg = config.get("ebb") or {}
+        self._ebb_enabled = bool(ebb_cfg.get("enabled", True))
+        w = ebb_cfg.get("weights") or {}
+        wb = float(w.get("bar_deviation", 0.38))
+        wc = float(w.get("conflict", 0.22))
+        wi = float(w.get("impulse", 0.18))
+        wa = float(w.get("affect_load", 0.12))
+        wn = float(w.get("noise_fill", 0.10))
+        ws = wb + wc + wi + wa + wn
+        if ws <= 0:
+            ws = 1.0
+        self._ebb_w_bar = wb / ws
+        self._ebb_w_conf = wc / ws
+        self._ebb_w_imp = wi / ws
+        self._ebb_w_aff = wa / ws
+        self._ebb_w_noise = wn / ws
+        self._ebb_quiet_below = float(ebb_cfg.get("quiet_below", 0.30))
+        self._ebb_high_above = float(ebb_cfg.get("high_above", 0.58))
+        self._ebb_reflex_scale = float(ebb_cfg.get("reflex_salience_scale", 0.75))
+        self._ebb_autonomous_floor = _ebb_parse_floor(str(ebb_cfg.get("autonomous_minimum", "normal")))
+        self._ebb_quiet_noise_lines = max(0, int(ebb_cfg.get("quiet_max_noise_lines", 1)))
+        self._ebb_normal_noise_lines = max(0, int(ebb_cfg.get("normal_max_noise_lines", 3)))
+        self._ebb_high_noise_lines = max(0, int(ebb_cfg.get("high_max_noise_lines", 4)))
+        self._ebb_skip_post_turn = bool(ebb_cfg.get("skip_post_turn_noise_when_quiet", True))
 
     def emit(self, event: dict[str, Any]) -> None:
         """Record a structured event for the next bars tick."""
@@ -1648,32 +1691,135 @@ class TonicBody:
             )
         return result
 
-    def render_body(self) -> str:
+    def compute_salience(self) -> float:
+        """Aggregate 0..1 internal arousal from bars, conflicts, impulses, affects, and GEN fill."""
+        pct = self.bars.snapshot_pct()
+        init = self.bars._initial
+        names = self.bars.ordered_names
+        n = len(names) or 1
+        dev_sum = sum(
+            abs(float(pct.get(name, 0)) - float(init.get(name, 50.0))) for name in names
+        )
+        bar_dev = min(1.0, (dev_sum / n) / 100.0)
+
+        conflicts = self.bars._active_conflicts
+        conf_score = 0.0
+        if conflicts:
+            conf_score = min(1.0, max(float(c.get("intensity", 0.0)) for c in conflicts))
+
+        impulses = [i for i in self.bars._active_impulses if not i.get("on_cooldown")]
+        imp_score = 0.0
+        if impulses:
+            imp_score = min(1.0, max(float(i.get("intensity", 0.0)) for i in impulses))
+
+        affect_load = min(1.0, len(self._current_affects) / 6.0)
+
+        frags = self.noise.current_fragments()
+        mf = float(self.noise._fragments.maxlen or 8)
+        noise_fill = min(1.0, len(frags) / max(1.0, mf))
+
+        s = (
+            self._ebb_w_bar * bar_dev
+            + self._ebb_w_conf * conf_score
+            + self._ebb_w_imp * imp_score
+            + self._ebb_w_aff * affect_load
+            + self._ebb_w_noise * noise_fill
+        )
+        return max(0.0, min(1.0, s))
+
+    def resolve_presentation(
+        self,
+        *,
+        salience: float,
+        route: str,
+        platform: str,
+    ) -> str:
+        """Map salience + routing to ``quiet`` | ``normal`` | ``high`` for the prompt body."""
+        if not self._ebb_enabled:
+            return "high"
+        s = max(0.0, min(1.0, float(salience)))
+        r = str(route or "").strip().lower()
+        if r == "reflex":
+            s *= max(0.0, min(1.0, self._ebb_reflex_scale))
+        if s >= self._ebb_high_above:
+            tier = "high"
+        elif s >= self._ebb_quiet_below:
+            tier = "normal"
+        else:
+            tier = "quiet"
+
+        plat = str(platform or "").strip().lower()
+        if plat in ("autonomous", "automation"):
+            tier = _ebb_tier_at_least(tier, self._ebb_autonomous_floor)
+        return tier
+
+    def should_skip_post_turn_noise(self, *, route: str, platform: str) -> bool:
+        """When ebb is quiet, optionally skip GEN regeneration after a turn to stay subtle."""
+        if not self._ebb_enabled or not self._ebb_skip_post_turn:
+            return False
+        if not self._noise_enabled:
+            return False
+        sal = self.compute_salience()
+        pres = self.resolve_presentation(salience=sal, route=route, platform=platform)
+        return pres == "quiet"
+
+    def _noise_line_cap(self, presentation: str) -> int:
+        if presentation == "quiet":
+            return self._ebb_quiet_noise_lines
+        if presentation == "normal":
+            return self._ebb_normal_noise_lines
+        if self._ebb_high_noise_lines > 0:
+            return self._ebb_high_noise_lines
+        return 4
+
+    def render_body(self, *, presentation: str = "high") -> str:
         """Assemble the body markdown the agent reads.
 
         This is the agent's sole window into its own internal state.
         The agent cannot edit ``body.md`` — only soma subsystems write it.
+
+        When ``ebb`` is enabled, callers pass ``presentation`` (``quiet`` / ``normal`` /
+        ``high``) to scale token load; the default ``high`` is the full historical layout.
         """
+        pres = "high"
+        if self._ebb_enabled:
+            pres = presentation if presentation in ("quiet", "normal", "high") else "high"
+        return self._render_body_markdown(presentation=pres)
+
+    def _render_body_markdown(self, *, presentation: str) -> str:
         pct = self.bars.snapshot_pct()
         mom = self.bars.momentum_delta()
 
-        bars = self.renderer.render_bars(self.bars.ordered_names, pct, mom)
-        affects = self.renderer.render_affects(self._current_affects)
-        conflicts = self.renderer.render_conflicts(self.bars._active_conflicts)
-        impulses = self.renderer.render_impulses(
-            [i for i in self.bars._active_impulses if not i.get("on_cooldown")]
-        )
+        if presentation == "high":
+            bars = self.renderer.render_bars(self.bars.ordered_names, pct, mom)
+        else:
+            bars = " · ".join(f"{n} {pct.get(n, 0)}%" for n in self.bars.ordered_names)
 
+        affects_src = self._current_affects[:2] if presentation == "quiet" else self._current_affects
+        affects = self.renderer.render_affects(affects_src)
+
+        cap = self._noise_line_cap(presentation)
         fragments = self.noise.current_fragments()
-        noise_inner = "\n".join(fragments[-4:]) if fragments else "(quiet)"
+        if cap <= 0:
+            noise_inner = "(quiet)"
+        else:
+            take = fragments[-cap:] if fragments else []
+            noise_inner = "\n".join(take) if take else "(quiet)"
 
-        return (
-            f"## Bars\n{bars}\n\n"
-            f"## Affects\n{affects}\n\n"
-            f"## Noise\n{noise_inner}\n\n"
-            f"## Conflicts\n{conflicts}\n\n"
-            f"## Impulses\n{impulses}"
-        )
+        conflicts_txt = self.renderer.render_conflicts(self.bars._active_conflicts)
+        impulses_list = [i for i in self.bars._active_impulses if not i.get("on_cooldown")]
+        impulses_txt = self.renderer.render_impulses(impulses_list)
+
+        blocks: list[str] = [
+            f"## Bars\n{bars}",
+            f"## Affects\n{affects}",
+            f"## Noise\n{noise_inner}",
+        ]
+        if not (presentation == "quiet" and conflicts_txt == "(no active conflicts)"):
+            blocks.append(f"## Conflicts\n{conflicts_txt}")
+        if not (presentation == "quiet" and impulses_txt == "(nothing pulling)"):
+            blocks.append(f"## Impulses\n{impulses_txt}")
+        return "\n\n".join(blocks)
 
     def flush_body_md(self) -> None:
         """Write the current body state to ``body.md`` in the soma directory.
@@ -1683,7 +1829,7 @@ class TonicBody:
         the agent never writes to it.
         """
         try:
-            md = self.render_body()
+            md = self.render_body(presentation="high")
             body_path = self._soma_dir / "body.md"
             body_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = body_path.with_suffix(".tmp")

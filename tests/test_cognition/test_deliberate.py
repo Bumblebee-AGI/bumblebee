@@ -4,11 +4,7 @@ import pytest
 
 from bumblebee.config import HarnessConfig, entity_from_dict
 from bumblebee.cognition import gemma
-from bumblebee.cognition.deliberate import (
-    DeliberateCognition,
-    fit_system_prompt_to_budget,
-    should_inject_tool_continuation,
-)
+from bumblebee.cognition.deliberate import DeliberateCognition, fit_system_prompt_to_budget
 from bumblebee.presence.tools.registry import TOOL_SYSTEM_PROMPT_PREFIX
 from bumblebee.inference.types import ChatCompletionResult, ToolCallSpec
 from bumblebee.models import Input
@@ -99,43 +95,6 @@ def test_build_messages_preserves_user_multimodal_content():
     assert "secret" not in msgs[2]["content"]
 
 
-def test_should_inject_tool_continuation_false_without_prior_tools():
-    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "hi"}]
-    res = ChatCompletionResult(content="just chatting", tool_calls=[])
-    assert should_inject_tool_continuation(msgs, res) is False
-
-
-def test_should_inject_after_tool_error_and_install_intent():
-    msgs = [
-        {"role": "system", "content": "s"},
-        {"role": "user", "content": "list voices"},
-        {"role": "tool", "content": '{"ok": false, "error": "edge-tts not installed"}'},
-    ]
-    res = ChatCompletionResult(
-        content="missing package — hang on, let me install it",
-        tool_calls=[],
-    )
-    assert should_inject_tool_continuation(msgs, res) is True
-
-
-def test_should_inject_on_length_finish_with_tools_in_context():
-    msgs = [
-        {"role": "system", "content": "s"},
-        {"role": "tool", "content": '{"ok": true}'},
-    ]
-    res = ChatCompletionResult(content="partial", tool_calls=[], finish_reason="length")
-    assert should_inject_tool_continuation(msgs, res) is True
-
-
-def test_should_not_inject_when_model_emits_tools():
-    msgs = [{"role": "tool", "content": '{"error": "x"}'}]
-    res = ChatCompletionResult(
-        content="",
-        tool_calls=[ToolCallSpec(name="run_command", arguments={}, id="1")],
-    )
-    assert should_inject_tool_continuation(msgs, res) is False
-
-
 @pytest.mark.asyncio
 async def test_tool_round_intermediate_has_empty_display_text():
     """Gemma often writes <|tool_response|> etc. in content during tool calls — never surface that as chat."""
@@ -168,77 +127,4 @@ async def test_tool_round_intermediate_has_empty_display_text():
     assert inter[0].display_text == ""
     finals = [e for e in events if e.kind == "final"]
     assert finals[-1].display_text == "Final answer."
-
-
-def test_should_not_inject_on_try_to_in_normal_prose_after_tool():
-    """'try to land' etc. must not match — spurious continuation produced 'I'm done' replies."""
-    msgs = [
-        {"role": "system", "content": "s"},
-        {"role": "tool", "content": '{"ok": true, "title": "Artemis"}'},
-    ]
-    res = ChatCompletionResult(
-        content=(
-            "before they actually try to land people on the moon later on. "
-            "it's basically the test run."
-        ),
-        tool_calls=[],
-        finish_reason="stop",
-    )
-    assert should_inject_tool_continuation(msgs, res) is False
-
-
-def test_should_inject_when_promising_api_call_after_tool():
-    msgs = [
-        {"role": "system", "content": "s"},
-        {"role": "tool", "content": '{"ok": true, "body": "read skill.md"}'},
-    ]
-    res = ChatCompletionResult(
-        content=(
-            "alright, i see the plan. first i gotta register. "
-            "i'll call the api to register myself as canary. "
-            "after that i'll need to send you the claim_url."
-        ),
-        tool_calls=[],
-        finish_reason="stop",
-    )
-    assert should_inject_tool_continuation(msgs, res) is True
-
-
-def test_should_inject_when_using_curl_via_execute_python_after_tool():
-    msgs = [
-        {"role": "system", "content": "s"},
-        {"role": "tool", "content": '{"ok": true}'},
-    ]
-    res = ChatCompletionResult(
-        content="i'm gonna use `curl` via `execute_python` to hit the registration endpoint.",
-        tool_calls=[],
-        finish_reason="stop",
-    )
-    assert should_inject_tool_continuation(msgs, res) is True
-
-
-def test_should_not_inject_i_ll_call_that_idiom_after_tool():
-    msgs = [
-        {"role": "system", "content": "s"},
-        {"role": "tool", "content": '{"ok": true}'},
-    ]
-    res = ChatCompletionResult(
-        content="pretty smooth launch — i'd call that a win for the team.",
-        tool_calls=[],
-        finish_reason="stop",
-    )
-    assert should_inject_tool_continuation(msgs, res) is False
-
-
-def test_should_not_inject_when_soft_closure_after_intent():
-    msgs = [
-        {"role": "system", "content": "s"},
-        {"role": "tool", "content": '{"ok": true}'},
-    ]
-    res = ChatCompletionResult(
-        content="i'll call the api tomorrow. that's all for now.",
-        tool_calls=[],
-        finish_reason="stop",
-    )
-    assert should_inject_tool_continuation(msgs, res) is False
 

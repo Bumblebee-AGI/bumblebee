@@ -213,6 +213,24 @@ def default_soma_config() -> dict[str, Any]:
             "temperature": 0.8,
             "max_tokens": 300,
         },
+        "ebb": {
+            "enabled": True,
+            "weights": {
+                "bar_deviation": 0.38,
+                "conflict": 0.22,
+                "impulse": 0.18,
+                "affect_load": 0.12,
+                "noise_fill": 0.10,
+            },
+            "quiet_below": 0.30,
+            "high_above": 0.58,
+            "reflex_salience_scale": 0.75,
+            "autonomous_minimum": "normal",
+            "quiet_max_noise_lines": 1,
+            "normal_max_noise_lines": 3,
+            "high_max_noise_lines": 4,
+            "skip_post_turn_noise_when_quiet": True,
+        },
     }
 
 
@@ -220,6 +238,22 @@ def default_soma_config() -> dict[str, Any]:
 class SummonSettings:
     enabled: bool = True
     timeout_seconds: int = 30
+
+
+@dataclass
+class PokerPromptSettings:
+    """Optional internal disposition prompts for autonomous cycles (not user-facing)."""
+
+    enabled: bool = False
+    time_weighted: bool = True
+    # blend: time-weighted disposition + WakeVoice stirring; replace_wake_voice: disposition only (no LLM stirring)
+    mode: str = "blend"
+    prompts_path: str = ""  # empty = bundled configs/poker_prompts/default.yaml; else path under configs/ or absolute
+    # Fuse deck seed with GEN (noise) fragments + soma context via a light LLM pass — emergent, not prescribed.
+    ground_with_gen: bool = True
+    grounding_model: str = ""  # empty uses reflex model
+    grounding_temperature: float = 0.72
+    grounding_max_tokens: int = 300
 
 
 @dataclass
@@ -242,6 +276,7 @@ class AutonomySettings:
     max_desires_considered: int = 3
     allow_tool_calls_on_wake: bool = True
     summon: SummonSettings = field(default_factory=SummonSettings)
+    poker_prompts: PokerPromptSettings = field(default_factory=PokerPromptSettings)
 
 
 def default_tools_config() -> dict[str, Any]:
@@ -361,6 +396,8 @@ class EntityCognition:
     history_compression: HistoryCompressionSettings = field(default_factory=HistoryCompressionSettings)
     # 0 = use harness.cognition.tool_continuation_rounds
     tool_continuation_rounds: int = 0
+    # When False, omit OpenAI-style ``tools`` from chat/completions (non-tool-capable local models).
+    use_api_tools: bool = True
 
     def ollama_num_ctx(self) -> int | None:
         n = int(self.max_context_tokens or 0)
@@ -407,6 +444,29 @@ class EntityConfig:
     automations: EntityAutomationsSettings = field(default_factory=EntityAutomationsSettings)
     raw: dict[str, Any] = field(default_factory=dict)
 
+    def _merged_tools(self) -> dict[str, Any]:
+        """Harness ``tools`` merged with entity YAML ``tools`` (same rules as execution tools)."""
+        base = dict(self.harness.tools) if self.harness.tools else {}
+        over = self.raw.get("tools")
+        if not isinstance(over, dict) or not over:
+            return base
+        return _merge_dict(base, over)
+
+    def execution_workspace_dir(self) -> str:
+        """
+        Root directory for ``read_file`` / ``send_file`` / workspace tools — must match
+        ``knowledge_path`` / ``journal_path`` / ``soma_dir`` when a persistent volume is used.
+
+        Order matches ``execution_rpc._configured_workspace_root``: env first, then
+        merged ``tools.execution.workspace_dir`` (from ``apply_harness_env_overrides`` + YAML).
+        """
+        ws = (os.environ.get("BUMBLEBEE_EXECUTION_WORKSPACE_DIR") or "").strip()
+        if ws:
+            return ws
+        merged = self._merged_tools()
+        ex = merged.get("execution") if isinstance(merged.get("execution"), dict) else {}
+        return str(ex.get("workspace_dir") or "").strip()
+
     def db_path(self) -> str:
         return _expand(self.harness.memory.database_path, self.name)
 
@@ -419,7 +479,7 @@ class EntityConfig:
 
     def knowledge_path(self) -> str:
         """Curated knowledge markdown: persistent volume when available, else beside DB file."""
-        ws = (os.environ.get("BUMBLEBEE_EXECUTION_WORKSPACE_DIR") or "").strip()
+        ws = self.execution_workspace_dir().strip()
         if ws:
             return str(Path(ws) / "knowledge.md")
         if self.database_url():
@@ -435,8 +495,13 @@ class EntityConfig:
             return None
         return self.cognition.ollama_num_ctx()
 
+    def effective_deliberate_model(self) -> str:
+        """Deliberate chat model: entity ``cognition.deliberate_model``, else harness default."""
+        d = (self.cognition.deliberate_model or "").strip()
+        return d or (self.harness.models.deliberate or "").strip()
+
     def journal_path(self) -> str:
-        ws = (os.environ.get("BUMBLEBEE_EXECUTION_WORKSPACE_DIR") or "").strip()
+        ws = self.execution_workspace_dir().strip()
         if ws:
             return str(Path(ws) / "journal.md")
         return _expand("~/.bumblebee/entities/{entity_name}/journal.md", self.name)
@@ -451,7 +516,7 @@ class EntityConfig:
         return _expand("~/.bumblebee/entities/{entity_name}/self_model.json", self.name)
 
     def soma_dir(self) -> str:
-        ws = (os.environ.get("BUMBLEBEE_EXECUTION_WORKSPACE_DIR") or "").strip()
+        ws = self.execution_workspace_dir().strip()
         if ws:
             return str(Path(ws) / "soma")
         return _expand("~/.bumblebee/entities/{entity_name}/soma", self.name)
@@ -481,10 +546,18 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
         mem_raw["distillation"] = DistillationSettings()
     tools_raw = _merge_dict(default_tools_config(), d.get("tools") or {})
     soma_raw = _merge_dict(default_soma_config(), d.get("soma") or {})
-    auto_raw = d.get("autonomy") or {}
+    auto_raw = dict(d.get("autonomy") or {})
     summon_raw = auto_raw.pop("summon", None) or {}
+    poker_raw = auto_raw.pop("poker_prompts", None) or {}
     autonomy = AutonomySettings(
-        **{**AutonomySettings().__dict__, "summon": SummonSettings(**{**SummonSettings().__dict__, **summon_raw}), **{k: v for k, v in auto_raw.items() if k != "summon"}},
+        **{
+            **AutonomySettings().__dict__,
+            "summon": SummonSettings(**{**SummonSettings().__dict__, **summon_raw}),
+            "poker_prompts": PokerPromptSettings(
+                **{**PokerPromptSettings().__dict__, **poker_raw}
+            ),
+            **{k: v for k, v in auto_raw.items() if k not in ("summon", "poker_prompts")},
+        },
     )
     return HarnessConfig(
         deployment=DeploymentSettings(
@@ -667,6 +740,7 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
         tool_continuation_rounds=max(
             0, int(cog.get("tool_continuation_rounds", 0) or 0)
         ),
+        use_api_tools=bool(cog.get("use_api_tools", True)),
     )
     pr = data.get("presence") or {}
     presence = EntityPresence(
@@ -763,6 +837,5 @@ async def validate_ollama_models(entity: EntityConfig, provider: Any) -> tuple[b
     ok, missing = await fn(
         entity.cognition.reflex_model,
         entity.cognition.deliberate_model,
-        entity.harness.models.deliberate,
     )
     return ok, missing
