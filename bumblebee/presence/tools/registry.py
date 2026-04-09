@@ -361,9 +361,14 @@ class ToolRegistry:
         return gemma.format_tool_declarations_block(self.openai_tools())
 
     def system_tool_instruction_block(self) -> str:
-        """Append to system prompt: native declarations + short usage cue."""
-        decl = self.gemma_tool_declarations()
-        if not decl:
+        """Append to system prompt: behavioral cues for tool use.
+
+        Tool schemas are passed via the API ``tools`` parameter, NOT duplicated
+        in the system prompt.  Gemma-native ``<|tool>`` declarations are omitted
+        to avoid the model echoing text-format tool syntax instead of using the
+        structured API channel.
+        """
+        if not self._tools:
             return ""
         names = ", ".join(sorted(self._tools.keys()))
         return (
@@ -379,21 +384,21 @@ class ToolRegistry:
             "answer from that result. If you cannot verify, say so plainly.\n"
             "When you invoke a tool, wait for its result before finishing your reply.\n\n"
             "[Agency — how you communicate and control your process]\n"
-            "say() is how you talk. Use it for every message you want the user to see. "
-            "Call say() once per thought — short, like texting. If you have two things to share, "
-            "call say() twice. This is true for conversation AND for sharing tool results. "
-            "After your last say(), call end_turn(). Example flow:\n"
-            "  say('yeah that reminds me of something') → say('have you tried X?') → end_turn()\n"
-            "  say('let me check...') → search_web → say('found it: ...') → end_turn()\n"
-            "Never write a long message when two short ones would feel more natural.\n\n"
+            "Use the say tool to send each message the user should see. One call per thought, "
+            "short, like texting. If you have two things to share, call say twice. "
+            "This is true for conversation AND for sharing tool results. "
+            "After your last message, call end_turn.\n"
+            "CRITICAL: use the tool calling API to invoke say, think, end_turn, and wait. "
+            "Do NOT write their names or arguments as text in your response. "
+            "Do NOT write XML tags like <t>, <thought>, <mood>, <say>, or <end_turn>. "
+            "These are function calls, not text formatting.\n\n"
             "Your four agency tools:\n"
             "- say: send a message right now. The user sees it immediately. Use for all visible output.\n"
             "- think: private reasoning nobody sees. Use before complex decisions.\n"
             "- end_turn: you're done. Optionally save mood and a parting thought.\n"
             "- wait: pause 1-15s before your next action.\n\n"
-            "You control when your turn ends. Silence is valid — think() then end_turn() is fine.\n"
-            "If a tool fails, don't retry it. Tell the user or try something else.\n\n"
-            f"{decl}"
+            "You control when your turn ends. Silence is valid.\n"
+            "If a tool fails, don't retry it. Tell the user or try something else.\n"
         )
 
     def compact_system_tool_instruction(self) -> str:
@@ -418,11 +423,11 @@ class ToolRegistry:
             "ground the answer with list_directory, read_file, search_files, or get_system_info "
             "instead of guessing from stereotypes.\n"
             "When you invoke a tool, wait for its result before finishing your reply.\n\n"
-            "[Agency — say() is how you talk]\n"
-            "Use say() for every message the user should see — conversation and tool results alike. "
-            "One say() per thought, short, like texting. Then end_turn(). "
+            "[Agency — say is how you talk]\n"
+            "Use the say tool for every message the user should see. "
+            "One call per thought, short, like texting. Then call end_turn. "
             "think: private reasoning. wait: pause. "
-            "If a tool fails, don't retry — tell the user.\n"
+            "ALWAYS use the tool calling API — never write tool names as text.\n"
         )
 
     def usage_snapshot(self) -> dict[str, int]:
