@@ -632,6 +632,67 @@ class TelegramPlatform(Platform):
             "telegram_message_id": int(msg.message_id),
         }
 
+    def _bot_identity(self) -> tuple[int | None, str]:
+        """(bot_id, @username-lower) best effort; safe before full app init."""
+        try:
+            me = self.app.bot
+        except Exception:
+            return None, ""
+        bot_id: int | None = None
+        username = ""
+        try:
+            bot_id = int(getattr(me, "id", 0) or 0) or None
+        except Exception:
+            bot_id = None
+        try:
+            username = str(getattr(me, "username", "") or "").strip().lower()
+        except Exception:
+            username = ""
+        return bot_id, username
+
+    def _telegram_message_mentions_bot(self, msg: Any, text: str) -> bool:
+        bot_id, bot_un = self._bot_identity()
+        entities = list(getattr(msg, "entities", None) or [])
+        entities += list(getattr(msg, "caption_entities", None) or [])
+        for ent in entities:
+            et = str(getattr(ent, "type", "") or "").lower()
+            if et == "text_mention":
+                u = getattr(ent, "user", None)
+                if u is not None and bot_id is not None and int(getattr(u, "id", 0) or 0) == bot_id:
+                    return True
+            if et == "mention":
+                off = int(getattr(ent, "offset", 0) or 0)
+                ln = int(getattr(ent, "length", 0) or 0)
+                token = (text or "")[off : off + ln].strip().lstrip("@").lower()
+                if bot_un and token == bot_un:
+                    return True
+        # Fallback for plain-text mention when entities were stripped/omitted.
+        if bot_un and f"@{bot_un}" in (text or "").lower():
+            return True
+        return False
+
+    def _telegram_message_replies_to_bot(self, msg: Any) -> bool:
+        bot_id, _ = self._bot_identity()
+        if bot_id is None:
+            return False
+        parent = getattr(msg, "reply_to_message", None)
+        if parent is None:
+            return False
+        from_user = getattr(parent, "from_user", None)
+        if from_user is None:
+            return False
+        try:
+            return int(getattr(from_user, "id", 0) or 0) == bot_id
+        except Exception:
+            return False
+
+    def _should_respond_to_group_message(self, msg: Any, text: str) -> bool:
+        """Group/supergroup/channel: only mention or reply-to-bot."""
+        chat_type = str(getattr(getattr(msg, "chat", None), "type", "") or "").lower()
+        if chat_type in ("private",):
+            return True
+        return self._telegram_message_mentions_bot(msg, text) or self._telegram_message_replies_to_bot(msg)
+
     def _telegram_msg_meta_with_session(self, msg: Any) -> dict[str, Any]:
         meta = self._telegram_msg_meta(msg)
         session = self.get_active_remote_session(str(getattr(msg, "chat_id", "") or ""))
@@ -1190,6 +1251,8 @@ class TelegramPlatform(Platform):
         channel = str(msg.chat_id)
         sender_name = _telegram_display_name(u)
         text = msg.text or ""
+        if not self._should_respond_to_group_message(msg, text):
+            return
 
         # --- Summon continuation: respond to follow-ups without @mention ---
         is_summon_continuation = False
@@ -1230,6 +1293,9 @@ class TelegramPlatform(Platform):
         if not await self._check_allowed(update, notify=True):
             return
         msg = update.message
+        caption = (msg.caption or "").strip()
+        if not self._should_respond_to_group_message(msg, caption):
+            return
         self._remember_last_chat(update)
         log.info("telegram_inbound", platform="telegram", chat_id=msg.chat_id, kind="photo")
         try:
@@ -1237,7 +1303,7 @@ class TelegramPlatform(Platform):
             tfile = await context.bot.get_file(photo.file_id)
             data = await tfile.download_as_bytearray()
             b64 = base64.standard_b64encode(bytes(data)).decode("ascii")
-            caption = (msg.caption or "").strip() or "What do you see?"
+            caption = caption or "What do you see?"
             u = update.effective_user
             inp = Input(
                 text=caption,
@@ -1260,6 +1326,9 @@ class TelegramPlatform(Platform):
         if not await self._check_allowed(update, notify=True):
             return
         msg = update.message
+        cap = (msg.caption or "").strip()
+        if not self._should_respond_to_group_message(msg, cap):
+            return
         self._remember_last_chat(update)
         log.info("telegram_inbound", platform="telegram", chat_id=msg.chat_id, kind="voice")
         file_id = None
@@ -1275,7 +1344,6 @@ class TelegramPlatform(Platform):
             if len(data) > 8_000_000:
                 return
             b64 = base64.standard_b64encode(bytes(data)).decode("ascii")
-            cap = (msg.caption or "").strip()
             u = update.effective_user
             inp = Input(
                 text=cap,

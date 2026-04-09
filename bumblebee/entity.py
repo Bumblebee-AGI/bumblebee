@@ -1183,39 +1183,23 @@ class Entity:
             if gate_text:
                 return True, None
             return False, (
-                "Same turn. Your output keeps hitting the token limit. "
-                "If you're writing code or long content, use write_file to save it to disk, "
-                "then use say to tell the user what you built. Do not output long text directly."
+                "Same turn. Output keeps hitting the token limit — use write_file for "
+                "large content, then say() to summarize."
             )
         if not gate_text:
             if real_tool_calls > 0 or finish_reason_hint(res):
-                return False, (
-                    f"Same turn. You haven't answered yet.\n{recap}\n"
-                    "Answer from these results, call another tool, or state the exact failure."
-                )
-            return False, "Same turn. You haven't answered the user yet. Use say() to respond."
+                return False, f"Same turn. You haven't answered yet.\n{recap}"
+            return False, "Same turn. Use say() to respond."
         if reply_looks_like_progress_only(gate_text):
-            return False, (
-                f"Same turn. That was progress chatter, not the final answer.\n{recap}\n"
-                "Continue until you can answer from results or state the exact failure."
-            )
+            return False, f"Same turn. Keep going.\n{recap}"
         if pro_forma_tool_followup(gate_text) and real_tool_calls > 0:
-            return False, (
-                f"Same turn. A one-word acknowledgement is not enough.\n{recap}\n"
-                "Answer the user from the tool results or explain the exact failure."
-            )
+            return False, f"Same turn. Keep going.\n{recap}"
         explicit_grounding = user_explicitly_requests_tool_grounding(inp.text)
         if explicit_grounding and real_tool_calls <= 0:
-            return False, (
-                "Same turn. The user explicitly asked you to use tools. Call the relevant tool now, "
-                "then answer from the result."
-            )
+            return False, "Same turn. Use tools first, then answer."
         if loop_state.last_tool_failed:
             if pro_forma_tool_followup(gate_text) or reply_looks_like_progress_only(gate_text):
-                return False, (
-                    f"Same turn. The last tool failed.\n{recap}\n"
-                    "Either retry with another tool or tell the user exactly what failed."
-                )
+                return False, f"Same turn. Last tool failed.\n{recap}"
         needs_grounding_judgment = (
             explicit_grounding
             or real_tool_calls > 0
@@ -2077,11 +2061,20 @@ class Entity:
                 )
 
         if tc.route in ("reflex", "deliberate"):
+            # When say() was the sole output channel (no file/shell/web tools),
+            # the final reply text is a redundant echo — skip it on chat platforms.
+            _agency = {"think", "say", "end_turn", "wait"}
+            real_work_done = any(
+                isinstance(p, dict) and p.get("tool") not in _agency
+                for p in (tc.tool_state.get("tool_output_previews") or [])
+            )
+            spoke_via_say = messages_already_sent > 0
             tc.skip_final_delivery = (
                 already_spoke
                 and tc.inp.platform in ("discord", "telegram")
                 and (
-                    reply_too_thin(tc.reply_text)
+                    (spoke_via_say and not real_work_done)
+                    or reply_too_thin(tc.reply_text)
                     or pro_forma_tool_followup(tc.reply_text)
                     or not (tc.reply_text or "").strip()
                 )

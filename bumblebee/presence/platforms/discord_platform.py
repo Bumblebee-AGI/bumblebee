@@ -77,7 +77,32 @@ class DiscordPlatform(Platform):
         async def on_message(message: discord.Message) -> None:
             await self._dispatch_message(message)
 
-    def _should_respond(self, message: discord.Message) -> bool:
+    async def _is_reply_to_bot(self, message: discord.Message) -> bool:
+        """True when this message replies to one of the bot's prior messages."""
+        if not self._bot_id:
+            return False
+        ref = getattr(message, "reference", None)
+        if not ref:
+            return False
+        resolved = getattr(ref, "resolved", None)
+        if isinstance(resolved, discord.Message):
+            return bool(resolved.author and resolved.author.id == self._bot_id)
+        cached = getattr(ref, "cached_message", None)
+        if isinstance(cached, discord.Message):
+            return bool(cached.author and cached.author.id == self._bot_id)
+        mid = getattr(ref, "message_id", None)
+        if not mid:
+            return False
+        ch = message.channel
+        if not isinstance(ch, discord.abc.Messageable):
+            return False
+        try:
+            replied = await ch.fetch_message(int(mid))
+            return bool(replied.author and replied.author.id == self._bot_id)
+        except Exception:
+            return False
+
+    async def _should_respond(self, message: discord.Message) -> bool:
         if message.author.bot:
             return False
         if self._bot_id and message.author.id == self._bot_id:
@@ -88,13 +113,12 @@ class DiscordPlatform(Platform):
             return True
         if not message.guild:
             return False
-        ch_name = getattr(message.channel, "name", "") or ""
         mentioned = self._bot_id and self.client.user in message.mentions
-        in_list = not self.channel_names or ch_name.lower() in self.channel_names
-        return bool(mentioned or in_list)
+        replied_to_bot = await self._is_reply_to_bot(message)
+        return bool(mentioned or replied_to_bot)
 
     async def _dispatch_message(self, message: discord.Message) -> None:
-        if not self._should_respond(message):
+        if not await self._should_respond(message):
             return
         if not self._cb:
             return

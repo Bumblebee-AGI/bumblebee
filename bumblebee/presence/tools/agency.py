@@ -57,6 +57,7 @@ async def say(message: str) -> str:
     text = (message or "").strip()
     if not text:
         return "[empty message, not sent]"
+    count = 0
     if ctx.state is not None:
         count = ctx.state.get("_messages_sent", 0)
         budget = ctx.state.get("_message_budget", 6)
@@ -65,12 +66,13 @@ async def say(message: str) -> str:
                 f"[you've already sent {count} messages this cycle — save it "
                 "for next time. you can still think, observe, or end_turn.]"
             )
-        ctx.state["_messages_sent"] = count + 1
-        ctx.state.setdefault("_sent_messages", []).append(text)
     try:
         await platform.send_message(inp.channel, text)
     except Exception as e:
         return f"[send failed: {e}]"
+    if ctx.state is not None:
+        ctx.state["_messages_sent"] = count + 1
+        ctx.state.setdefault("_sent_messages", []).append(text)
     return f"[sent]"
 
 

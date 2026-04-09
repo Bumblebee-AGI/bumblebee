@@ -63,69 +63,29 @@ def _build_post_tool_nudge(
     *,
     already_sent: list[str] | None = None,
 ) -> str:
-    """Context-aware nudge referencing what tools ran and what the user asked."""
-    if not tool_calls:
-        return (
-            "Same turn. You have tool results now. Either answer the user from those results, "
-            "or if a tool failed and another tool can fix it, call that tool now. "
-            "Do not only say you're checking."
-        )
-    summaries: list[str] = []
-    for tc_spec, tm in zip(tool_calls, tool_msgs):
-        failed = _tool_content_failed(tm.get("content") or "")
-        status = "failed" if failed else "returned results"
-        summaries.append(f"  - {tc_spec.name}: {status}")
-    tool_block = "\n".join(summaries)
-    user_snippet = (user_text or "").strip()[:300]
+    """Short nudge after tool results — trust the model to decide what comes next."""
+    parts: list[str] = ["Same turn. Tool results above."]
 
-    sent_block = ""
+    # Flag failures so the model knows what went wrong without re-reading.
+    failed = [
+        tc.name for tc, tm in zip(tool_calls, tool_msgs)
+        if _tool_content_failed(tm.get("content") or "")
+    ]
+    if failed:
+        parts.append(f"Failed: {', '.join(failed)}.")
+
+    # Remind what the user already heard — only anti-repetition, no prescriptive flow.
     if already_sent:
-        sent_lines = "\n".join(f"  > {m[:120]}" for m in already_sent[-4:])
-        sent_block = f"You already told the user:\n{sent_lines}\nDon't repeat yourself. Continue from where you left off.\n"
+        snippets = "; ".join(m[:80] for m in already_sent[-3:])
+        parts.append(f"Already told user: {snippets}")
 
-    research_count = sum(1 for tc in tool_calls if tc.name in _RESEARCH_TOOLS)
-    multi = len(tool_calls) >= 2
-
-    if research_count >= 2:
-        return (
-            f"Same turn. Tool results are ready:\n{tool_block}\n"
-            f"{sent_block}"
-            f"The user asked: {user_snippet}\n"
-            "You batched multiple searches — slow down. Use think() to digest what you found "
-            "from the FIRST result. Share that finding with say(). "
-            "Then do the next search in a separate round. "
-            "One topic at a time — let each result shape the next query."
-        )
-    if multi:
-        return (
-            f"Same turn. Tool results are ready:\n{tool_block}\n"
-            f"{sent_block}"
-            f"The user asked: {user_snippet}\n"
-            "Share each finding using say() as a separate short message. "
-            "Don't bundle into one wall of text. Then call end_turn."
-        )
-    if research_count == 1:
-        return (
-            f"Same turn. Tool results are ready:\n{tool_block}\n"
-            f"{sent_block}"
-            f"The user asked: {user_snippet}\n"
-            "Read the results carefully. Use think() to digest what you found. "
-            "Share the key findings with say(). If the user's question has more parts, "
-            "search the next part now — one search at a time. "
-            "If a result mentions a good source, consider fetch_url before moving on."
-        )
-    return (
-        f"Same turn. Tool results are ready:\n{tool_block}\n"
-        f"{sent_block}"
-        f"The user asked: {user_snippet}\n"
-        "Answer from these results, call another tool if needed, "
-        "or state exactly what failed. Do not just acknowledge."
+    parts.append(
+        "Continue: use say() to share findings, call more tools if needed, "
+        "or end_turn when done."
     )
+    return " ".join(parts)
 
-_FINAL_RECOVERY_USER = (
-    "Same turn. Your last message did not finish the task. Continue until you either answer the user "
-    "clearly from tool results or state the exact failure."
-)
+_FINAL_RECOVERY_USER = "Same turn. Keep going — answer the user or state what failed."
 
 
 def _finish_reason_hits_limit(finish_reason: str | None) -> bool:
@@ -216,7 +176,7 @@ class DeliberateCognition:
 
     def _agent_step_cap(self) -> int:
         """Primary bounded loop budget for a single user turn."""
-        return max(3, min(25, 4 + self._tool_continuation_rounds_cap()))
+        return max(6, min(25, 6 + self._tool_continuation_rounds_cap()))
 
     def _build_messages(
         self,
@@ -364,7 +324,7 @@ class DeliberateCognition:
 
                 yield DeliberateStreamEvent(
                     kind="intermediate",
-                    display_text=_visible_assistant_text(res),
+                    display_text="",
                     history_entries=[assistant_msg] + tool_msgs + [follow_user],
                 )
                 continue

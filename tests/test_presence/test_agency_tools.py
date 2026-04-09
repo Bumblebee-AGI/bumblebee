@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from bumblebee.presence.tools.agency import think, end_turn, wait
+from bumblebee.presence.tools.agency import think, end_turn, say, wait
 from bumblebee.presence.tools.runtime import ToolRuntimeContext, set_tool_runtime, reset_tool_runtime
 from bumblebee.presence.tools.registry import format_tool_activity
 
@@ -168,6 +168,49 @@ class TestWait:
             await wait(1)
             elapsed = time.monotonic() - t0
             assert elapsed >= 0.9
+        finally:
+            reset_tool_runtime(tok)
+
+
+# ---------------------------------------------------------------------------
+# say
+# ---------------------------------------------------------------------------
+
+
+class TestSay:
+    @pytest.mark.asyncio
+    async def test_increments_state_only_after_successful_send(self):
+        platform = MagicMock()
+        platform.send_message = AsyncMock(return_value=None)
+        inp = MagicMock()
+        inp.channel = "123"
+        state: dict[str, Any] = {"_messages_sent": 0, "_message_budget": 6}
+        ctx = ToolRuntimeContext(entity=MagicMock(), inp=inp, platform=platform, state=state)
+        tok = set_tool_runtime(ctx)
+        try:
+            result = await say("hello there")
+            assert result == "[sent]"
+            assert state["_messages_sent"] == 1
+            assert state["_sent_messages"] == ["hello there"]
+            platform.send_message.assert_awaited_once_with("123", "hello there")
+        finally:
+            reset_tool_runtime(tok)
+
+    @pytest.mark.asyncio
+    async def test_does_not_increment_state_when_send_fails(self):
+        platform = MagicMock()
+        platform.send_message = AsyncMock(side_effect=RuntimeError("telegram timeout"))
+        inp = MagicMock()
+        inp.channel = "123"
+        state: dict[str, Any] = {"_messages_sent": 0, "_message_budget": 6}
+        ctx = ToolRuntimeContext(entity=MagicMock(), inp=inp, platform=platform, state=state)
+        tok = set_tool_runtime(ctx)
+        try:
+            result = await say("hello there")
+            assert result.startswith("[send failed:")
+            assert state["_messages_sent"] == 0
+            assert "_sent_messages" not in state
+            platform.send_message.assert_awaited_once_with("123", "hello there")
         finally:
             reset_tool_runtime(tok)
 
