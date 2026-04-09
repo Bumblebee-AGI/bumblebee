@@ -1285,6 +1285,7 @@ class TonicBody:
         self._recent_events.append(event)
         if len(self._recent_events) > self._max_events:
             self._recent_events = self._recent_events[-self._max_events:]
+        self.flush_body_md()
 
     async def tick_bars(self, dt_hours: float) -> None:
         """Advance bar decay, apply pending events, detect impulses/conflicts."""
@@ -1292,6 +1293,7 @@ class TonicBody:
             if not ev.get("_applied"):
                 self.bars.apply_event(ev)
         self.bars.tick(dt_hours)
+        self.flush_body_md()
         self._tick_count += 1
         if self._tick_count % self._save_every == 0:
             self.save_state()
@@ -1316,6 +1318,7 @@ class TonicBody:
             self.bars._active_impulses,
             num_ctx=num_ctx,
         )
+        self.flush_body_md()
 
     async def maybe_tick_noise(
         self,
@@ -1347,6 +1350,7 @@ class TonicBody:
             entity_name=entity_name,
             num_ctx=num_ctx,
         )
+        self.flush_body_md()
 
     async def compose_wake_stirring(
         self,
@@ -1482,7 +1486,11 @@ class TonicBody:
         return result
 
     def render_body(self) -> str:
-        """Assemble the body markdown the agent reads."""
+        """Assemble the body markdown the agent reads.
+
+        This is the agent's sole window into its own internal state.
+        The agent cannot edit ``body.md`` — only soma subsystems write it.
+        """
         pct = self.bars.snapshot_pct()
         mom = self.bars.momentum_delta()
 
@@ -1503,6 +1511,23 @@ class TonicBody:
             f"## Conflicts\n{conflicts}\n\n"
             f"## Impulses\n{impulses}"
         )
+
+    def flush_body_md(self) -> None:
+        """Write the current body state to ``body.md`` in the soma directory.
+
+        This is the canonical read-only file the main agent consumes.
+        Only soma subsystems (bars, affects, noise, appraisal) call this —
+        the agent never writes to it.
+        """
+        try:
+            md = self.render_body()
+            body_path = self._soma_dir / "body.md"
+            body_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = body_path.with_suffix(".tmp")
+            tmp.write_text(md, encoding="utf-8")
+            tmp.replace(body_path)
+        except Exception as e:
+            log.debug("body_md_flush_failed", error=str(e))
 
     def snapshot_for_emotion(self) -> tuple[str, float]:
         """Derive (EmotionCategory value, intensity) from bars for backward compat."""
@@ -1588,6 +1613,7 @@ class TonicBody:
             if ok:
                 log.info("soma_state_restored", path=str(target.name),
                          values={k: round(v, 1) for k, v in self.bars._values.items()})
+                self.flush_body_md()
             return ok
         except Exception:
             log.warning("soma_state_restore_failed", exc_info=True)
