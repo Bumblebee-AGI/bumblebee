@@ -85,6 +85,46 @@ def _norm_key(title: str) -> str:
     return title.strip().casefold()
 
 
+def append_knowledge_sections(
+    entity: EntityConfig,
+    sections: list[tuple[str, str]],
+) -> int:
+    """Write new H2 sections to knowledge.md, skipping locked titles and duplicates.
+
+    Used by the compaction memory flush. Returns the number of sections actually written.
+    """
+    if not sections:
+        return 0
+    p = knowledge_file_path(entity)
+    try:
+        existing_raw = p.read_text(encoding="utf-8") if p.is_file() else ""
+    except OSError:
+        existing_raw = ""
+    existing_titles = {_norm_key(t) for t, _ in parse_knowledge_sections(existing_raw)}
+
+    added = 0
+    buf = existing_raw.rstrip()
+    for title, body in sections:
+        if is_locked_title(title):
+            continue
+        if _norm_key(title) in existing_titles:
+            continue
+        buf += f"\n\n## {title}\n{body}"
+        existing_titles.add(_norm_key(title))
+        added += 1
+
+    if added == 0:
+        return 0
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(buf.lstrip("\n") + "\n", encoding="utf-8")
+        log.info("knowledge_sections_appended", entity=entity.name, added=added)
+    except OSError as exc:
+        log.warning("knowledge_append_failed", entity=entity.name, error=str(exc))
+        return 0
+    return added
+
+
 class KnowledgeStore:
     """In-memory index of knowledge.md sections with embeddings (refreshed when mtime changes)."""
 
