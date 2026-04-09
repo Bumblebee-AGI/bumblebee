@@ -470,7 +470,7 @@ class TestTonicBodyLifecycle:
         assert "social" in output
 
         body.save_state()
-        assert (tmp_path / "soma-bar-state.json").is_file()
+        assert (tmp_path / "soma-state.json").is_file()
 
     @pytest.mark.asyncio
     async def test_prolonged_idle_drops_social(self, tmp_path: Path):

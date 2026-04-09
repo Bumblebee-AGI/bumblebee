@@ -1520,65 +1520,116 @@ class TonicBody:
                     best_intensity = min(1.0, 0.4 + (overshoot / 100.0) * 0.6)
         return best_cat, best_intensity
 
-    def save_state(self) -> None:
-        """Save bar state to filesystem (fallback for local/SQLite deployments)."""
-        state_path = self._soma_dir / "soma-bar-state.json"
-        try:
-            self.bars.save_state(state_path)
-        except Exception as e:
-            log.warning("soma_save_state_failed", error=str(e))
-
-    def restore_state(self) -> bool:
-        """Restore bar state from filesystem (fallback for local/SQLite deployments)."""
-        state_path = self._soma_dir / "soma-bar-state.json"
-        return self.bars.restore_state(state_path)
-
-    async def save_state_db(self, conn: Any) -> None:
-        """Persist bar state to entity_state table (Postgres-durable)."""
-        data = {
+    def _snapshot_all(self) -> dict[str, Any]:
+        """Build a unified snapshot of all three soma layers."""
+        return {
             "values": dict(self.bars._values),
             "history": list(self.bars._history),
             "ordered_names": list(self.bars._ordered_names),
             "saved_at": time.time(),
+            "affects": [dict(a) for a in self._current_affects],
+            "noise_fragments": list(self.noise.current_fragments()),
         }
+
+    def _restore_from_snapshot(self, data: dict[str, Any]) -> bool:
+        """Restore all three soma layers from a unified snapshot."""
+        saved_names = data.get("ordered_names", [])
+        if saved_names != self.bars._ordered_names:
+            log.info("soma_bar_names_changed", saved=saved_names, current=self.bars._ordered_names)
+            return False
+        self.bars._values = {k: float(data["values"][k]) for k in self.bars._ordered_names}
+        self.bars._history.clear()
+        for snap in data.get("history", []):
+            self.bars._history.append({k: float(snap.get(k, 0)) for k in self.bars._ordered_names})
+        if not self.bars._history:
+            self.bars._history.append(dict(self.bars._values))
+        saved_at = data.get("saved_at")
+        if saved_at is not None:
+            self.bars._apply_offline_decay(float(saved_at))
+
+        saved_affects = data.get("affects")
+        if isinstance(saved_affects, list) and saved_affects:
+            self._current_affects = saved_affects
+            self.affects._previous_affects = saved_affects
+            log.info("soma_affects_restored", count=len(saved_affects))
+
+        saved_noise = data.get("noise_fragments")
+        if isinstance(saved_noise, list) and saved_noise:
+            self.noise._fragments.clear()
+            for frag in saved_noise:
+                if isinstance(frag, str) and frag.strip():
+                    self.noise._fragments.append(frag)
+            log.info("soma_noise_restored", count=len(self.noise._fragments))
+
+        return True
+
+    def save_state(self) -> None:
+        """Save full soma state to filesystem (fallback for local/SQLite deployments)."""
+        state_path = self._soma_dir / "soma-state.json"
+        try:
+            data = self._snapshot_all()
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
+            tmp.replace(state_path)
+        except Exception as e:
+            log.warning("soma_save_state_failed", error=str(e))
+
+    def restore_state(self) -> bool:
+        """Restore full soma state from filesystem (fallback for local/SQLite deployments)."""
+        state_path = self._soma_dir / "soma-state.json"
+        legacy_path = self._soma_dir / "soma-bar-state.json"
+        target = state_path if state_path.is_file() else legacy_path
+        if not target.is_file():
+            return False
+        try:
+            data = json.loads(target.read_text(encoding="utf-8"))
+            ok = self._restore_from_snapshot(data)
+            if ok:
+                log.info("soma_state_restored", path=str(target.name),
+                         values={k: round(v, 1) for k, v in self.bars._values.items()})
+            return ok
+        except Exception:
+            log.warning("soma_state_restore_failed", exc_info=True)
+            return False
+
+    async def save_state_db(self, conn: Any) -> None:
+        """Persist full soma state to entity_state table (Postgres-durable)."""
+        data = self._snapshot_all()
         payload = json.dumps(data, separators=(",", ":"))
         try:
             await conn.execute(
                 "INSERT OR REPLACE INTO entity_state (key, value) VALUES (?, ?)",
-                ("soma_bar_state_v1", payload),
+                ("soma_state_v2", payload),
             )
             await conn.commit()
         except Exception as e:
             log.warning("soma_save_state_db_failed", error=str(e))
 
     async def restore_state_db(self, conn: Any) -> bool:
-        """Restore bar state from entity_state table."""
+        """Restore full soma state from entity_state table."""
         try:
             cur = await conn.execute(
                 "SELECT value FROM entity_state WHERE key = ?",
-                ("soma_bar_state_v1",),
+                ("soma_state_v2",),
             )
             row = await cur.fetchone()
             if not row:
+                cur = await conn.execute(
+                    "SELECT value FROM entity_state WHERE key = ?",
+                    ("soma_bar_state_v1",),
+                )
+                row = await cur.fetchone()
+            if not row:
                 return False
             data = json.loads(row[0])
-            saved_names = data.get("ordered_names", [])
-            if saved_names != self.bars._ordered_names:
-                log.info("soma_bar_names_changed_db", saved=saved_names, current=self.bars._ordered_names)
-                return False
-            self.bars._values = {k: float(data["values"][k]) for k in self.bars._ordered_names}
-            self.bars._history.clear()
-            for snap in data.get("history", []):
-                self.bars._history.append({k: float(snap.get(k, 0)) for k in self.bars._ordered_names})
-            if not self.bars._history:
-                self.bars._history.append(dict(self.bars._values))
-            saved_at = data.get("saved_at")
-            if saved_at is not None:
-                self.bars._apply_offline_decay(float(saved_at))
-            log.info("soma_bar_state_restored_db", values={k: round(v, 1) for k, v in self.bars._values.items()})
-            return True
+            ok = self._restore_from_snapshot(data)
+            if ok:
+                log.info("soma_state_restored_db",
+                         values={k: round(v, 1) for k, v in self.bars._values.items()})
+            return ok
         except Exception:
-            log.warning("soma_bar_state_restore_db_failed", exc_info=True)
+            log.warning("soma_state_restore_db_failed", exc_info=True)
             return False
 
     def drain_recent_events(self) -> list[dict[str, Any]]:
