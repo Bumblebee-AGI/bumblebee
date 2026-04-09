@@ -299,6 +299,8 @@ class Entity:
         self._last_turn_completed_at: float | None = None
         self.automation_engine: object | None = None
         self.journal = Journal(Path(self.config.journal_path()))
+        from bumblebee.memory.distillation import ExperienceDistiller
+        self._distiller = ExperienceDistiller(config.harness.memory.distillation)
         self._last_conversation: dict[str, str | float] = {
             "platform": "cli",
             "channel": "cli",
@@ -1843,6 +1845,61 @@ class Entity:
         except Exception as e:
             log.debug("post_turn_noise_tick_failed", error=str(e))
 
+    async def maybe_distill(self) -> None:
+        """Check if experience distillation is due and run it if so."""
+        if not self._distiller._settings.enabled:
+            return
+        emotion_cat, intensity = self.tonic.snapshot_for_emotion()
+        if not self._distiller.should_distill(len(self._history), intensity):
+            return
+        window_start = max(0, self._distiller._last_turn_index)
+        window = self._history[window_start:]
+        if len(window) < self._distiller._settings.min_turns_absolute:
+            return
+        participants: list[str] = []
+        lc = self._last_conversation
+        pid = lc.get("person_id", "")
+        pname = lc.get("person_name", "")
+        if pid or pname:
+            participants.append(f"{pname} ({pid})" if pid else pname)
+        pct = self.tonic.bars.snapshot_pct()
+        bars_line = ", ".join(f"{n}: {pct[n]}%" for n in self.tonic.bars.ordered_names)
+        affects = self.tonic.renderer.render_affects(self.tonic._current_affects)
+        soma_snapshot = f"Bars: {bars_line}. Affects: {affects}"
+        reflex_model = (
+            self.config.cognition.reflex_model or self.config.cognition.deliberate_model
+        )
+        try:
+            result = await self._distiller.distill(
+                self.client,
+                reflex_model,
+                history_window=window,
+                entity_name=self.config.name,
+                participants=participants,
+                soma_snapshot=soma_snapshot,
+                num_ctx=self.config.effective_ollama_num_ctx(),
+            )
+        except Exception as e:
+            log.warning("distillation_failed", error=str(e))
+            return
+        if result is None:
+            return
+        try:
+            async with self.store.session() as db:
+                counts = await self._distiller.route_results(
+                    result,
+                    entity_config=self.config,
+                    knowledge_store=self.knowledge,
+                    relational=self.relational,
+                    beliefs=self.beliefs,
+                    journal=self.journal,
+                    conn=db,
+                    client=self.client,
+                )
+            log.info("distillation_completed", **counts)
+        except Exception as e:
+            log.warning("distillation_route_failed", error=str(e))
+
     async def _retrieve_memory(self, tc: TurnContext) -> None:
         """Hydrate state, load relationship/narrative, episodic recall, apply imprints."""
         db = tc.db
@@ -2273,6 +2330,10 @@ class Entity:
         except Exception as e:
             log.debug("soma_db_save_in_commit_failed", error=str(e))
         await self._tick_noise_post_turn(tc)
+        try:
+            await self.maybe_distill()
+        except Exception as e:
+            log.debug("distillation_in_commit_failed", error=str(e))
         log.info(
             "turn_completed",
             platform=tc.inp.platform,

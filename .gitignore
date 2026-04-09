@@ -58,6 +58,7 @@ secrets/
 
 # IDE / OS
 .cursor/
+.claude/
 .cursorrules
 .idea/
 .vscode/

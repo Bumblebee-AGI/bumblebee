@@ -189,6 +189,12 @@ class PresenceDaemon:
                 except Exception as e:
                     log.debug("soma_noise_tick_failed", module="presence", error=str(e))
 
+                # --- Experience distillation (time-based trigger) ---
+                try:
+                    await self.entity.maybe_distill()
+                except Exception as e:
+                    log.debug("distillation_heartbeat_failed", module="presence", error=str(e))
+
                 # --- Autonomous wake cycle evaluation ---
                 if self.cfg.harness.autonomy.enabled:
                     all_drives = self.entity.drives.all_drives()

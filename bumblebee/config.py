@@ -101,6 +101,20 @@ class IdentityHarnessSettings:
 
 
 @dataclass
+class DistillationSettings:
+    """Automatic experience extraction from conversations."""
+
+    enabled: bool = True
+    cycle_seconds: float = 300.0
+    min_turns: int = 6
+    min_turns_absolute: int = 4
+    soma_urgency_divisor: float = 1.5
+    max_extract_tokens: int = 800
+    temperature: float = 0.15
+    context_char_budget: int = 6000
+
+
+@dataclass
 class MemoryHarnessSettings:
     database_path: str = "~/.bumblebee/entities/{entity_name}/memory.db"
     """When set (e.g. postgresql://...), use Postgres instead of SQLite file path."""
@@ -113,6 +127,7 @@ class MemoryHarnessSettings:
     narrative_every_n_consolidations: int = 3
     imprint_decay_half_life_seconds: float = 86400.0 * 30
     imprint_recall_weight: float = 0.35
+    distillation: DistillationSettings = field(default_factory=DistillationSettings)
 
 
 @dataclass
@@ -455,6 +470,11 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
             fc_raw[bkey] = bool(fc_raw[bkey])
     att_raw = {**AttachmentStorageSettings().__dict__, **(d.get("attachments") or {})}
     mem_raw = {**MemoryHarnessSettings().__dict__, **(d.get("memory") or {})}
+    dist_sub = mem_raw.pop("distillation", None)
+    if isinstance(dist_sub, dict):
+        mem_raw["distillation"] = DistillationSettings(**{**DistillationSettings().__dict__, **dist_sub})
+    elif not isinstance(dist_sub, DistillationSettings):
+        mem_raw["distillation"] = DistillationSettings()
     tools_raw = _merge_dict(default_tools_config(), d.get("tools") or {})
     soma_raw = _merge_dict(default_soma_config(), d.get("soma") or {})
     auto_raw = d.get("autonomy") or {}
