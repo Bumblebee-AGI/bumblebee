@@ -1087,6 +1087,14 @@ class Entity:
             log.debug("self_model_record_tool_failed", module="entity", error=str(e))
         if spec.name in ("search_web", "fetch_url"):
             self.drives.satisfy("curiosity", 0.22)
+        if (
+            state is not None
+            and ok
+            and spec.name in ("send_dm", "send_message_to")
+        ):
+            msg_text = str(spec.arguments.get("message", "")).strip()
+            if msg_text:
+                state.setdefault("_sent_messages", []).append(msg_text[:2000])
         return out
 
     def _derive_emotional_state(self) -> EmotionalState:
@@ -1491,6 +1499,7 @@ class Entity:
             return early
 
         await self._process_input(tc)
+        await self._somatic_appraise_input(tc)
 
         async with self.store.session() as db:
             tc.db = db
@@ -1592,6 +1601,26 @@ class Entity:
             else:
                 merged = base or "[Voice message — I couldn't transcribe it.]"
             tc.inp = replace(tc.inp, text=merged, audio=[])
+
+    async def _somatic_appraise_input(self, tc: TurnContext) -> None:
+        """Run somatic appraisal on the incoming message so bars reflect content before the agent reads its body."""
+        text = tc.inp.text
+        if not text:
+            return
+        try:
+            reflex_model = (
+                self.config.cognition.reflex_model
+                or self.config.cognition.deliberate_model
+            )
+            await self.tonic.appraise_and_apply(
+                self.client,
+                reflex_model,
+                text=text,
+                person_name=tc.inp.person_name or "someone",
+                num_ctx=self.config.effective_ollama_num_ctx(),
+            )
+        except Exception as e:
+            log.debug("somatic_appraisal_skipped", error=str(e))
 
     async def _retrieve_memory(self, tc: TurnContext) -> None:
         """Hydrate state, load relationship/narrative, episodic recall, apply imprints."""
@@ -1925,6 +1954,13 @@ class Entity:
             self._history.extend(tc.history_extra)
             self._history.append({"role": "assistant", "content": tc.reply_text[:8000]})
             await self._trim_history_with_compression()
+        else:
+            sent_msgs = tc.tool_state.get("_sent_messages")
+            if isinstance(sent_msgs, list) and sent_msgs:
+                combined = "\n".join(str(m)[:2000] for m in sent_msgs[:4])
+                self._history.append(
+                    {"role": "assistant", "content": f"[you sent this unprompted] {combined[:4000]}"}
+                )
 
         if tc.meaningful_override is not None:
             tc.meaningful = tc.meaningful_override
@@ -2083,11 +2119,17 @@ class Entity:
         return await eng.compose_proactive(drive, ctx)
 
     async def broadcast_proactive(self, message: str) -> None:
+        sent = False
         for fn in self._proactive_sends:
             try:
                 await fn(message)
+                sent = True
             except Exception as e:
                 log.warning("proactive_sink_failed", error=str(e))
+        if sent and message.strip():
+            self._history.append(
+                {"role": "assistant", "content": f"[proactive message you sent] {message.strip()[:4000]}"}
+            )
 
     def clear_conversation_history(self) -> None:
         """Clear rolling chat turns (in-memory); does not delete SQLite memory."""

@@ -164,6 +164,14 @@ soma:
       label: "restless comfort"
       tension_per_tick: 0.5
       comfort_per_tick: -0.3
+  # Somatic appraisal — fast LLM pass that reads message content and translates
+  # it into dynamic bar effects.  A warm message raises social; a confrontational
+  # one raises tension; an intellectually stimulating one spikes curiosity.
+  # Replaces the flat "message_received → social +3" with content-aware signal.
+  appraisal:
+    enabled: true
+    temperature: 0.3
+    max_tokens: 120
   affect_cycle_seconds: 180
   # Generative entropic noise — a small model producing continuous inner voice.
   # The entity reads this as its own stream of consciousness.

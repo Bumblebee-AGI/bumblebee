@@ -174,6 +174,11 @@ def default_soma_config() -> dict[str, Any]:
         "conflicts": [
             {"drives": ["curiosity", "comfort"], "threshold": 70, "label": "restless comfort", "tension_per_tick": 0.5, "comfort_per_tick": -0.3},
         ],
+        "appraisal": {
+            "enabled": True,
+            "temperature": 0.3,
+            "max_tokens": 120,
+        },
         "affect_cycle_seconds": 180,
         "noise": {
             "enabled": True,

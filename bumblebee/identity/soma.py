@@ -271,7 +271,10 @@ class BarEngine:
         self._conflict_cfgs: list[dict[str, Any]] = config.get("conflicts") or []
 
         self._impulse_first_active: dict[str, float] = {}
-        self._impulse_last_fired: dict[str, float] = {}
+        now = time.time()
+        self._impulse_last_fired: dict[str, float] = {
+            str(imp.get("label", "")): now for imp in self._impulse_cfgs if imp.get("label")
+        }
         self._active_impulses: list[dict[str, Any]] = []
         self._active_conflicts: list[dict[str, Any]] = []
 
@@ -295,6 +298,16 @@ class BarEngine:
 
     def apply_event(self, event: dict[str, Any]) -> None:
         typ = str(event.get("type", ""))
+
+        # Appraisal events carry their own dynamic bar deltas.
+        if typ == "appraisal":
+            bar_effects = event.get("bar_effects")
+            if isinstance(bar_effects, dict):
+                for k, dv in bar_effects.items():
+                    if k in self._values:
+                        self._values[k] += float(dv)
+            return
+
         if typ == "idle":
             idle_effects = self._event_effects.get("idle")
             if isinstance(idle_effects, dict):
@@ -742,6 +755,178 @@ class BodyRenderer:
 
 
 # ---------------------------------------------------------------------------
+# SomaticAppraiser — content-aware emotional appraisal of messages
+# ---------------------------------------------------------------------------
+
+
+_APPRAISAL_LINE_RE = re.compile(
+    r"^\s*([\w]+)\s*:\s*([+-]?\d+(?:\.\d+)?)\s*(?:[-—]\s*(.+))?$"
+)
+_TAGS_RE = re.compile(r"^tags\s*:\s*(.+)$", re.IGNORECASE)
+_FELT_RE = re.compile(r"^felt\s*:\s*(.+)$", re.IGNORECASE)
+
+
+class SomaticAppraiser:
+    """Fast LLM appraisal that translates message content into body-state signal.
+
+    Instead of every ``message_received`` producing the same flat bar bump,
+    the appraiser reads what was actually said and returns context-sensitive
+    deltas.  A confrontational message raises tension; an intellectually
+    stimulating one spikes curiosity; a warm personal message fills social.
+
+    Runs once at the start of each perceive cycle (before the agent reads its
+    body) and optionally again after the response to appraise the full
+    interaction.  Designed for the reflex model at low token budget.
+    """
+
+    def __init__(
+        self,
+        *,
+        temperature: float = 0.3,
+        max_tokens: int = 120,
+    ) -> None:
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+
+    async def appraise_input(
+        self,
+        client: Any,
+        model: str,
+        *,
+        text: str,
+        person_name: str,
+        bar_names: list[str],
+        bars_pct: dict[str, int],
+        relationship_blurb: str = "",
+        num_ctx: int | None = None,
+    ) -> dict[str, Any]:
+        """Appraise an incoming message and return bar deltas + semantic tags."""
+        bars_line = ", ".join(f"{n}: {bars_pct.get(n, 50)}%" for n in bar_names)
+        bar_names_str = ", ".join(bar_names)
+
+        system = (
+            "You are the somatic appraisal layer of a felt-state engine. You read an "
+            "incoming message and determine how it lands in the body — what it does to "
+            "internal drives. You are not analyzing meaning. You are reading impact.\n\n"
+            f"Available bars: {bar_names_str}\n\n"
+            "Output format — one line per affected bar, then tags and felt note:\n"
+            "  bar_name: delta — one-word reason\n"
+            "  tags: tag1, tag2, tag3\n"
+            "  felt: brief felt note (one sentence, first person)\n\n"
+            "Delta range: -10 to +10. Use 0 or omit bars that aren't affected.\n"
+            "Only use bar names from the list above.\n"
+            "No preamble. No explanation. Just the lines."
+        )
+        user = (
+            f"CURRENT BODY: {bars_line}\n"
+        )
+        if relationship_blurb:
+            user += f"RELATIONSHIP: {relationship_blurb}\n"
+        user += f"FROM: {person_name}\nMESSAGE: {text[:500]}"
+
+        try:
+            res = await client.chat_completion(
+                model,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                think=False,
+                num_ctx=num_ctx,
+            )
+            raw = (res.content or "").strip()
+        except Exception as e:
+            log.debug("somatic_appraisal_failed", error=str(e))
+            return {"bar_effects": {}, "tags": [], "felt": ""}
+
+        return self._parse(raw, set(bar_names))
+
+    async def appraise_interaction(
+        self,
+        client: Any,
+        model: str,
+        *,
+        input_text: str,
+        reply_text: str,
+        person_name: str,
+        bar_names: list[str],
+        bars_pct: dict[str, int],
+        num_ctx: int | None = None,
+    ) -> dict[str, Any]:
+        """Appraise a completed exchange (input + response) for post-turn bar adjustment."""
+        bars_line = ", ".join(f"{n}: {bars_pct.get(n, 50)}%" for n in bar_names)
+        bar_names_str = ", ".join(bar_names)
+
+        system = (
+            "You are the somatic appraisal layer. You just finished an exchange. "
+            "Read what was said and what you replied, then determine the body effect "
+            "of the full interaction — not just the input, but how expressing the "
+            "response felt.\n\n"
+            f"Available bars: {bar_names_str}\n\n"
+            "Output format:\n"
+            "  bar_name: delta — one-word reason\n"
+            "  tags: tag1, tag2\n"
+            "  felt: brief felt note\n\n"
+            "Delta range: -10 to +10. Only affected bars. No preamble."
+        )
+        user = (
+            f"CURRENT BODY: {bars_line}\n"
+            f"THEM ({person_name}): {input_text[:300]}\n"
+            f"YOU: {reply_text[:300]}"
+        )
+
+        try:
+            res = await client.chat_completion(
+                model,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=self.temperature,
+                max_tokens=self.max_tokens,
+                think=False,
+                num_ctx=num_ctx,
+            )
+            raw = (res.content or "").strip()
+        except Exception as e:
+            log.debug("somatic_interaction_appraisal_failed", error=str(e))
+            return {"bar_effects": {}, "tags": [], "felt": ""}
+
+        return self._parse(raw, set(bar_names))
+
+    @staticmethod
+    def _parse(text: str, valid_bars: set[str]) -> dict[str, Any]:
+        bar_effects: dict[str, float] = {}
+        tags: list[str] = []
+        felt = ""
+        for line in text.strip().splitlines():
+            line = line.strip()
+            tm = _TAGS_RE.match(line)
+            if tm:
+                tags = [t.strip() for t in tm.group(1).split(",") if t.strip()]
+                continue
+            fm = _FELT_RE.match(line)
+            if fm:
+                felt = fm.group(1).strip()
+                continue
+            m = _APPRAISAL_LINE_RE.match(line)
+            if not m:
+                continue
+            name = m.group(1).lower()
+            if name not in valid_bars:
+                continue
+            try:
+                delta = max(-10.0, min(10.0, float(m.group(2))))
+            except ValueError:
+                continue
+            if delta != 0:
+                bar_effects[name] = delta
+        return {"bar_effects": bar_effects, "tags": tags, "felt": felt}
+
+
+# ---------------------------------------------------------------------------
 # NoiseEngine — generative entropic inner voice
 # ---------------------------------------------------------------------------
 
@@ -997,6 +1182,12 @@ class TonicBody:
         )
         self._wake_voice_enabled = bool(wake_cfg.get("enabled", True))
         self._wake_voice_model = str(wake_cfg.get("model") or "")
+        appraisal_cfg = config.get("appraisal") or {}
+        self._appraisal_enabled = bool(appraisal_cfg.get("enabled", True))
+        self.appraiser = SomaticAppraiser(
+            temperature=float(appraisal_cfg.get("temperature", 0.3)),
+            max_tokens=int(appraisal_cfg.get("max_tokens", 120)),
+        )
         self.renderer = BodyRenderer()
         self._soma_dir = soma_dir
         self._recent_events: list[dict[str, Any]] = []
@@ -1013,10 +1204,24 @@ class TonicBody:
         if len(self._recent_events) > self._max_events:
             self._recent_events = self._recent_events[-self._max_events:]
 
+    def apply_immediate(self, event: dict[str, Any]) -> None:
+        """Apply an event to bars right now and record it for affect/noise context.
+
+        Used by the somatic appraiser so bar changes are visible in the same
+        perceive cycle rather than waiting for the next daemon heartbeat.  The
+        event is marked ``_applied`` so ``tick_bars`` won't double-count it.
+        """
+        self.bars.apply_event(event)
+        event["_applied"] = True
+        self._recent_events.append(event)
+        if len(self._recent_events) > self._max_events:
+            self._recent_events = self._recent_events[-self._max_events:]
+
     async def tick_bars(self, dt_hours: float) -> None:
         """Advance bar decay, apply pending events, detect impulses/conflicts."""
         for ev in self._recent_events:
-            self.bars.apply_event(ev)
+            if not ev.get("_applied"):
+                self.bars.apply_event(ev)
         self.bars.tick(dt_hours)
         self._tick_count += 1
         if self._tick_count % self._save_every == 0:
@@ -1122,6 +1327,90 @@ class TonicBody:
             minutes_since_conversation=minutes_since_conversation,
             num_ctx=num_ctx,
         )
+
+    async def appraise_and_apply(
+        self,
+        client: Any,
+        model: str,
+        *,
+        text: str,
+        person_name: str,
+        relationship_blurb: str = "",
+        num_ctx: int | None = None,
+    ) -> dict[str, Any]:
+        """Run somatic appraisal on an incoming message and apply bar effects immediately."""
+        if not self._appraisal_enabled or not text:
+            return {"bar_effects": {}, "tags": [], "felt": ""}
+        result = await self.appraiser.appraise_input(
+            client,
+            model,
+            text=text,
+            person_name=person_name,
+            bar_names=self.bars.ordered_names,
+            bars_pct=self.bars.snapshot_pct(),
+            relationship_blurb=relationship_blurb,
+            num_ctx=num_ctx,
+        )
+        if result["bar_effects"]:
+            event = {
+                "type": "appraisal",
+                "subtype": "input",
+                "from": person_name,
+                "bar_effects": result["bar_effects"],
+                "tags": result["tags"],
+                "felt": result["felt"],
+            }
+            self.apply_immediate(event)
+            log.info(
+                "somatic_appraisal_applied",
+                person=person_name,
+                effects=result["bar_effects"],
+                tags=result["tags"],
+                felt=result["felt"],
+            )
+        return result
+
+    async def appraise_interaction_and_apply(
+        self,
+        client: Any,
+        model: str,
+        *,
+        input_text: str,
+        reply_text: str,
+        person_name: str,
+        num_ctx: int | None = None,
+    ) -> dict[str, Any]:
+        """Run somatic appraisal on a completed exchange and apply bar effects."""
+        if not self._appraisal_enabled or not reply_text:
+            return {"bar_effects": {}, "tags": [], "felt": ""}
+        result = await self.appraiser.appraise_interaction(
+            client,
+            model,
+            input_text=input_text,
+            reply_text=reply_text,
+            person_name=person_name,
+            bar_names=self.bars.ordered_names,
+            bars_pct=self.bars.snapshot_pct(),
+            num_ctx=num_ctx,
+        )
+        if result["bar_effects"]:
+            event = {
+                "type": "appraisal",
+                "subtype": "interaction",
+                "from": person_name,
+                "bar_effects": result["bar_effects"],
+                "tags": result["tags"],
+                "felt": result["felt"],
+            }
+            self.apply_immediate(event)
+            log.info(
+                "somatic_interaction_appraisal_applied",
+                person=person_name,
+                effects=result["bar_effects"],
+                tags=result["tags"],
+                felt=result["felt"],
+            )
+        return result
 
     def render_body(self) -> str:
         """Assemble the body markdown the agent reads."""
