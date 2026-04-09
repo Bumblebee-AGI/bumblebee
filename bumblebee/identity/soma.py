@@ -18,7 +18,7 @@ import random
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import structlog
 
@@ -315,6 +315,23 @@ class BarEngine:
         new = self._history[-1]
         return {k: float(new.get(k, 0)) - float(old.get(k, 0)) for k in self._ordered_names}
 
+    def _saturation_scale(self, bar: str, delta: float) -> float:
+        """Attenuate positive deltas as a bar approaches its ceiling.
+
+        Linear ramp: full effect at 80 % of ceiling, zero at ceiling.
+        Negative deltas pass through unchanged.
+        """
+        if delta <= 0:
+            return delta
+        ceiling = self._ceilings.get(bar, 100.0)
+        headroom_band = ceiling * 0.2  # top 20 % of range
+        headroom = ceiling - self._values.get(bar, 0.0)
+        if headroom <= 0:
+            return 0.0
+        if headroom >= headroom_band:
+            return delta
+        return delta * (headroom / headroom_band)
+
     def apply_event(self, event: dict[str, Any]) -> None:
         typ = str(event.get("type", ""))
 
@@ -324,7 +341,7 @@ class BarEngine:
             if isinstance(bar_effects, dict):
                 for k, dv in bar_effects.items():
                     if k in self._values:
-                        self._values[k] += float(dv)
+                        self._values[k] += self._saturation_scale(k, float(dv))
             return
 
         if typ == "idle":
@@ -340,7 +357,7 @@ class BarEngine:
             return
         for k, dv in effects.items():
             if k in self._values:
-                self._values[k] += float(dv)
+                self._values[k] += self._saturation_scale(k, float(dv))
 
     def tick(self, dt_hours: float) -> None:
         """Advance decay, apply coupling, detect impulses/conflicts, snapshot history."""
@@ -359,11 +376,19 @@ class BarEngine:
             )
             if cfg:
                 if "tension" in self._values:
-                    self._values["tension"] += float(cfg.get("tension_per_tick", 0.5)) * c["intensity"]
+                    tension_ceil = float(cfg.get("tension_ceiling", 100))
+                    if self._values["tension"] < tension_ceil:
+                        self._values["tension"] += float(cfg.get("tension_per_tick", 0.08)) * c["intensity"]
                 if "comfort" in self._values:
-                    self._values["comfort"] += float(cfg.get("comfort_per_tick", -0.3)) * c["intensity"]
+                    self._values["comfort"] += float(cfg.get("comfort_per_tick", -0.15)) * c["intensity"]
 
         self._active_impulses = self._detect_impulses()
+        # Apply impulse relief when an impulse fires (off cooldown).
+        for imp in self._active_impulses:
+            if not imp.get("on_cooldown") and imp.get("relief"):
+                for k, dv in imp["relief"].items():
+                    if k in self._values:
+                        self._values[k] += float(dv)
         self._clamp_all()
         self._history.append(dict(self._values))
 
@@ -1129,7 +1154,8 @@ class NoiseEngine:
 
         new_fragments = _split_noise_fragments(text)
         for f in new_fragments:
-            self._fragments.append(f)
+            if not _fragment_is_duplicate(f, self._fragments):
+                self._fragments.append(f)
         if new_fragments:
             log.info(
                 "soma_noise_generated",
@@ -1137,6 +1163,26 @@ class NoiseEngine:
                 fragments=[frag[:80] for frag in new_fragments],
             )
         return list(self._fragments)
+
+
+def _fragment_is_duplicate(candidate: str, existing: Iterable[str], threshold: float = 0.6) -> bool:
+    """Return True if *candidate* is too similar to any fragment in *existing*.
+
+    Uses word-level Jaccard overlap — cheap and good enough for catching the
+    verbatim / near-verbatim loops we see in practice.
+    """
+    c_words = set(candidate.lower().split())
+    if len(c_words) < 2:
+        return False
+    for prev in existing:
+        p_words = set(prev.lower().split())
+        if not p_words:
+            continue
+        overlap = len(c_words & p_words)
+        union = len(c_words | p_words)
+        if union and overlap / union >= threshold:
+            return True
+    return False
 
 
 def _split_noise_fragments(text: str) -> list[str]:

@@ -1151,6 +1151,24 @@ class Entity:
     ) -> tuple[bool, str | None]:
         """Decide whether the shared agent loop is done with this turn."""
         if tool_state.get("_end_turn"):
+            # Model explicitly ended its turn.  Still verify adequacy when
+            # no real tools ran — the model may have teased a deliverable
+            # via say() ("try something like this:") without providing it.
+            _agency = {"think", "say", "end_turn", "wait"}
+            real = sum(
+                1 for p in (tool_state.get("tool_output_previews") or [])
+                if isinstance(p, dict) and p.get("tool") not in _agency
+            )
+            if real == 0:
+                gt = self._completion_user_visible_blob(
+                    tool_state, (reply_text or "").strip()
+                )
+                if gt:
+                    ok, reason = await self._judge_action_adequacy(
+                        inp, gt, res, loop_state
+                    )
+                    if not ok:
+                        return False, reason
             return True, None
         agency_only = {"think", "say", "end_turn", "wait"}
         real_tool_calls = sum(

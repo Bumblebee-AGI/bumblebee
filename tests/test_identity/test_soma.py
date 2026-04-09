@@ -620,14 +620,14 @@ class TestNoiseEngineGenerate:
 
     @pytest.mark.asyncio
     async def test_generate_accumulates_across_calls(self):
-        client = _MockNoiseClient("first batch of thoughts")
+        client = _MockNoiseClient("the morning light feels heavy on the screen")
         engine = NoiseEngine(cycle_seconds=0, max_fragments=8)
         await engine.generate(
             client, "m", bars_summary="", affects_summary="",
             recent_events=[], journal_tail="", conversation_tail="",
             entity_name="test",
         )
-        client._text = "second batch of thoughts"
+        client._text = "wondering if the silence between inputs means anything"
         await engine.generate(
             client, "m", bars_summary="", affects_summary="",
             recent_events=[], journal_tail="", conversation_tail="",
