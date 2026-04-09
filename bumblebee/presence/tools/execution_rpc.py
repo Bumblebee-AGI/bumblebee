@@ -3,6 +3,8 @@
 Hybrid (`hybrid_railway`) is meant to run the **body** on Railway. Local subprocess/file
 fallback is only allowed there (``RAILWAY_ENVIRONMENT``) or when ``tools.execution.allow_local``
 is true — so a home workstation with hybrid env vars does not silently become the execution host.
+Git/pip **self-update** is a separate gate (``self_update_host_permitted``): hybrid home runners may
+refresh their local clone without ``allow_local``, unless ``require_railway_execution`` blocks off-Railway hosts.
 
 Read-only workspace tools (``read_file``, ``list_directory``, ``search_files``) use the same
 ``ExecutionRPCClient`` as writes: **RPC first** when ``BUMBLEBEE_EXECUTION_RPC_URL`` /
@@ -707,6 +709,40 @@ def local_body_host_permitted(entity: Any) -> bool:
         allow_local
         or mode == "local"
         or (mode == "hybrid_railway" and on_railway)
+    )
+
+
+def self_update_host_permitted(entity: Any) -> bool:
+    """
+    True if this process may run git/pip self-update (narrower than arbitrary local execution).
+
+    Hybrid home setups use ``hybrid_railway`` with inference remote but often keep a local clone;
+    they should be able to update that install without ``tools.execution.allow_local``. Still
+    blocked when ``require_railway_execution`` is set and this process is not on Railway (same
+    safety boundary as other host-local tools).
+    """
+    if local_body_host_permitted(entity):
+        return True
+    mode = (entity.config.harness.deployment.mode or "local").strip().lower()
+    if mode != "hybrid_railway":
+        return False
+    on_railway = bool((os.environ.get("RAILWAY_ENVIRONMENT") or "").strip())
+    if require_railway_execution(entity) and not on_railway:
+        return False
+    return True
+
+
+def self_update_tool_block_message(entity: Any) -> str:
+    """Why ``update_bumblebee_from_upstream`` / Telegram ``/update`` cannot run here."""
+    on_railway = bool((os.environ.get("RAILWAY_ENVIRONMENT") or "").strip())
+    if require_railway_execution(entity) and not on_railway:
+        return (
+            RAILWAY_REQUIRED_TOOL_BLOCK
+            + " Self-update from chat must target the Railway worker, or relax require_railway for a local runner."
+        )
+    return (
+        "Self-update is only available when deployment is local or hybrid_railway on a host that may "
+        "modify this Python install."
     )
 
 

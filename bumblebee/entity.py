@@ -87,6 +87,7 @@ from bumblebee.presence.tools import (
     reminders as reminders_tools,
     remote_session as remote_session_tools,
     shell as shell_tools,
+    repo_update as repo_update_tools,
     system_info as system_info_tools,
     voice as voice_tools,
     weather as weather_tools,
@@ -668,6 +669,7 @@ class Entity:
             self.tools.register_decorated(journal_tools.write_journal)
         if self._tool_enabled("system", True):
             self.tools.register_decorated(system_info_tools.get_system_info)
+            self.tools.register_decorated(repo_update_tools.update_bumblebee_from_upstream)
         if self._tool_enabled("shell", True):
             self.tools.register_decorated(shell_tools.run_command)
             self.tools.register_decorated(shell_tools.run_background)
@@ -1014,6 +1016,17 @@ class Entity:
                 "summary_chars_before": before_summary_chars,
                 "summary_chars_after": before_summary_chars,
             }
+        min_msgs = hc.compaction_protect_first_n + hc.compaction_protect_last_n + 1
+        if before_messages <= min_msgs:
+            return {
+                "ok": True,
+                "compacted": False,
+                "reason": "too_short_history",
+                "messages_before": before_messages,
+                "messages_after": before_messages,
+                "summary_chars_before": before_summary_chars,
+                "summary_chars_after": before_summary_chars,
+            }
 
         # Manual compaction can be slightly more aggressive by using extra passes.
         pass_count = max(1, min(int(passes or 1), 6))
@@ -1042,6 +1055,7 @@ class Entity:
         return {
             "ok": True,
             "compacted": (after_messages < before_messages) or (after_summary_chars > before_summary_chars),
+            "reason": "no_compactable_window" if (after_messages == before_messages and after_summary_chars == before_summary_chars) else "",
             "messages_before": before_messages,
             "messages_after": after_messages,
             "summary_chars_before": before_summary_chars,
@@ -2470,6 +2484,22 @@ class Entity:
         self.tonic.reset_baseline()
         async with self.store.session() as conn:
             await self.tonic.save_state_db(conn)
+
+    def poke_world(
+        self,
+        prompt: str,
+        *,
+        source: str = "external",
+        weight: float = 0.6,
+        ttl_seconds: float = 3600.0,
+    ) -> None:
+        """Inject an external cue into soma so GEN/wake can react."""
+        self.tonic.poke_world(
+            prompt=prompt,
+            source=source,
+            weight=weight,
+            ttl_seconds=ttl_seconds,
+        )
 
     async def shutdown(self) -> None:
         try:

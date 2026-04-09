@@ -1,6 +1,7 @@
 from bumblebee.presence.automations.models import Automation, AutomationOrigin
 from bumblebee.presence.platforms.telegram_format import (
     _relative_time,
+    build_status_html,
     command_menu_items,
     telegram_registered_slash_command_names,
     format_commands_page,
@@ -213,3 +214,130 @@ def test_remote_session_caption_stays_compact():
     assert "Bee remote session" in caption
     assert "Firefox" in caption
     assert len(caption) <= 1024
+
+
+def test_build_status_html_reports_soma_gen_snapshot():
+    class _SessionCtx:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _Store:
+        def session(self):
+            return _SessionCtx()
+
+        async def count_episodes(self, _db):
+            return 12
+
+        async def count_relationships(self, _db):
+            return 4
+
+        async def min_episode_timestamp(self, _db):
+            return __import__("time").time() - 3600
+
+    class _Emotions:
+        class _State:
+            class _Primary:
+                value = "curious"
+
+            primary = _Primary()
+
+        def get_state(self):
+            return self._State()
+
+    class _Drives:
+        def all_drives(self):
+            return []
+
+    class _Tools:
+        def openai_tools(self):
+            return [{"function": {"name": "search_web"}}]
+
+    class _Bars:
+        ordered_names = ["social", "curiosity"]
+        _active_conflicts = [{"label": "restless comfort"}]
+        _active_impulses = [{"label": "reach_out", "on_cooldown": False}]
+
+        def snapshot_pct(self):
+            return {"social": 72, "curiosity": 65}
+
+    class _Noise:
+        cycle_seconds = 90.0
+        temperature = 1.1
+        max_tokens = 150
+
+        def current_fragments(self):
+            return ["thinking about that deploy note"]
+
+    class _Tonic:
+        bars = _Bars()
+        noise = _Noise()
+        _noise_enabled = True
+        _noise_model = ""
+        _current_affects = [{"name": "fascination", "intensity": 0.7}]
+        _appraisal_enabled = True
+
+    class _Cog:
+        reflex_model = "gemma3:4b"
+        max_context_tokens = 32000
+        rolling_history_max_messages = 40
+
+        class _HistoryCompression:
+            enabled = True
+            compaction_threshold_ratio = 0.75
+            compaction_target_ratio = 0.20
+
+        history_compression = _HistoryCompression()
+
+    class _Harness:
+        class _Autonomy:
+            enabled = True
+            impulse_wake = True
+            drive_wake = True
+            conflict_wake = True
+            noise_wake = False
+            desire_wake = True
+            desire_wake_threshold = 0.72
+            max_desires_considered = 3
+            allow_tool_calls_on_wake = True
+
+        class _Memory:
+            class _Distillation:
+                enabled = True
+                cycle_seconds = 300.0
+
+            distillation = _Distillation()
+
+        autonomy = _Autonomy()
+        memory = _Memory()
+
+    class _Cfg:
+        name = "Bee"
+        cognition = _Cog()
+        harness = _Harness()
+        raw = {"created": "2026-04-09T00:00:00Z"}
+
+    class _Entity:
+        store = _Store()
+        config = _Cfg()
+        emotions = _Emotions()
+        drives = _Drives()
+        tools = _Tools()
+        tonic = _Tonic()
+
+        @staticmethod
+        def list_known_person_routes(_platform):
+            return ["123"]
+
+    out = __import__("asyncio").run(build_status_html(_Entity(), "1.2.3"))
+    assert "Architecture" in out
+    assert "SOMA" in out
+    assert "GEN" in out
+    assert "Autonomy & wake" in out
+    assert "Cognition" in out
+    assert "Memory pipeline" in out
+    assert "Daemon/automations loop" in out
+    assert "Dominant bar: social 72%" in out
+    assert "GEN model: <code>gemma3:4b</code>" in out

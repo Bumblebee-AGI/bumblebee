@@ -1,4 +1,4 @@
-"""CLI entry: setup, create, run, stop, talk, worker, api, status, evolve, knowledge, journal, recall, wipe, soma-reset, export, import, gateway (on/off/status/restart/setup)."""
+"""CLI entry: setup, create, run, stop, talk, worker, api, status, evolve, knowledge, journal, recall, wipe, soma-reset, export, import, update, gateway (on/off/status/restart/setup)."""
 
 from __future__ import annotations
 
@@ -36,6 +36,7 @@ from bumblebee.utils.gateway_script import (
     run_gateway_script as _run_gateway_script_subprocess,
 )
 from bumblebee.utils.repo_dotenv import load_repo_dotenv
+from bumblebee.utils.self_update import perform_self_update
 
 
 def _async(coro):
@@ -1031,6 +1032,50 @@ def cmd_export(entity_name: str, dest_dir: str) -> None:
     if db.exists():
         shutil.copy2(db, d / "memory.db")
     click.echo(f"Exported to {d}")
+
+
+@cli.command("update")
+@click.option(
+    "--no-pip",
+    "skip_pip",
+    is_flag=True,
+    help="After a git fast-forward, skip ``pip install -e .`` (git checkouts only).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Print what would run without fetching, merging, or installing.",
+)
+def cmd_update(skip_pip: bool, dry_run: bool) -> None:
+    """Update this install from the public GitHub repository (git or pip)."""
+
+    def _log(msg: str) -> None:
+        click.echo(msg)
+
+    res = perform_self_update(
+        pip_reinstall=not skip_pip,
+        dry_run=dry_run,
+        log=_log,
+    )
+    if res.get("ok"):
+        if dry_run:
+            click.echo("Dry run finished.")
+        elif res.get("method") == "git":
+            for m in res.get("messages") or ():
+                click.echo(m)
+            pip_r = res.get("pip")
+            if isinstance(pip_r, dict) and pip_r.get("ok") and (pip_r.get("output") or "").strip():
+                click.echo((pip_r.get("output") or "").strip())
+            click.echo("Update complete. Restart running workers or daemons to load new code.")
+        else:
+            out = (res.get("output") or "").strip()
+            if out:
+                click.echo(out)
+            click.echo("Update complete. Restart running workers or daemons to load new code.")
+        return
+
+    err = str(res.get("error") or "update failed")
+    raise click.ClickException(err)
 
 
 @cli.command("import")

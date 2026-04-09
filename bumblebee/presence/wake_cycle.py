@@ -15,6 +15,7 @@ from typing import Any
 import structlog
 
 from bumblebee.config import AutonomySettings, EntityConfig
+from bumblebee.identity.desire import infer_desires
 from bumblebee.identity.drives import Drive
 from bumblebee.models import Input
 
@@ -32,6 +33,7 @@ class WakeCycleEngine:
         self._hour_start: float = time.time()
         self._running: bool = False
         self._next_timer_wake: float = self._schedule_next_timer()
+        self._last_desires: list[dict[str, Any]] = []
 
     def _schedule_next_timer(self) -> float:
         lo = max(1, self._auto.base_wake_interval_min) * 60.0
@@ -67,6 +69,12 @@ class WakeCycleEngine:
         if self._cycle_count_this_hour >= self._auto.max_cycles_per_hour:
             return None
 
+        self._last_desires = infer_desires(
+            tonic=tonic,
+            drives=drives,
+            max_items=max(1, int(self._auto.max_desires_considered or 3)),
+        )
+
         if self._auto.impulse_wake:
             active = [
                 i for i in tonic.bars._active_impulses
@@ -97,6 +105,16 @@ class WakeCycleEngine:
                 if "?" in fl or "should" in fl or "wonder" in fl or "why" in fl:
                     return f"noise:{frag[:60]}"
 
+        if self._auto.desire_wake and self._last_desires:
+            top = self._last_desires[0]
+            urgency = float(top.get("urgency", 0.0) or 0.0)
+            if urgency >= float(self._auto.desire_wake_threshold):
+                kind = str(top.get("kind") or "act").strip() or "act"
+                target = str(top.get("target") or "").strip()
+                if target:
+                    return f"desire:{kind}:{target[:40]}"
+                return f"desire:{kind}"
+
         if now >= self._next_timer_wake:
             self._next_timer_wake = self._schedule_next_timer()
             return "timer"
@@ -114,7 +132,9 @@ class WakeCycleEngine:
         if self._running:
             return
         self._running = True
-        self._last_cycle_at = time.time()
+        now = time.time()
+        previous_wake_at = self._last_cycle_at
+        self._last_cycle_at = now
         self._cycle_count_this_hour += 1
         self._next_timer_wake = self._schedule_next_timer()
 
@@ -126,7 +146,7 @@ class WakeCycleEngine:
         )
 
         try:
-            stirring = await self._compose_stirring(entity, tonic)
+            stirring = await self._compose_stirring(entity, tonic, previous_wake_at=previous_wake_at)
             context = self._build_context(entity, tonic, stirring, reason)
             await self._run_perceive(entity, context)
         except Exception as e:
@@ -134,7 +154,7 @@ class WakeCycleEngine:
         finally:
             self._running = False
 
-    async def _compose_stirring(self, entity: Any, tonic: Any) -> str:
+    async def _compose_stirring(self, entity: Any, tonic: Any, *, previous_wake_at: float) -> str:
         """Ask the subconscious WakeVoice to compose the wake prompt."""
         journal_tail = ""
         if hasattr(entity, "journal") and entity.journal.path.is_file():
@@ -167,9 +187,8 @@ class WakeCycleEngine:
 
         last_mood = ""
         lc = getattr(entity, "_last_conversation", {}) or {}
-        last_turn_at = getattr(entity, "_last_turn_completed_at", None)
         now = time.time()
-        minutes_since_wake = (now - self._last_cycle_at) / 60.0 if self._last_cycle_at > 0 else 0.0
+        minutes_since_wake = (now - previous_wake_at) / 60.0 if previous_wake_at > 0 else 0.0
         minutes_since_conversation = (now - float(lc.get("at", 0))) / 60.0 if lc.get("at") else 0.0
 
         reflex_model = (
@@ -222,21 +241,59 @@ class WakeCycleEngine:
             f"[World]",
             f"Platforms you're present on: {channels_str}",
             "",
-            "You just woke up. Your body woke you — read what stirs and decide what "
-            "to do. Use think() to reason privately. Use say() to send a message. "
-            "Use end_turn() when you're done — record your mood and a parting thought. "
-            "Doing nothing is valid. Silence is valid. Observation alone is valid.",
+            "[Top desire pressures]",
+            self._render_desire_block(),
+            "",
+            "You just woke up. Your body woke you — read what stirs and decide what to do.",
         ]
+
+        if self._auto.allow_tool_calls_on_wake:
+            parts.extend(
+                [
+                    "You may venture out with tools when it feels natural: search, fetch, inspect, "
+                    "write notes, schedule, or message someone. Prefer purposeful action tied to your "
+                    "active desire pressure, not generic busywork.",
+                    "Use think() to reason privately. Use any relevant tools. Use say() only when you "
+                    "actually want to communicate. Use end_turn() when done — include mood and parting thought.",
+                    "Doing nothing is valid. Silence is valid. Observation alone is valid.",
+                ]
+            )
+        else:
+            parts.extend(
+                [
+                    "Wake mode is constrained right now: reason, observe, and optionally speak, but do not "
+                    "venture into tool use.",
+                    "Use think() to reason privately. Use say() to send a message. Use end_turn() when done.",
+                ]
+            )
 
         return "\n".join(parts)
 
+    def _render_desire_block(self) -> str:
+        if not self._last_desires:
+            return "(no strong pressures)"
+        lines: list[str] = []
+        for d in self._last_desires[: max(1, int(self._auto.max_desires_considered or 3))]:
+            kind = str(d.get("kind") or "act")
+            urgency = float(d.get("urgency", 0.0) or 0.0)
+            target = str(d.get("target") or "").strip()
+            why = str(d.get("why") or "").strip()
+            msg = f"- {kind} ({urgency:.2f})"
+            if target:
+                msg += f" -> {target[:80]}"
+            if why:
+                msg += f" [{why[:120]}]"
+            lines.append(msg)
+        return "\n".join(lines) if lines else "(no strong pressures)"
+
     async def _run_perceive(self, entity: Any, context: str) -> None:
         """Run entity.perceive() with the autonomous context."""
+        channel, reply_platform = self._resolve_wake_delivery(entity)
         inp = Input(
             text=context,
             person_id="self",
             person_name="Self",
-            channel="autonomous",
+            channel=channel,
             platform="autonomous",
         )
 
@@ -248,7 +305,7 @@ class WakeCycleEngine:
                 stream=None,
                 record_user_message=False,
                 meaningful_override=False,
-                reply_platform=None,
+                reply_platform=reply_platform,
                 preserve_conversation_route=True,
                 routine_history=False,
                 skip_relational_upsert=True,
@@ -276,3 +333,38 @@ class WakeCycleEngine:
             used_end_turn=used_end_turn,
             reply_len=len(reply_text or ""),
         )
+
+    @staticmethod
+    def _resolve_wake_delivery(entity: Any) -> tuple[str, Any | None]:
+        """
+        Pick where autonomous `say()` should deliver:
+        1) last active conversation route if still available,
+        2) first active non-CLI platform with its last known channel,
+        3) fallback to autonomous/no platform (messages cannot be sent).
+        """
+        platforms = getattr(entity, "_platforms", {}) or {}
+        last_conv = getattr(entity, "_last_conversation", {}) or {}
+
+        last_name = str(last_conv.get("platform") or "").strip().lower()
+        last_channel = str(last_conv.get("channel") or "").strip()
+        if last_name and last_channel:
+            last_pf = platforms.get(last_name)
+            if last_pf is not None:
+                return last_channel, last_pf
+
+        for name, pf in platforms.items():
+            n = str(name or "").strip().lower()
+            if n == "cli":
+                continue
+            ch = ""
+            ch_attr = getattr(pf, "last_chat_id", None)
+            if ch_attr:
+                ch = str(ch_attr).strip()
+            if not ch:
+                ch_attr = getattr(pf, "last_channel_id", None)
+                if ch_attr:
+                    ch = str(ch_attr).strip()
+            if ch:
+                return ch, pf
+
+        return "autonomous", None

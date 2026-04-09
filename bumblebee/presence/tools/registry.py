@@ -103,6 +103,8 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return "💬 sending a direct message..."
     if tool_name == "get_system_info":
         return "💻 checking system stats..."
+    if tool_name == "update_bumblebee_from_upstream":
+        return "⬆️ updating Bumblebee from upstream..."
     if tool_name == "run_command":
         cmd = str(args.get("command", "something") or "something")
         short = cmd[:40] + "..." if len(cmd) > 40 else cmd

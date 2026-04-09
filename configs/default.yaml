@@ -205,6 +205,10 @@ autonomy:
   drive_wake: true                 # wake when drives cross threshold
   conflict_wake: true              # wake on active soma conflicts
   noise_wake: false                # wake on unresolved noise fragments (experimental)
+  desire_wake: true                # wake when synthesized desire pressure is strong
+  desire_wake_threshold: 0.72      # 0..1 urgency threshold for desire-triggered wake
+  max_desires_considered: 3        # how many top desire pressures to surface in wake context
+  allow_tool_calls_on_wake: true   # if true, wake cycles may use tools to explore/act
   summon:
     enabled: true
     timeout_seconds: 30

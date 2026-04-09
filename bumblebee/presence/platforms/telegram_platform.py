@@ -20,7 +20,12 @@ from telegram.helpers import escape_markdown
 
 from bumblebee.models import Input
 from bumblebee.presence.platforms.base import Platform
-from bumblebee.presence.tools.execution_rpc import get_execution_client
+from bumblebee.presence.tools.execution_rpc import (
+    get_execution_client,
+    self_update_host_permitted,
+    self_update_tool_block_message,
+)
+from bumblebee.utils.self_update import perform_self_update
 from bumblebee.presence.platforms.telegram_format import (
     build_status_html,
     command_menu_items,
@@ -33,6 +38,8 @@ from bumblebee.presence.platforms.telegram_format import (
     format_models_html,
     format_ping_html,
     format_private_usage_html,
+    format_update_blocked_html,
+    format_update_result_html,
     format_privacy_allow_deny_usage_html,
     format_privacy_cannot_deny_last_html,
     format_privacy_help_html,
@@ -208,6 +215,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("tools", self._on_tools_command), group=_g)
         self.app.add_handler(CommandHandler("routines", self._on_routines_command), group=_g)
         self.app.add_handler(CommandHandler("ping", self._on_ping_command), group=_g)
+        self.app.add_handler(CommandHandler("update", self._on_update_command), group=_g)
         self.app.add_handler(CommandHandler("context", self._on_context_command), group=_g)
         self.app.add_handler(CommandHandler("compact", self._on_compact_command), group=_g)
         self.app.add_handler(CommandHandler("reset", self._on_reset_command), group=_g)
@@ -1106,6 +1114,45 @@ class TelegramPlatform(Platform):
         _ = context
         await self._reply_html(update, format_ping_html(self._app_version))
 
+    async def _on_update_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        if not await self._check_allowed(update, notify=True):
+            return
+        u = update.effective_user
+        uid = int(u.id) if u else None
+        if not self._operators_configured():
+            await self._reply_html(update, format_privacy_no_operators_html())
+            return
+        if not self._is_operator(uid):
+            await self._reply_html(update, format_privacy_operator_required_html())
+            return
+        if not self_update_host_permitted(self._entity):
+            await self._reply_html(
+                update,
+                format_update_blocked_html(self_update_tool_block_message(self._entity)),
+            )
+            return
+        raw_args = [str(a).strip().lower() for a in (context.args or []) if str(a).strip()]
+        skip_pip = any(x in ("no-pip", "nopip", "no_pip") for x in raw_args)
+        log_lines: list[str] = []
+
+        def _log(msg: str) -> None:
+            log_lines.append(msg)
+
+        await self._reply_html(
+            update,
+            "<b>Updating Bumblebee…</b>\n"
+            "Pulling from the public repo (may take a minute).",
+        )
+        result = await asyncio.to_thread(
+            perform_self_update,
+            pip_reinstall=not skip_pip,
+            dry_run=False,
+            log=_log,
+        )
+        await self._reply_html(update, format_update_result_html(result, log_lines=log_lines))
+
     async def _on_context_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):
             return
@@ -1198,11 +1245,22 @@ class TelegramPlatform(Platform):
             )
             return
 
+        await self._reply_html(
+            update,
+            (
+                "<b>Compacting context in background…</b>\n"
+                "I’ll send a follow-up when this pass completes."
+            ),
+        )
         result = await ent.compact_context_now(aggressive=aggressive, passes=passes)
         if not isinstance(result, dict) or not result.get("ok"):
             reason = "unknown"
             if isinstance(result, dict):
                 reason = str(result.get("reason") or reason)
+            await self._reply_html(update, f"Compaction skipped: <code>{html.escape(reason)}</code>")
+            return
+        if not bool(result.get("compacted")):
+            reason = str(result.get("reason") or "no_effect")
             await self._reply_html(update, f"Compaction skipped: <code>{html.escape(reason)}</code>")
             return
         mb = int(result.get("messages_before", 0) or 0)

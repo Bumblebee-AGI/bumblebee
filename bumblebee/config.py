@@ -237,6 +237,10 @@ class AutonomySettings:
     drive_wake: bool = True
     conflict_wake: bool = True
     noise_wake: bool = False
+    desire_wake: bool = True
+    desire_wake_threshold: float = 0.72
+    max_desires_considered: int = 3
+    allow_tool_calls_on_wake: bool = True
     summon: SummonSettings = field(default_factory=SummonSettings)
 
 

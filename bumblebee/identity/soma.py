@@ -1056,6 +1056,13 @@ def _format_event_for_noise(ev: dict[str, Any]) -> str:
         mins = ev.get("duration_minutes", 0)
         return f"  silence ({int(mins)} min)" if mins else "  silence"
 
+    if typ == "world_poke":
+        source = str(ev.get("source") or "external").strip()
+        prompt = str(ev.get("prompt") or "").strip()
+        if prompt:
+            return f"  world poke ({source}): {prompt[:180]}"
+        return f"  world poke ({source})"
+
     detail = ev.get("name") or ev.get("from") or ev.get("to") or ""
     return f"  {typ}" + (f" ({detail})" if detail else "")
 
@@ -1389,6 +1396,43 @@ class TonicBody:
         self._recent_events.append(event)
         if len(self._recent_events) > self._max_events:
             self._recent_events = self._recent_events[-self._max_events:]
+
+    def recent_events(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Return recent events, skipping expired world pokes."""
+        now = time.time()
+        out: list[dict[str, Any]] = []
+        for ev in self._recent_events[-max(1, int(limit or 20)) :]:
+            if ev.get("type") == "world_poke":
+                expires_at = float(ev.get("expires_at", 0) or 0)
+                if expires_at and expires_at < now:
+                    continue
+            out.append(ev)
+        return out
+
+    def poke_world(
+        self,
+        *,
+        prompt: str,
+        source: str = "external",
+        weight: float = 0.6,
+        ttl_seconds: float = 3600.0,
+    ) -> None:
+        """Inject a loose external-world cue into soma/GEN context."""
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            return
+        now = time.time()
+        ttl = max(60.0, float(ttl_seconds or 3600.0))
+        self.emit(
+            {
+                "type": "world_poke",
+                "source": str(source or "external"),
+                "prompt": prompt[:800],
+                "weight": max(0.0, min(1.0, float(weight or 0.6))),
+                "created_at": now,
+                "expires_at": now + ttl,
+            }
+        )
 
     def apply_immediate(self, event: dict[str, Any]) -> None:
         """Apply an event to bars right now and record it for affect/noise context.

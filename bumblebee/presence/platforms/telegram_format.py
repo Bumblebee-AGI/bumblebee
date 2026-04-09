@@ -74,7 +74,7 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
     ),
     TelegramCommandSpec(
         name="status",
-        summary="Current mood, memory, model, and tool snapshot",
+        summary="SOMA/GEN architecture snapshot and runtime health",
         usage="/status",
         category="Introspection",
     ),
@@ -118,6 +118,12 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         name="ping",
         summary="Quick liveness check",
         usage="/ping",
+        category="Runtime",
+    ),
+    TelegramCommandSpec(
+        name="update",
+        summary="Pull latest Bumblebee from GitHub (operators only; restarts recommended)",
+        usage="/update  or  /update no-pip",
         category="Runtime",
     ),
     TelegramCommandSpec(
@@ -299,6 +305,51 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
         first_episode_ts=first_ts,
     )
     n_telegram_routes = len(entity.list_known_person_routes("telegram"))
+    bars = {}
+    bar_names: list[str] = []
+    active_conflicts = 0
+    active_impulses = 0
+    affects_count = 0
+    noise_count = 0
+    gen_enabled = False
+    gen_model = ""
+    gen_cycle_s = 0.0
+    gen_temp = 1.1
+    gen_max_tokens = 150
+    appraisal_enabled = False
+    soma_db_restored = False
+    state_hydrated = False
+    try:
+        bars = entity.tonic.bars.snapshot_pct()
+        bar_names = list(entity.tonic.bars.ordered_names)
+        active_conflicts = len(getattr(entity.tonic.bars, "_active_conflicts", []))
+        active_impulses = len(
+            [i for i in getattr(entity.tonic.bars, "_active_impulses", []) if not i.get("on_cooldown")]
+        )
+        affects_count = len(getattr(entity.tonic, "_current_affects", []))
+        noise_count = len(entity.tonic.noise.current_fragments())
+        gen_enabled = bool(getattr(entity.tonic, "_noise_enabled", True))
+        gen_model = str(getattr(entity.tonic, "_noise_model", "") or "").strip()
+        gen_cycle_s = float(getattr(entity.tonic.noise, "cycle_seconds", 0.0) or 0.0)
+        gen_temp = float(getattr(entity.tonic.noise, "temperature", 1.1) or 1.1)
+        gen_max_tokens = int(getattr(entity.tonic.noise, "max_tokens", 150) or 150)
+        appraisal_enabled = bool(getattr(entity.tonic, "_appraisal_enabled", False))
+        soma_db_restored = bool(getattr(entity, "_soma_db_restored", False))
+        state_hydrated = bool(getattr(entity, "_state_hydrated", False))
+    except Exception:
+        pass
+
+    top_bar = "n/a"
+    if bars:
+        bar, val = max(bars.items(), key=lambda kv: int(kv[1]))
+        top_bar = f"{bar} {int(val)}%"
+
+    gen_model_effective = gen_model or cfg.cognition.reflex_model
+    gen_cadence = f"~{int(round(gen_cycle_s))}s" if gen_cycle_s > 0 else "default cadence"
+    auto = cfg.harness.autonomy
+    hc = cfg.cognition.history_compression
+    dist = cfg.harness.memory.distillation
+    daemon_running = bool(getattr(entity, "automation_engine", None) is not None)
     snap = CLIHeaderSnapshot(
         app_version=app_version,
         entity_name=cfg.name,
@@ -314,16 +365,39 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
     en = html.escape(snap.entity_name)
     return (
         f"🐝 <b>{en}</b> · v{html.escape(app_version)}\n\n"
-
+        f"<b>Architecture</b>\n"
+        f"  SOMA: <code>online</code> · {len(bar_names)} bars · {affects_count} affects · {noise_count} noise fragments\n"
+        f"  Somatic appraisal: <code>{'enabled' if appraisal_enabled else 'disabled'}</code>\n"
+        f"  GEN: <code>{'enabled' if gen_enabled else 'disabled'}</code> · {html.escape(gen_cadence)} · "
+        f"temp {gen_temp:.2f} · max_tokens {gen_max_tokens}\n"
+        f"  GEN model: <code>{html.escape(gen_model_effective)}</code>\n\n"
         f"<b>State</b>\n"
-        f"  Mood: {html.escape(snap.mood_label)}\n"
-        f"  Drive: {html.escape(snap.drive_line)}\n"
+        f"  Dominant bar: {html.escape(top_bar)}\n"
+        f"  Legacy mood bridge: {html.escape(snap.mood_label)}\n"
+        f"  Legacy drive bridge: {html.escape(snap.drive_line)}\n"
+        f"  Active conflicts: {active_conflicts}\n"
+        f"  Active impulses: {active_impulses}\n"
         f"  Awake: {html.escape(snap.awake_summary)}\n\n"
+        f"<b>Autonomy & wake</b>\n"
+        f"  Autonomy: <code>{'enabled' if auto.enabled else 'disabled'}</code>\n"
+        f"  Wake signals: impulse={auto.impulse_wake}, drive={auto.drive_wake}, conflict={auto.conflict_wake}, "
+        f"noise={auto.noise_wake}, desire={auto.desire_wake}\n"
+        f"  Desire threshold: {auto.desire_wake_threshold:.2f} · max desires: {auto.max_desires_considered}\n"
+        f"  Tool calls on wake: {'yes' if auto.allow_tool_calls_on_wake else 'no'}\n\n"
 
         f"<b>Memory</b>\n"
         f"  {snap.episode_count} episodes\n"
         f"  {snap.people_count} relationships\n"
         f"  {n_telegram_routes} telegram route(s)\n\n"
+        f"<b>Cognition</b>\n"
+        f"  History compression: <code>{'enabled' if hc.enabled else 'disabled'}</code>\n"
+        f"  Compression threshold: {hc.compaction_threshold_ratio:.2f} · target: {hc.compaction_target_ratio:.2f}\n"
+        f"  Rolling messages cap: {cfg.cognition.rolling_history_max_messages}\n\n"
+        f"<b>Memory pipeline</b>\n"
+        f"  Distillation: <code>{'enabled' if dist.enabled else 'disabled'}</code> · cycle {int(dist.cycle_seconds)}s\n"
+        f"  Daemon/automations loop: <code>{'running' if daemon_running else 'inactive'}</code>\n"
+        f"  State hydration: {'ready' if state_hydrated else 'pending'} · SOMA DB restore: "
+        f"{'done' if soma_db_restored else 'pending'}\n\n"
 
         f"<b>Runtime</b>\n"
         f"  Model: <code>{html.escape(snap.reflex_model)}</code>\n"
@@ -630,6 +704,62 @@ def format_ping_html(app_version: str) -> str:
         f"pong · bumblebee v{html.escape(app_version)}\n"
         f"server_time_unix · <code>{int(time.time())}</code>"
     )
+
+
+def format_update_blocked_html(reason: str) -> str:
+    r = html.escape((reason or "").strip() or "This process is not allowed to modify the install.")
+    return (
+        "<b>Update unavailable here</b>\n\n"
+        f"{r}\n\n"
+        "<i>Hybrid: use <code>/update</code> while talking to the Railway worker, or run "
+        "<code>bumblebee update</code> on the machine that holds the clone. If execution is "
+        "locked to Railway only, unset <code>tools.execution.require_railway</code> for a local runner "
+        "or use <code>tools.execution.allow_local</code> for other local tools.</i>"
+    )
+
+
+def format_update_result_html(result: dict[str, Any], *, log_lines: list[str] | None = None) -> str:
+    lines: list[str] = []
+    if result.get("ok"):
+        lines.append("<b>Update finished</b>\n")
+        method = result.get("method")
+        if method == "git":
+            repo = html.escape(str(result.get("repo") or ""))
+            if repo:
+                lines.append(f"• Repo: <code>{repo}</code>")
+            br = html.escape(str(result.get("before_ref") or "?"))
+            ar = html.escape(str(result.get("after_ref") or "?"))
+            lines.append(f"• Git: <code>{br}</code> → <code>{ar}</code>")
+            for m in result.get("messages") or []:
+                if str(m).strip():
+                    lines.append(html.escape(str(m)))
+            pip_r = result.get("pip")
+            if isinstance(pip_r, dict) and pip_r.get("ok"):
+                po = (pip_r.get("output") or "").strip()
+                if po:
+                    if len(po) > 2500:
+                        po = po[:2500] + "\n…"
+                    lines.append("<pre>" + html.escape(po) + "</pre>")
+        elif method == "pip_git":
+            po = (result.get("output") or "").strip()
+            if po:
+                if len(po) > 2500:
+                    po = po[:2500] + "\n…"
+                lines.append("<pre>" + html.escape(po) + "</pre>")
+        lines.append(
+            "\n<i>Restart this worker (or <code>bumblebee run</code>) so the process loads new code.</i>"
+        )
+    else:
+        lines.append("<b>Update failed</b>\n")
+        err = html.escape(str(result.get("error") or "unknown error"))
+        lines.append(f"<code>{err}</code>")
+    if log_lines:
+        tail = "\n".join(log_lines).strip()
+        if tail:
+            if len(tail) > 1500:
+                tail = tail[:1500] + "\n…"
+            lines.append("\n<b>Log</b>\n<pre>" + html.escape(tail) + "</pre>")
+    return "\n".join(lines)
 
 
 def format_reset_html(entity_name: str) -> str:

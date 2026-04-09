@@ -8,6 +8,7 @@ from bumblebee.config import HarnessConfig, entity_from_dict
 from bumblebee.presence.tools import execution_rpc
 from bumblebee.presence.tools.execution_rpc import (
     local_tool_block_message,
+    self_update_host_permitted,
     should_fallback_rpc_to_local,
 )
 from bumblebee.presence.tools.runtime import ToolRuntimeContext, reset_tool_runtime, set_tool_runtime
@@ -136,6 +137,42 @@ def test_require_railway_blocks_off_railway_local_execution(
         assert client.allow_local_backend is expect_local
     finally:
         reset_tool_runtime(tok)
+
+
+@pytest.mark.parametrize(
+    ("deployment_mode", "railway_env", "require_railway_env", "expect_self_update"),
+    [
+        ("hybrid_railway", "", None, True),
+        ("hybrid_railway", "", "true", False),
+        ("hybrid_railway", "production", "true", True),
+        ("local", "", None, True),
+        ("local", "", "true", False),
+    ],
+)
+def test_self_update_permits_hybrid_home_without_allow_local(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    deployment_mode: str,
+    railway_env: str,
+    require_railway_env: str | None,
+    expect_self_update: bool,
+) -> None:
+    monkeypatch.delenv("BUMBLEBEE_EXECUTION_RPC_URL", raising=False)
+    if require_railway_env:
+        monkeypatch.setenv("BUMBLEBEE_EXECUTION_REQUIRE_RAILWAY", require_railway_env)
+    else:
+        monkeypatch.delenv("BUMBLEBEE_EXECUTION_REQUIRE_RAILWAY", raising=False)
+    if railway_env:
+        monkeypatch.setenv("RAILWAY_ENVIRONMENT", railway_env)
+    else:
+        monkeypatch.delenv("RAILWAY_ENVIRONMENT", raising=False)
+
+    h = HarnessConfig()
+    h.deployment.mode = deployment_mode
+    h.memory.database_path = str(tmp_path / "m.db")
+    ec = entity_from_dict(h, _MIN_ENTITY)
+    holder = _EntityHolder(ec)
+    assert self_update_host_permitted(holder) is expect_self_update
 
 
 def test_require_railway_block_message_is_explicit(
