@@ -1135,6 +1135,14 @@ class Entity:
         )
         visible = (reply_text or "").strip()
         recap = self._gate_tool_recap(tool_state) if real_tool_calls > 0 else ""
+        if finish_reason_hint(res) and loop_state.completion_failures >= 2:
+            if visible:
+                return True, None
+            return False, (
+                "Same turn. Your output keeps hitting the token limit. "
+                "If you're writing code or long content, use write_file to save it to disk, "
+                "then use say to tell the user what you built. Do not output long text directly."
+            )
         if not visible:
             if real_tool_calls > 0 or finish_reason_hint(res):
                 return False, (

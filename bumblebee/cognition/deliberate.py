@@ -345,11 +345,24 @@ class DeliberateCognition:
             visible = _visible_assistant_text(res)
             done = True
             recovery = None
-            if final_checker is not None:
+            if _finish_reason_hits_limit(res.finish_reason):
+                loop_state._consecutive_length = getattr(loop_state, "_consecutive_length", 0) + 1
+            else:
+                loop_state._consecutive_length = 0
+            if loop_state._consecutive_length >= 3:
+                done = True
+                recovery = None
+                if visible:
+                    visible += "\n\n(your response was too long — use write_file for large content)"
+            elif final_checker is not None:
                 done, recovery = await final_checker(visible, res, loop_state)
             elif _finish_reason_hits_limit(res.finish_reason):
                 done = False
-                recovery = _TOOL_CONTINUATION_USER
+                recovery = (
+                    "Same turn. Your output was cut off by the token limit. "
+                    "If you're writing code or long content, use write_file to save it to disk "
+                    "instead of outputting it as text. Then tell the user what you wrote."
+                )
             if not done and step_idx + 1 < loop_state.step_budget:
                 loop_state.completion_failures += 1
                 asst = self._assistant_content_for_message(res)
