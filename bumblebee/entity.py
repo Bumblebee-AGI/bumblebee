@@ -77,6 +77,7 @@ from bumblebee.presence.tools import (
     browser as browser_tools,
     send_file as send_file_tools,
     code as code_tools,
+    crypto as crypto_tools,
     execution_ops as execution_ops_tools,
     imagegen as imagegen_tools,
     messaging as messaging_tools,
@@ -635,6 +636,8 @@ class Entity:
             self.tools.register_decorated(weather_tools.get_weather)
         if self._tool_enabled("news", True):
             self.tools.register_decorated(news_tools.get_news)
+        self.tools.register_decorated(crypto_tools.get_crypto_price)
+        self.tools.register_decorated(crypto_tools.search_crypto_token)
         if self._tool_enabled("pdf", True):
             self.tools.register_decorated(pdf_tools.read_pdf)
         if self._tool_enabled("voice", True):
@@ -1123,6 +1126,21 @@ class Entity:
             lines.append(f"  - {name} ({ok}): {snippet}")
         return "Recent tool results:\n" + "\n".join(lines)
 
+    @staticmethod
+    def _completion_user_visible_blob(tool_state: dict[str, Any], reply_text: str) -> str:
+        """Text the user may have already seen (say/intermediate) plus the candidate final."""
+        parts: list[str] = []
+        sm = tool_state.get("_sent_messages")
+        if isinstance(sm, list):
+            for x in sm:
+                s = str(x).strip()
+                if s:
+                    parts.append(s)
+        v = (reply_text or "").strip()
+        if v:
+            parts.append(v)
+        return " ".join(parts).strip()
+
     async def _loop_completion_gate(
         self,
         inp: Input,
@@ -1134,36 +1152,36 @@ class Entity:
         """Decide whether the shared agent loop is done with this turn."""
         if tool_state.get("_end_turn"):
             return True, None
-        if tool_state.get("_messages_sent", 0) > 0:
-            return True, None
         agency_only = {"think", "say", "end_turn", "wait"}
         real_tool_calls = sum(
             1 for p in (tool_state.get("tool_output_previews") or [])
             if isinstance(p, dict) and p.get("tool") not in agency_only
         )
         visible = (reply_text or "").strip()
+        # Everything the user may already have seen this turn (say/intermediate) plus final text.
+        gate_text = self._completion_user_visible_blob(tool_state, visible)
         recap = self._gate_tool_recap(tool_state) if real_tool_calls > 0 else ""
         if finish_reason_hint(res) and loop_state.completion_failures >= 2:
-            if visible:
+            if gate_text:
                 return True, None
             return False, (
                 "Same turn. Your output keeps hitting the token limit. "
                 "If you're writing code or long content, use write_file to save it to disk, "
                 "then use say to tell the user what you built. Do not output long text directly."
             )
-        if not visible:
+        if not gate_text:
             if real_tool_calls > 0 or finish_reason_hint(res):
                 return False, (
                     f"Same turn. You haven't answered yet.\n{recap}\n"
                     "Answer from these results, call another tool, or state the exact failure."
                 )
             return False, "Same turn. You haven't answered the user yet. Use say() to respond."
-        if reply_looks_like_progress_only(visible):
+        if reply_looks_like_progress_only(gate_text):
             return False, (
                 f"Same turn. That was progress chatter, not the final answer.\n{recap}\n"
                 "Continue until you can answer from results or state the exact failure."
             )
-        if pro_forma_tool_followup(visible) and real_tool_calls > 0:
+        if pro_forma_tool_followup(gate_text) and real_tool_calls > 0:
             return False, (
                 f"Same turn. A one-word acknowledgement is not enough.\n{recap}\n"
                 "Answer the user from the tool results or explain the exact failure."
@@ -1175,7 +1193,7 @@ class Entity:
                 "then answer from the result."
             )
         if loop_state.last_tool_failed:
-            if pro_forma_tool_followup(visible) or reply_looks_like_progress_only(visible):
+            if pro_forma_tool_followup(gate_text) or reply_looks_like_progress_only(gate_text):
                 return False, (
                     f"Same turn. The last tool failed.\n{recap}\n"
                     "Either retry with another tool or tell the user exactly what failed."
@@ -1188,13 +1206,84 @@ class Entity:
         if needs_grounding_judgment:
             judged_done, judged_reason = await self._judge_grounded_completion(
                 inp,
-                visible,
+                gate_text,
                 res,
                 loop_state,
                 tool_state,
             )
             if not judged_done:
                 return False, judged_reason
+        elif real_tool_calls == 0:
+            # No file/shell/web/code tools — use a small judge instead of phrase lists.
+            judged_done, judged_reason = await self._judge_action_adequacy(
+                inp, gate_text, res, loop_state
+            )
+            if not judged_done:
+                return False, judged_reason
+        return True, None
+
+    async def _judge_action_adequacy(
+        self,
+        inp: Input,
+        gate_text: str,
+        res: ChatCompletionResult,
+        loop_state: AgentLoopState,
+    ) -> tuple[bool, str | None]:
+        """
+        Reflex model: may this turn end when no work tools (write/shell/web/…) ran?
+
+        Catches “I’ll build it” in any wording/register without hardcoded English stalls.
+        """
+        candidate = (gate_text or "").strip()
+        if not candidate:
+            return True, None
+        user_request = (inp.text or "").strip()[:1200]
+        prompt = (
+            "Reply with exactly one line: DONE: <reason> or CONTINUE: <reason>.\n\n"
+            "You decide if the assistant turn may END.\n\n"
+            "DONE if:\n"
+            "- The user only wanted chat, thanks, or a small clarification with no deliverable; or\n"
+            "- The assistant fully answered with the concrete artifact in text (code, steps, facts, etc.); or\n"
+            "- The assistant clearly declined or cannot help.\n\n"
+            "CONTINUE if:\n"
+            "- The user asked for work that normally needs tools or a tangible result (code, files, "
+            "commands, live data, inspecting the machine, etc.) and the assistant only committed, "
+            "planned, or teased without delivering that result or using tools to produce it. "
+            "Judge intent in any language or tone — not specific slang or phrases.\n\n"
+            "If CONTINUE, the reason should tell the model to use concrete tools (write_file, "
+            "execute_python, run_command, search_web, …) as appropriate, not to stall.\n\n"
+            f"User message:\n{user_request}\n\n"
+            f"Assistant output this turn (may combine several user-visible lines):\n{candidate[:2000]}\n\n"
+            f"Tool rounds this turn: {loop_state.tool_rounds}\n"
+            f"Finish reason: {res.finish_reason or ''}\n"
+        )
+        try:
+            judge = await self.client.chat_completion(
+                self.config.cognition.reflex_model or self.config.cognition.deliberate_model,
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a strict completion judge for an agent. "
+                            "Output exactly one line: DONE: … or CONTINUE: …"
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.0,
+                max_tokens=64,
+                think=False,
+                num_ctx=self.config.effective_ollama_num_ctx(),
+            )
+            verdict = (judge.content or "").strip()
+            upper = verdict.upper()
+            if upper.startswith("DONE:"):
+                return True, None
+            if upper.startswith("CONTINUE:"):
+                reason = verdict.split(":", 1)[1].strip() or "Deliver tangible work with tools."
+                return False, f"Same turn. {reason}"
+        except Exception as e:
+            log.debug("action_adequacy_judge_failed", module="entity", error=str(e))
         return True, None
 
     async def _judge_grounded_completion(
@@ -1206,9 +1295,9 @@ class Entity:
         tool_state: dict[str, Any],
     ) -> tuple[bool, str | None]:
         """
-        Lightweight model-side judgment for grounded completion.
+        Lightweight model-side judgment when tools ran or failures must be explained.
 
-        This is intentionally cheap and narrow: only used when tool grounding matters.
+        ``reply_text`` is the full user-visible turn text (final assistant plus prior say() lines).
         """
         visible = (reply_text or "").strip()
         if not visible:
@@ -1621,6 +1710,31 @@ class Entity:
             )
         except Exception as e:
             log.debug("somatic_appraisal_skipped", error=str(e))
+
+    async def _somatic_appraise_interaction(self, tc: TurnContext) -> None:
+        """Run somatic appraisal on the completed exchange so bars reflect how the full interaction felt."""
+        input_text = tc.inp.text
+        reply_text = tc.reply_text
+        if not input_text or not reply_text:
+            return
+        sent_msgs = tc.tool_state.get("_sent_messages")
+        if isinstance(sent_msgs, list) and sent_msgs:
+            reply_text = "\n".join(str(m)[:1000] for m in sent_msgs[:4])
+        try:
+            reflex_model = (
+                self.config.cognition.reflex_model
+                or self.config.cognition.deliberate_model
+            )
+            await self.tonic.appraise_interaction_and_apply(
+                self.client,
+                reflex_model,
+                input_text=input_text,
+                reply_text=reply_text,
+                person_name=tc.inp.person_name or "someone",
+                num_ctx=self.config.effective_ollama_num_ctx(),
+            )
+        except Exception as e:
+            log.debug("somatic_interaction_appraisal_skipped", error=str(e))
 
     async def _tick_noise_post_turn(self, tc: TurnContext) -> None:
         """Regenerate noise fragments after a turn so GEN stays current during active conversation."""
@@ -2071,6 +2185,7 @@ class Entity:
                     await self.journal.write_entry(thought_text, tags=["thought"])
                 except Exception:
                     pass
+        await self._somatic_appraise_interaction(tc)
         try:
             await self.tonic.save_state_db(tc.db)
         except Exception as e:
@@ -2206,6 +2321,12 @@ class Entity:
             module="entity",
             db=self.store.db_path,
         )
+
+    async def reset_soma_baseline(self) -> None:
+        """Reset tonic bars to YAML initials, wipe noise fragments and affects, persist DB + soma directory."""
+        self.tonic.reset_baseline()
+        async with self.store.session() as conn:
+            await self.tonic.save_state_db(conn)
 
     async def shutdown(self) -> None:
         try:

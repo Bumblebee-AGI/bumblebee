@@ -254,9 +254,12 @@ class BarEngine:
         self._decay_rates: dict[str, float] = {}
         self._floors: dict[str, float] = {}
         self._ceilings: dict[str, float] = {}
+        self._initial: dict[str, float] = {}
         for v in variables:
             name = v["name"]
-            self._values[name] = float(v.get("initial", 50))
+            init = float(v.get("initial", 50))
+            self._initial[name] = init
+            self._values[name] = init
             self._decay_rates[name] = float(v.get("decay_rate", -1.0))
             self._floors[name] = float(v.get("floor", 0))
             self._ceilings[name] = float(v.get("ceiling", 100))
@@ -281,6 +284,22 @@ class BarEngine:
     @property
     def ordered_names(self) -> list[str]:
         return list(self._ordered_names)
+
+    def reset_to_initial(self) -> None:
+        """Restore bar values to YAML ``initial`` and clear momentum / impulse buildup."""
+        self._values = {k: float(v) for k, v in self._initial.items()}
+        self._history.clear()
+        self._history.append(dict(self._values))
+        self._impulse_first_active.clear()
+        self._active_impulses.clear()
+        self._active_conflicts.clear()
+        now = time.time()
+        self._impulse_last_fired = {
+            str(imp.get("label", "")): now for imp in self._impulse_cfgs if imp.get("label")
+        }
+        self._active_conflicts = self._detect_conflicts()
+        self._active_impulses = self._detect_impulses()
+        self._clamp_all()
 
     def snapshot_pct(self) -> dict[str, int]:
         return {
@@ -835,6 +854,8 @@ class SomaticAppraiser:
             "  tags: tag1, tag2, tag3\n"
             "  felt: brief felt note (one sentence, first person)\n\n"
             "Delta range: -10 to +10. Use 0 or omit bars that aren't affected.\n"
+            "If a bar is already at 90% or above in CURRENT BODY, do not raise it further "
+            "unless the hit is extreme; prefer 0 or a negative delta so saturated drives can ease.\n"
             "Only use bar names from the list above.\n"
             "No preamble. No explanation. Just the lines."
         )
@@ -890,7 +911,9 @@ class SomaticAppraiser:
             "  bar_name: delta — one-word reason\n"
             "  tags: tag1, tag2\n"
             "  felt: brief felt note\n\n"
-            "Delta range: -10 to +10. Only affected bars. No preamble."
+            "Delta range: -10 to +10. Only affected bars. If a bar is already at 90%+ in "
+            "CURRENT BODY, avoid pushing it higher unless the exchange was truly overwhelming.\n"
+            "No preamble."
         )
         user = (
             f"CURRENT BODY: {bars_line}\n"
@@ -1055,6 +1078,15 @@ class NoiseEngine:
         if not events_brief.strip():
             events_brief = "  (nothing recent)\n"
 
+        prev_block = ""
+        if self._fragments:
+            recent = list(self._fragments)[-4:]
+            prev_block = (
+                "YOUR RECENT THOUGHTS (do NOT repeat or rephrase these):\n"
+                + "\n".join(f"  - {f[:120]}" for f in recent)
+                + "\n\n"
+            )
+
         system = (
             f"You are the inner voice of {entity_name}. Not the part that speaks "
             "to people — the part that mutters to itself between conversations.\n\n"
@@ -1064,13 +1096,17 @@ class NoiseEngine:
             "Read the current body state and recent experiences below. Produce 2-4 "
             "lines of internal thought. First person, present tense, lowercase. "
             "Associative, not analytical. No bullet points. No summaries. No "
-            "preamble. Just thinking out loud."
+            "preamble. Just thinking out loud.\n\n"
+            "IMPORTANT: Each time you are called, think about something DIFFERENT. "
+            "Do not rehash the same observation. Move on — new angle, new memory, "
+            "new question. If nothing has changed, go deeper or sideways, not in circles."
         )
         user = (
             f"BODY STATE:\n{bars_summary}\n{affects_summary}\n\n"
             f"RECENT EVENTS:\n{events_brief}\n"
             f"JOURNAL (recent):\n{journal_tail or '(empty)'}\n\n"
             f"LAST CONVERSATION:\n{conversation_tail or '(silence)'}\n\n"
+            f"{prev_block}"
             "What crosses your mind?"
         )
 
@@ -1281,6 +1317,7 @@ class TonicBody:
         event is marked ``_applied`` so ``tick_bars`` won't double-count it.
         """
         self.bars.apply_event(event)
+        self.bars._clamp_all()
         event["_applied"] = True
         self._recent_events.append(event)
         if len(self._recent_events) > self._max_events:
@@ -1292,6 +1329,7 @@ class TonicBody:
         for ev in self._recent_events:
             if not ev.get("_applied"):
                 self.bars.apply_event(ev)
+                ev["_applied"] = True
         self.bars.tick(dt_hours)
         self.flush_body_md()
         self._tick_count += 1
@@ -1528,6 +1566,26 @@ class TonicBody:
             tmp.replace(body_path)
         except Exception as e:
             log.debug("body_md_flush_failed", error=str(e))
+
+    def reset_baseline(self) -> None:
+        """Reset bars to YAML initials, clear affects/events/noise, rewrite ``body.md`` and ``soma-state.json``.
+
+        Does not touch memory DB except via ``save_state_db`` on the entity.
+        Restart a long-running worker after calling so in-memory tonic reloads.
+        """
+        self.bars.reset_to_initial()
+        self._current_affects = []
+        self.affects._previous_affects = []
+        self.affects._last_tick = 0.0
+        self.noise._fragments.clear()
+        self.noise._last_tick = 0.0
+        self._recent_events.clear()
+        self.flush_body_md()
+        self.save_state()
+        log.info(
+            "soma_reset_baseline",
+            bars={k: round(v, 1) for k, v in self.bars._values.items()},
+        )
 
     def snapshot_for_emotion(self) -> tuple[str, float]:
         """Derive (EmotionCategory value, intensity) from bars for backward compat."""

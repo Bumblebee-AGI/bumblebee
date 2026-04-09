@@ -120,6 +120,22 @@ class TestBarEngineEvents:
         bars.apply_event({"type": "something_unknown"})
         assert bars._values == snapshot_before
 
+    def test_reset_to_initial_restores_yaml_baseline(self):
+        bars = BarEngine(_default_bar_config())
+        bars.apply_event({"type": "message_received"})
+        bars.apply_event({"type": "message_received"})
+        assert bars._values["social"] > bars._initial["social"]
+        bars.reset_to_initial()
+        for name in bars.ordered_names:
+            assert bars._values[name] == pytest.approx(bars._initial[name])
+        assert bars.snapshot_pct() == {
+            "social": 50,
+            "curiosity": 50,
+            "creative": 40,
+            "tension": 15,
+            "comfort": 65,
+        }
+
 
 class TestBarEngineMomentum:
     def test_initial_momentum_is_zero(self):
@@ -388,6 +404,18 @@ class TestTonicBody:
         await body.tick_bars(0.01)
         after = body.bars.snapshot_pct()["social"]
         assert after > before
+
+    @pytest.mark.asyncio
+    async def test_tick_bars_does_not_reapply_message_events(self):
+        """Regression: message_received was re-applied every heartbeat (no _applied flag)."""
+        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+        body.emit({"type": "message_received"})
+        await body.tick_bars(0.01)
+        raw_after_first = body.bars._values["social"]
+        await body.tick_bars(0.01)
+        raw_after_second = body.bars._values["social"]
+        # Second tick should decay only, not stack another +3 from the same event.
+        assert raw_after_second < raw_after_first
 
     def test_snapshot_for_emotion_returns_valid_category(self):
         body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))

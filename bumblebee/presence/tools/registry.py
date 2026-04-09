@@ -68,6 +68,12 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "get_news":
         topic = str(args.get("topic", "") or "").strip()
         return f"📰 checking news about {topic}..." if topic else "📰 checking the news..."
+    if tool_name == "get_crypto_price":
+        tok = str(args.get("token", "") or "").strip().upper()
+        return f"📈 checking {tok} price..." if tok else "📈 checking crypto price..."
+    if tool_name == "search_crypto_token":
+        q = str(args.get("query", "") or "").strip()
+        return f'📊 searching tokens for "{q}"...' if q else "📊 searching tokens..."
     if tool_name == "read_pdf":
         return "📑 reading pdf..."
     if tool_name == "speak":

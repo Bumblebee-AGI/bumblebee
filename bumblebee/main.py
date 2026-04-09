@@ -1,4 +1,4 @@
-"""CLI entry: setup, create, run, stop, talk, worker, api, status, evolve, knowledge, journal, recall, wipe, export, import, gateway (on/off/status/restart/setup)."""
+"""CLI entry: setup, create, run, stop, talk, worker, api, status, evolve, knowledge, journal, recall, wipe, soma-reset, export, import, gateway (on/off/status/restart/setup)."""
 
 from __future__ import annotations
 
@@ -975,6 +975,45 @@ def cmd_wipe(entity_name: str, skip_confirm: bool) -> None:
 
     asyncio.run(_wipe())
     click.echo(f"Wiped {ec.name} (DB + rolling chat + inner voice; YAML traits restored from file).")
+
+
+@cli.command("soma-reset")
+@click.argument("entity_name")
+@click.option(
+    "--yes",
+    "skip_confirm",
+    is_flag=True,
+    help="Skip confirmation (non-interactive / Railway).",
+)
+def cmd_soma_reset(entity_name: str, skip_confirm: bool) -> None:
+    """Reset soma bars to YAML initials, clear GEN noise + affects; write DB + soma-state.json + body.md.
+
+    Hybrid / Railway: run once against the same DATABASE_URL and workspace as the worker
+    (e.g. ``railway run --service bumblebee-worker -- bumblebee soma-reset YOUR_ENTITY --yes``),
+    then restart the worker so the running process reloads tonic state.
+    """
+    harness = load_harness_config()
+    ec = load_entity_config(entity_name, harness)
+    if not skip_confirm:
+        click.echo(
+            f"Reset soma (bars, noise, affects) for {ec.name!r} to harness YAML baseline "
+            f"and persist to DB + {ec.soma_dir()}.",
+            err=True,
+        )
+        if not click.confirm("Proceed?"):
+            raise click.Abort()
+    setup_logging(ec.name, ec.harness.logging.level, None, "console")
+    ent = Entity(ec)
+
+    async def _reset():
+        await ent.reset_soma_baseline()
+        try:
+            await asyncio.shield(ent.shutdown())
+        except BaseException:
+            pass
+
+    asyncio.run(_reset())
+    click.echo(f"Soma baseline reset for {ec.name}. Restart the worker if it is already running.")
 
 
 @cli.command("export")
