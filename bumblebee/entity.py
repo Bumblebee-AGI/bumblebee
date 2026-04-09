@@ -1622,6 +1622,40 @@ class Entity:
         except Exception as e:
             log.debug("somatic_appraisal_skipped", error=str(e))
 
+    async def _tick_noise_post_turn(self, tc: TurnContext) -> None:
+        """Regenerate noise fragments after a turn so GEN stays current during active conversation."""
+        try:
+            reflex_model = (
+                self.config.cognition.reflex_model
+                or self.config.cognition.deliberate_model
+            )
+            journal_tail = ""
+            if hasattr(self, "journal") and self.journal.path.is_file():
+                raw = self.journal.path.read_text(encoding="utf-8", errors="replace")
+                journal_tail = raw[-800:] if len(raw) > 800 else raw
+            conv_lines: list[str] = []
+            for m in self._history[-8:]:
+                role = m.get("role", "")
+                if role == "system":
+                    continue
+                content = str(m.get("content", ""))
+                if not content.strip():
+                    continue
+                truncated = content[:500] + ("..." if len(content) > 500 else "")
+                conv_lines.append(f"{role}: {truncated}")
+            conv_tail = "\n".join(conv_lines) if conv_lines else "(silence)"
+            self.tonic.noise._last_tick = 0.0
+            await self.tonic.maybe_tick_noise(
+                self.client,
+                reflex_model,
+                entity_name=self.config.name,
+                journal_tail=journal_tail,
+                conversation_tail=conv_tail,
+                num_ctx=self.config.effective_ollama_num_ctx(),
+            )
+        except Exception as e:
+            log.debug("post_turn_noise_tick_failed", error=str(e))
+
     async def _retrieve_memory(self, tc: TurnContext) -> None:
         """Hydrate state, load relationship/narrative, episodic recall, apply imprints."""
         db = tc.db
@@ -2041,6 +2075,7 @@ class Entity:
             await self.tonic.save_state_db(tc.db)
         except Exception as e:
             log.debug("soma_db_save_in_commit_failed", error=str(e))
+        await self._tick_noise_post_turn(tc)
         log.info(
             "turn_completed",
             platform=tc.inp.platform,

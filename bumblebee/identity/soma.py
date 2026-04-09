@@ -952,6 +952,56 @@ class SomaticAppraiser:
 # ---------------------------------------------------------------------------
 
 
+def _format_event_for_noise(ev: dict[str, Any]) -> str:
+    """Format a soma event into a line the noise engine can actually riff on."""
+    typ = ev.get("type", "?")
+
+    if typ == "appraisal":
+        who = ev.get("from", "")
+        tags = ev.get("tags")
+        felt = ev.get("felt", "")
+        parts = []
+        if who:
+            parts.append(f"from {who}")
+        if tags:
+            parts.append(", ".join(tags))
+        if felt:
+            parts.append(felt)
+        subtype = ev.get("subtype", "input")
+        label = "felt after exchange" if subtype == "interaction" else "landed as"
+        return f"  {label}: {' — '.join(parts)}" if parts else f"  appraisal ({who})"
+
+    if typ == "message_received":
+        who = ev.get("from", "someone")
+        length = ev.get("length", 0)
+        where = ev.get("register", "")
+        brief = f"  heard from {who}"
+        if length and length > 300:
+            brief += " (long message)"
+        if where:
+            brief += f" on {where}"
+        return brief
+
+    if typ == "message_sent":
+        who = ev.get("to", "someone")
+        return f"  spoke to {who}"
+
+    if typ == "action":
+        name = ev.get("name", "something")
+        detail = ev.get("detail", "")
+        return f"  used {name}" + (f" ({detail})" if detail else "")
+
+    if typ == "mood_declared":
+        return f"  mood: {ev.get('mood', '?')}"
+
+    if typ == "idle":
+        mins = ev.get("duration_minutes", 0)
+        return f"  silence ({int(mins)} min)" if mins else "  silence"
+
+    detail = ev.get("name") or ev.get("from") or ev.get("to") or ""
+    return f"  {typ}" + (f" ({detail})" if detail else "")
+
+
 class NoiseEngine:
     """Generative subconscious: a small model produces continuous internal
     commentary that the watcher reads as its own stream of thought.
@@ -1000,11 +1050,9 @@ class NoiseEngine:
         self._last_tick = time.monotonic()
 
         events_brief = ""
-        for ev in recent_events[-5:]:
-            typ = ev.get("type", "?")
-            detail = ev.get("name") or ev.get("from") or ev.get("to") or ""
-            events_brief += f"  {typ}" + (f" ({detail})" if detail else "") + "\n"
-        if not events_brief:
+        for ev in recent_events[-8:]:
+            events_brief += _format_event_for_noise(ev) + "\n"
+        if not events_brief.strip():
             events_brief = "  (nothing recent)\n"
 
         system = (

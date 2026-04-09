@@ -17,6 +17,25 @@ from bumblebee.presence.wake_cycle import WakeCycleEngine
 log = structlog.get_logger("bumblebee.presence.daemon")
 
 
+def _build_conversation_tail(history: list[dict], max_messages: int = 8, max_chars: int = 500) -> str:
+    """Extract recent conversation for noise/wake context with enough substance to riff on."""
+    if not history:
+        return "(silence)"
+    lines: list[str] = []
+    budget = 0
+    for m in history[-max_messages:]:
+        role = m.get("role", "")
+        if role == "system":
+            continue
+        content = str(m.get("content", ""))
+        if not content.strip():
+            continue
+        truncated = content[:max_chars] + ("..." if len(content) > max_chars else "")
+        lines.append(f"{role}: {truncated}")
+        budget += len(truncated)
+    return "\n".join(lines) if lines else "(silence)"
+
+
 class PresenceDaemon:
     def __init__(self, entity_facade) -> None:
         self.entity = entity_facade
@@ -157,19 +176,14 @@ class PresenceDaemon:
                     journal_tail = ""
                     if hasattr(self.entity, "journal") and self.entity.journal.path.is_file():
                         raw = self.entity.journal.path.read_text(encoding="utf-8", errors="replace")
-                        journal_tail = raw[-500:] if len(raw) > 500 else raw
-                    conv_tail = ""
-                    hist = getattr(self.entity, "_history", [])
-                    for m in hist[-3:]:
-                        role = m.get("role", "")
-                        content = str(m.get("content", ""))[:200]
-                        conv_tail += f"{role}: {content}\n"
+                        journal_tail = raw[-800:] if len(raw) > 800 else raw
+                    conv_tail = _build_conversation_tail(getattr(self.entity, "_history", []))
                     await tonic.maybe_tick_noise(
                         self.entity.client,
                         reflex_model,
                         entity_name=self.entity.config.name,
                         journal_tail=journal_tail,
-                        conversation_tail=conv_tail.strip(),
+                        conversation_tail=conv_tail,
                         num_ctx=self.entity.config.effective_ollama_num_ctx(),
                     )
                 except Exception as e:
