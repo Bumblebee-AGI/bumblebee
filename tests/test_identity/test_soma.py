@@ -50,13 +50,11 @@ class TestBarEngineInit:
         assert bars.ordered_names == ["social", "curiosity", "creative", "tension", "comfort"]
 
     def test_initial_values_match_config(self):
-        bars = BarEngine(_default_bar_config())
+        cfg = _default_bar_config()
+        bars = BarEngine(cfg)
         pct = bars.snapshot_pct()
-        assert pct["social"] == 50
-        assert pct["curiosity"] == 50
-        assert pct["creative"] == 40
-        assert pct["tension"] == 15
-        assert pct["comfort"] == 65
+        for v in cfg["bars"]["variables"]:
+            assert pct[v["name"]] == int(round(v["initial"]))
 
     def test_empty_config_produces_no_bars(self):
         bars = BarEngine({})
@@ -65,12 +63,13 @@ class TestBarEngineInit:
 
 
 class TestBarEngineDecay:
-    def test_bars_decay_over_time(self):
+    def test_bars_decay_toward_initial(self):
         bars = BarEngine(_default_bar_config())
-        initial_social = bars.snapshot_pct()["social"]
+        # Push social above its resting point, then verify decay pulls it back.
+        bars._values["social"] = 90.0
         bars.tick(1.0)  # 1 hour
-        after = bars.snapshot_pct()["social"]
-        assert after < initial_social
+        assert bars._values["social"] < 90.0
+        assert bars._values["social"] > bars._initial["social"]
 
     def test_bars_clamp_to_floor(self):
         cfg = _default_bar_config()
@@ -128,13 +127,8 @@ class TestBarEngineEvents:
         bars.reset_to_initial()
         for name in bars.ordered_names:
             assert bars._values[name] == pytest.approx(bars._initial[name])
-        assert bars.snapshot_pct() == {
-            "social": 50,
-            "curiosity": 50,
-            "creative": 40,
-            "tension": 15,
-            "comfort": 65,
-        }
+        expected = {v["name"]: int(round(v["initial"])) for v in _default_bar_config()["bars"]["variables"]}
+        assert bars.snapshot_pct() == expected
 
 
 class TestBarEngineMomentum:
@@ -563,6 +557,17 @@ class TestSplitNoiseFragments:
         frags = _split_noise_fragments(text)
         assert "ok" not in frags
         assert len(frags) == 1
+
+    def test_sanitizes_control_tokens_and_role_prefixes(self):
+        text = (
+            "thought\n\n"
+            "<channel|>the architecture of this stillness is dense\n\n"
+            "assistant: <|analysis|> waiting for the pattern to break"
+        )
+        frags = _split_noise_fragments(text)
+        assert len(frags) == 2
+        assert all("<" not in f and ">" not in f for f in frags)
+        assert all(not f.lower().startswith(("assistant:", "thought")) for f in frags)
 
 
 class TestNoiseEngine:

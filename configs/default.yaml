@@ -173,13 +173,13 @@ soma:
     enabled: true
     temperature: 0.3
     max_tokens: 120
-  affect_cycle_seconds: 180
+  affect_cycle_seconds: 240
   # Generative entropic noise — a small model producing continuous inner voice.
   # The entity reads this as its own stream of consciousness.
   noise:
     enabled: true
     model: ""  # empty uses reflex model; set to e.g. "gemma3:1b" for a dedicated small noise model
-    cycle_seconds: 60
+    cycle_seconds: 90
     temperature: 1.1
     max_tokens: 150
     max_fragments: 8

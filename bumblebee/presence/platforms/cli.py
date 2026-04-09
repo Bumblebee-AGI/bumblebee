@@ -321,6 +321,29 @@ class CLIPlatform(Platform):
             if desc:
                 self.console.print(Text(f"      {desc}", style=STYLE_WHISPER))
 
+    async def _slash_compact(self, aggressive: bool = False) -> None:
+        self.console.print()
+        self.console.print(Text("Compacting conversation context...", style=STYLE_WHISPER))
+        try:
+            res = await self.entity.compact_context_now(aggressive=aggressive, passes=2 if aggressive else 1)
+        except Exception as e:
+            render_error(self.console, f"context compaction failed: {e}")
+            return
+        if not isinstance(res, dict):
+            self.console.print(Text("Compaction finished.", style=STYLE_WHISPER))
+            return
+        status = "done" if res.get("ok") else "skipped"
+        mb = int(res.get("messages_before", 0) or 0)
+        ma = int(res.get("messages_after", mb) or mb)
+        sb = int(res.get("summary_chars_before", 0) or 0)
+        sa = int(res.get("summary_chars_after", sb) or sb)
+        self.console.print(
+            Text(
+                f"Compaction {status}: messages {mb}->{ma}, summary chars {sb}->{sa}.",
+                style=STYLE_WHISPER,
+            )
+        )
+
     async def _graceful_bye(self) -> None:
         if getattr(self.entity.store, "dialect", "sqlite") == "sqlite":
             episodes_end = _sync_episode_count(self.entity.store.db_path)
@@ -365,7 +388,7 @@ class CLIPlatform(Platform):
         )
 
         def bottom_toolbar() -> str:
-            return f"{self._tb_mood} · {self._tb_drive}     /self   /bye"
+            return f"{self._tb_mood} · {self._tb_drive}     /self   /compact   /bye"
 
         session = PromptSession(
             message=[("class:prompt", "› ")],
@@ -413,6 +436,10 @@ class CLIPlatform(Platform):
                     continue
                 if line == "/tools":
                     self._slash_tools()
+                    continue
+                if line.startswith("/compact"):
+                    aggressive = "aggressive" in line.lower()
+                    await self._slash_compact(aggressive=aggressive)
                     continue
 
                 self._exchange_count += 1

@@ -544,3 +544,43 @@ class TestEnsureContextBudget:
         await ent._ensure_context_budget(tc)
         assert len(ent._history) == 10
         assert stub.calls == []
+
+    @pytest.mark.asyncio
+    async def test_force_compacts_even_under_threshold(self, entity_config):
+        entity_config.cognition.max_context_tokens = 32768
+        entity_config.cognition.history_compression.compaction_protect_first_n = 1
+        entity_config.cognition.history_compression.compaction_protect_last_n = 2
+        entity_config.cognition.history_compression.compaction_flush_to_knowledge = False
+
+        ent = Entity(entity_config)
+        stub = _Stub("## Goal\nManual compaction handoff summary")
+        ent.client = stub
+        ent._history = [_msg("user", f"message number {i}") for i in range(20)]
+
+        from bumblebee.entity import TurnContext
+        from bumblebee.models import Input
+        tc = TurnContext(
+            inp=Input(text="manual compact", person_id="u1", person_name="Tester", platform="cli"),
+            sys_prompt="sys",
+            user_msg={"role": "user", "content": "manual compact"},
+        )
+        await ent._ensure_context_budget(tc, force=True, max_passes_override=1)
+        assert len(ent._history) < 20
+        assert stub.calls
+
+    @pytest.mark.asyncio
+    async def test_compact_context_now_reports_status(self, entity_config):
+        entity_config.cognition.max_context_tokens = 32768
+        entity_config.cognition.history_compression.compaction_protect_first_n = 1
+        entity_config.cognition.history_compression.compaction_protect_last_n = 2
+        entity_config.cognition.history_compression.compaction_flush_to_knowledge = False
+
+        ent = Entity(entity_config)
+        stub = _Stub("## Goal\nManual compaction status summary")
+        ent.client = stub
+        ent._history = [_msg("user", f"message number {i}") for i in range(16)]
+
+        result = await ent.compact_context_now(aggressive=False, passes=1)
+        assert result["ok"] is True
+        assert result["messages_after"] < result["messages_before"]
+        assert result["summary_chars_after"] >= result["summary_chars_before"]

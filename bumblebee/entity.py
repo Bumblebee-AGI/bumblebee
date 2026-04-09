@@ -604,6 +604,7 @@ class Entity:
         self.tools.register_decorated(agency_tools.end_turn)
         self.tools.register_decorated(agency_tools.wait)
         self.tools.register_decorated(agency_tools.observe)
+        self.tools.register_decorated(agency_tools.compact_context)
         self.tools.register_decorated(web_tools.search_web)
         self.tools.register_decorated(web_tools.fetch_url)
         self.tools.register_decorated(read_file)
@@ -868,8 +869,18 @@ class Entity:
             num_ctx=self.config.effective_ollama_num_ctx(),
         )
 
-    async def _ensure_context_budget(self, tc: TurnContext) -> None:
-        """Pre-flight context compaction: compress history before inference if over budget."""
+    async def _ensure_context_budget(
+        self,
+        tc: TurnContext,
+        *,
+        force: bool = False,
+        max_passes_override: int | None = None,
+    ) -> None:
+        """Pre-flight context compaction: compress history before inference if over budget.
+
+        When ``force`` is true, run compaction passes regardless of the estimated token
+        threshold. This is used by manual/on-demand compaction commands.
+        """
         hc = self.config.cognition.history_compression
         if not hc.enabled:
             return
@@ -878,14 +889,19 @@ class Entity:
         model = self.config.cognition.deliberate_model or self.config.harness.models.deliberate
         num_ctx = self.config.effective_ollama_num_ctx()
         min_msgs = hc.compaction_protect_first_n + hc.compaction_protect_last_n + 1
+        max_passes = (
+            max(1, int(max_passes_override))
+            if max_passes_override is not None
+            else hc.compaction_max_passes
+        )
 
-        for pass_n in range(hc.compaction_max_passes):
+        for pass_n in range(max_passes):
             if len(self._history) <= min_msgs:
                 break
 
             messages = self._messages_for_model(tc.user_msg)
             est = estimate_context_tokens(tc.sys_prompt, messages)
-            if est < threshold:
+            if est < threshold and not force:
                 break
 
             log.info(
@@ -894,6 +910,7 @@ class Entity:
                 estimated_tokens=est,
                 threshold=threshold,
                 history_len=len(self._history),
+                forced=force,
             )
 
             tail_budget = int(threshold * hc.compaction_target_ratio)
@@ -976,6 +993,60 @@ class Entity:
 
             if len(self._history) <= min_msgs:
                 break
+
+    async def compact_context_now(self, *, aggressive: bool = False, passes: int = 1) -> dict[str, Any]:
+        """Run manual context compaction immediately and return a compact status snapshot."""
+        hc = self.config.cognition.history_compression
+        if not hc.enabled:
+            return {"ok": False, "reason": "history_compression_disabled"}
+
+        before_messages = len(self._history)
+        before_summary_chars = len((self._history_rolling_summary or "").strip())
+        if before_messages == 0:
+            return {
+                "ok": True,
+                "compacted": False,
+                "reason": "empty_history",
+                "messages_before": 0,
+                "messages_after": 0,
+                "summary_chars_before": before_summary_chars,
+                "summary_chars_after": before_summary_chars,
+            }
+
+        # Manual compaction can be slightly more aggressive by using extra passes.
+        pass_count = max(1, min(int(passes or 1), 6))
+        if aggressive:
+            pass_count = max(pass_count, min(6, hc.compaction_max_passes + 1))
+
+        # The user message here is synthetic and never persisted; it only helps keep the
+        # estimator path consistent with normal pre-flight compaction.
+        synthetic_user_msg = {"role": "user", "content": "[manual context compaction trigger]"}
+        tc = TurnContext(
+            inp=Input(
+                text="[manual context compaction trigger]",
+                person_id="system",
+                person_name="System",
+                channel="internal",
+                platform="internal",
+            ),
+            user_msg=synthetic_user_msg,
+            sys_prompt="manual context compaction preflight",
+            route="reflex",
+        )
+        await self._ensure_context_budget(tc, force=True, max_passes_override=pass_count)
+
+        after_messages = len(self._history)
+        after_summary_chars = len((self._history_rolling_summary or "").strip())
+        return {
+            "ok": True,
+            "compacted": (after_messages < before_messages) or (after_summary_chars > before_summary_chars),
+            "messages_before": before_messages,
+            "messages_after": after_messages,
+            "summary_chars_before": before_summary_chars,
+            "summary_chars_after": after_summary_chars,
+            "passes_used": pass_count,
+            "aggressive": aggressive,
+        }
 
     def _history_user_turn_text(self, inp: Input) -> str:
         lim = max(600, int(self.config.cognition.history_message_char_limit or 4000))

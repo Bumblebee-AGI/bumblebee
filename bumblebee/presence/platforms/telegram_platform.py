@@ -209,6 +209,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("routines", self._on_routines_command), group=_g)
         self.app.add_handler(CommandHandler("ping", self._on_ping_command), group=_g)
         self.app.add_handler(CommandHandler("context", self._on_context_command), group=_g)
+        self.app.add_handler(CommandHandler("compact", self._on_compact_command), group=_g)
         self.app.add_handler(CommandHandler("reset", self._on_reset_command), group=_g)
         self.app.add_handler(CommandHandler("session_start", self._on_session_start), group=_g)
         self.app.add_handler(CommandHandler("session_status", self._on_session_status), group=_g)
@@ -813,6 +814,37 @@ class TelegramPlatform(Platform):
         except ValueError:
             return default
 
+    @staticmethod
+    def _parse_compact_args(args: list[str]) -> tuple[str, bool, int]:
+        """Return (action, aggressive, passes). action in {'run', 'status', 'usage'}."""
+        if not args:
+            return ("run", False, 1)
+        a0 = str(args[0] or "").strip().lower()
+        if a0 in {"status", "stats"}:
+            return ("status", False, 1)
+        if a0 in {"help", "?"}:
+            return ("usage", False, 1)
+        if a0 in {"now", "run"}:
+            return ("run", False, 1)
+        if a0 in {"aggressive", "hard"}:
+            return ("run", True, 2)
+        if a0 in {"passes", "pass"}:
+            if len(args) < 2:
+                return ("usage", False, 1)
+            try:
+                p = max(1, min(6, int(str(args[1]).strip())))
+            except ValueError:
+                return ("usage", False, 1)
+            return ("run", False, p)
+        # /compact 3  -> run with 3 passes
+        if a0.lstrip("+-").isdigit():
+            try:
+                p = max(1, min(6, int(a0)))
+            except ValueError:
+                return ("usage", False, 1)
+            return ("run", False, p)
+        return ("usage", False, 1)
+
     async def _on_whoami(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):
             return
@@ -1124,6 +1156,71 @@ class TelegramPlatform(Platform):
             f"  compression: {'on' if cfg.cognition.history_compression.enabled else 'off'}"
         )
         await self._reply_html(update, body)
+
+    async def _on_compact_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        if not await self._check_allowed(update, notify=True):
+            return
+        args = [str(a).strip() for a in (context.args or []) if str(a).strip()]
+        action, aggressive, passes = self._parse_compact_args(args)
+
+        ent = self._entity
+        if action == "usage":
+            await self._reply_html(
+                update,
+                (
+                    "<b>Context compaction</b>\n\n"
+                    "Usage:\n"
+                    "• <code>/compact</code> — run one pass now\n"
+                    "• <code>/compact aggressive</code> — stronger pass\n"
+                    "• <code>/compact passes N</code> — choose 1..6 passes\n"
+                    "• <code>/compact status</code> — show summary + history footprint\n\n"
+                    "Compaction preserves continuity using a structured rolling summary."
+                ),
+            )
+            return
+
+        history = getattr(ent, "_history", [])
+        summary = (getattr(ent, "_history_rolling_summary", "") or "").strip()
+        summary_tokens = len(summary) // 4
+        if action == "status":
+            await self._reply_html(
+                update,
+                (
+                    "<b>Compaction status</b>\n\n"
+                    f"• History messages: <code>{len(history)}</code>\n"
+                    f"• Rolling summary: <code>{len(summary):,}</code> chars (~{summary_tokens:,} tokens)\n"
+                    f"• Compression: <code>{'on' if ent.config.cognition.history_compression.enabled else 'off'}</code>\n"
+                    f"• Threshold ratio: <code>{ent.config.cognition.history_compression.compaction_threshold_ratio:.2f}</code>\n"
+                    f"• Max passes: <code>{ent.config.cognition.history_compression.compaction_max_passes}</code>"
+                ),
+            )
+            return
+
+        result = await ent.compact_context_now(aggressive=aggressive, passes=passes)
+        if not isinstance(result, dict) or not result.get("ok"):
+            reason = "unknown"
+            if isinstance(result, dict):
+                reason = str(result.get("reason") or reason)
+            await self._reply_html(update, f"Compaction skipped: <code>{html.escape(reason)}</code>")
+            return
+        mb = int(result.get("messages_before", 0) or 0)
+        ma = int(result.get("messages_after", mb) or mb)
+        sb = int(result.get("summary_chars_before", 0) or 0)
+        sa = int(result.get("summary_chars_after", sb) or sb)
+        used_passes = int(result.get("passes_used", passes) or passes)
+        await self._reply_html(
+            update,
+            (
+                "<b>Compaction complete</b>\n\n"
+                f"• Messages: <code>{mb}</code> → <code>{ma}</code>\n"
+                f"• Summary chars: <code>{sb:,}</code> → <code>{sa:,}</code>\n"
+                f"• Mode: <code>{'aggressive' if aggressive else 'normal'}</code>\n"
+                f"• Passes: <code>{used_passes}</code>\n\n"
+                "Continuity is preserved via rolling structured summary."
+            ),
+        )
 
     async def _on_reset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):

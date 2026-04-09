@@ -316,21 +316,18 @@ class BarEngine:
         return {k: float(new.get(k, 0)) - float(old.get(k, 0)) for k in self._ordered_names}
 
     def _saturation_scale(self, bar: str, delta: float) -> float:
-        """Attenuate positive deltas as a bar approaches its ceiling.
+        """Attenuate positive deltas proportionally to remaining headroom.
 
-        Linear ramp: full effect at 80 % of ceiling, zero at ceiling.
-        Negative deltas pass through unchanged.
+        Full-range scaling: effect scales linearly from 100 % at floor
+        to 0 % at ceiling.  Negative deltas pass through unchanged.
         """
         if delta <= 0:
             return delta
         ceiling = self._ceilings.get(bar, 100.0)
-        headroom_band = ceiling * 0.2  # top 20 % of range
         headroom = ceiling - self._values.get(bar, 0.0)
         if headroom <= 0:
             return 0.0
-        if headroom >= headroom_band:
-            return delta
-        return delta * (headroom / headroom_band)
+        return delta * (headroom / ceiling)
 
     def apply_event(self, event: dict[str, Any]) -> None:
         typ = str(event.get("type", ""))
@@ -360,11 +357,21 @@ class BarEngine:
                 self._values[k] += self._saturation_scale(k, float(dv))
 
     def tick(self, dt_hours: float) -> None:
-        """Advance decay, apply coupling, detect impulses/conflicts, snapshot history."""
+        """Advance decay, apply coupling, detect impulses/conflicts, snapshot history.
+
+        Decay is homeostatic: each bar is pulled toward its resting point
+        (``initial``) with force proportional to its distance from that point.
+        ``decay_rate`` is interpreted as the percentage of distance restored
+        per hour — e.g. a rate of -30 means 30 % of the gap closes every hour.
+        This replaces the old flat-rate decay, giving bars natural equilibrium
+        without per-event tuning.
+        """
         base_rates = dict(self._decay_rates)
         eff_rates, tension_ph = self._apply_coupling(base_rates)
         for name in self._ordered_names:
-            self._values[name] += eff_rates[name] * dt_hours
+            rate_frac = abs(eff_rates[name]) / 100.0
+            distance = self._values[name] - self._initial.get(name, 50.0)
+            self._values[name] -= distance * rate_frac * dt_hours
         if tension_ph != 0.0 and "tension" in self._values:
             self._values["tension"] += tension_ph * dt_hours
 
@@ -490,15 +497,18 @@ class BarEngine:
     # --- Persistence ---
 
     def _apply_offline_decay(self, saved_at: float) -> None:
-        """Simulate bar decay for the time the process was not running."""
+        """Simulate homeostatic decay for the time the process was not running."""
         elapsed_hours = (time.time() - saved_at) / 3600.0
         if elapsed_hours <= 0:
             return
         elapsed_hours = min(elapsed_hours, 24.0)
         for name in self._ordered_names:
             rate = self._decay_rates.get(name, 0.0)
-            if rate < 0:
-                self._values[name] += rate * elapsed_hours
+            rate_frac = abs(rate) / 100.0
+            # Exponential approach toward resting point over elapsed time.
+            distance = self._values[name] - self._initial.get(name, 50.0)
+            decay = 1.0 - math.exp(-rate_frac * elapsed_hours)
+            self._values[name] -= distance * decay
         self._clamp_all()
         log.info(
             "soma_offline_decay_applied",
@@ -1187,13 +1197,38 @@ def _fragment_is_duplicate(candidate: str, existing: Iterable[str], threshold: f
 
 def _split_noise_fragments(text: str) -> list[str]:
     """Split raw noise output into individual fragments."""
+    def _sanitize_fragment(line: str) -> str:
+        # Drop non-printable control characters while preserving readable whitespace.
+        line = "".join(ch for ch in line if ch in ("\t", " ") or ord(ch) >= 32)
+        # Remove common leaked control/token wrappers.
+        line = re.sub(r"<\|[^>\n]{1,80}\|>", " ", line)
+        line = re.sub(r"</?[^>\n]{1,40}>", " ", line)
+        # Strip role/channel style prefixes that sometimes leak from model outputs.
+        line = re.sub(
+            r"^\s*(?:assistant|system|user|thought|thinking|inner[\s_-]*voice|channel)\s*[:|>\-]+\s*",
+            "",
+            line,
+            flags=re.IGNORECASE,
+        )
+        # Normalize repeated whitespace.
+        line = re.sub(r"\s+", " ", line).strip()
+        return line
+
     raw_parts = re.split(r"\n\s*\n+", text.strip())
     fragments: list[str] = []
+    low_signal = {
+        "thought",
+        "thinking",
+        "inner voice",
+        "internal monologue",
+        "noise",
+    }
     for part in raw_parts:
         lines = [ln.strip() for ln in part.strip().splitlines() if ln.strip()]
         for line in lines:
             cleaned = re.sub(r"^[-*•]\s*", "", line).strip()
-            if cleaned and len(cleaned) > 3:
+            cleaned = _sanitize_fragment(cleaned)
+            if cleaned and cleaned.lower() not in low_signal and len(cleaned) > 3:
                 fragments.append(cleaned)
     return fragments[:4]
 
@@ -1685,9 +1720,15 @@ class TonicBody:
         saved_noise = data.get("noise_fragments")
         if isinstance(saved_noise, list) and saved_noise:
             self.noise._fragments.clear()
+            # Re-sanitize on restore — old fragments may predate current
+            # cleanup regexes and contain leaked model markup.
             for frag in saved_noise:
-                if isinstance(frag, str) and frag.strip():
-                    self.noise._fragments.append(frag)
+                if not isinstance(frag, str):
+                    continue
+                cleaned = _split_noise_fragments(frag)
+                for c in cleaned:
+                    if not _fragment_is_duplicate(c, self.noise._fragments):
+                        self.noise._fragments.append(c)
             log.info("soma_noise_restored", count=len(self.noise._fragments))
 
         return True

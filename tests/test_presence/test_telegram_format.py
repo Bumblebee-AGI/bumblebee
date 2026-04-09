@@ -56,6 +56,7 @@ def test_command_menu_items_are_short():
     assert any(name == "session_start" for name, _ in items)
     assert any(name == "session_status" for name, _ in items)
     assert any(name == "session_stop" for name, _ in items)
+    assert any(name == "compact" for name, _ in items)
     assert all(len(desc) <= 256 for _, desc in items)
 
 
@@ -68,6 +69,7 @@ def test_telegram_registered_slash_names_include_aliases():
     assert "session_start" in names
     assert "session_status" in names
     assert "session_stop" in names
+    assert "compact" in names
     for name, _ in command_menu_items():
         assert name in names
 

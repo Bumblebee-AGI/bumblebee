@@ -127,6 +127,12 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         category="Runtime",
     ),
     TelegramCommandSpec(
+        name="compact",
+        summary="Manually compact chat context while preserving continuity",
+        usage="/compact [status|now|aggressive|passes N]",
+        category="Runtime",
+    ),
+    TelegramCommandSpec(
         name="reset",
         summary="Clear rolling chat turns (keeps SQLite memory)",
         usage="/reset",
@@ -213,6 +219,7 @@ def format_help_html(entity_name: str) -> str:
         "• <code>/status</code>, <code>/feelings</code>, <code>/memories [count]</code>\n"
         "• <code>/me</code> to inspect relationship state\n"
         "• <code>/models</code>, <code>/tools</code>, <code>/routines</code>, and <code>/ping</code> for runtime checks\n"
+        "• <code>/context</code> and <code>/compact</code> when the context window gets tight\n"
         "• <code>/reset</code> to clear rolling chat turns only\n\n"
         "<b>Important</b>\n"
         "• <code>/reset</code> does <i>not</i> wipe SQLite memories.\n"

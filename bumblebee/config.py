@@ -147,11 +147,13 @@ def default_soma_config() -> dict[str, Any]:
         "enabled": True,
         "bars": {
             "variables": [
-                {"name": "social", "initial": 50, "decay_rate": -15.0, "floor": 0, "ceiling": 100},
-                {"name": "curiosity", "initial": 50, "decay_rate": -10.0, "floor": 0, "ceiling": 100},
-                {"name": "creative", "initial": 40, "decay_rate": -12.0, "floor": 0, "ceiling": 100},
-                {"name": "tension", "initial": 15, "decay_rate": -3.0, "floor": 0, "ceiling": 100},
-                {"name": "comfort", "initial": 65, "decay_rate": -0.5, "floor": 0, "ceiling": 100},
+                # decay_rate is now homeostatic: % of distance to resting point
+                # restored per hour.  -40 means 40% of the gap closes each hour.
+                {"name": "social", "initial": 45, "decay_rate": -40, "floor": 0, "ceiling": 100},
+                {"name": "curiosity", "initial": 40, "decay_rate": -30, "floor": 0, "ceiling": 100},
+                {"name": "creative", "initial": 35, "decay_rate": -25, "floor": 0, "ceiling": 100},
+                {"name": "tension", "initial": 10, "decay_rate": -50, "floor": 0, "ceiling": 100},
+                {"name": "comfort", "initial": 60, "decay_rate": -15, "floor": 0, "ceiling": 100},
             ],
             "momentum_window": 6,
         },
@@ -160,12 +162,14 @@ def default_soma_config() -> dict[str, Any]:
             {"when": "tension > 70", "effect": "comfort.decay_rate *= 2.0"},
         ],
         "event_effects": {
-            "message_received": {"social": 3, "curiosity": 1},
-            "message_sent": {"social": 2, "creative": 1},
-            "action": {"curiosity": 2},
-            "idle": {"social": -0.015, "curiosity": 0.01},
-            "idle_cycle": {"comfort": 3, "tension": -2},
-            "mood_declared": {"comfort": 1},
+            # Values are scaled by headroom automatically (full-range saturation).
+            # At resting point (~50%), a +6 gives roughly +3 effective.
+            "message_received": {"social": 6, "curiosity": 3},
+            "message_sent": {"social": 4, "creative": 3},
+            "action": {"curiosity": 5},
+            "idle": {"social": -0.02, "curiosity": 0.01},
+            "idle_cycle": {"comfort": 4, "tension": -3},
+            "mood_declared": {"comfort": 2},
         },
         "impulses": [
             {"drive": "social", "threshold": 80, "type": "reach_out", "label": "reach_out", "cooldown_minutes": 30, "relief": {"social": -25}},
@@ -179,11 +183,11 @@ def default_soma_config() -> dict[str, Any]:
             "temperature": 0.3,
             "max_tokens": 120,
         },
-        "affect_cycle_seconds": 180,
+        "affect_cycle_seconds": 240,
         "noise": {
             "enabled": True,
             "model": "",
-            "cycle_seconds": 60,
+            "cycle_seconds": 90,
             "temperature": 1.1,
             "max_tokens": 150,
             "max_fragments": 8,

@@ -8,6 +8,7 @@ when to think, when to speak, when to wait, and when it's done.
 from __future__ import annotations
 
 import asyncio
+import json
 
 from bumblebee.presence.tools.registry import tool
 from bumblebee.presence.tools.runtime import get_tool_runtime
@@ -117,3 +118,20 @@ async def observe(channel: str = "", limit: int = 15) -> str:
         prefix = f"[{ts}] " if ts else ""
         lines.append(f"{prefix}{who}: {content}")
     return f"[{ch} — {len(msgs)} messages]\n" + "\n".join(lines)
+
+
+@tool(
+    "compact_context",
+    "Force a context compaction/summarization pass now so conversation continuity is preserved "
+    "while reducing prompt size when context is near full.",
+)
+async def compact_context(aggressive: bool = False, passes: int = 1) -> str:
+    ctx = get_tool_runtime()
+    if ctx is None or getattr(ctx, "entity", None) is None:
+        return json.dumps({"ok": False, "error": "no active entity runtime"})
+    entity = ctx.entity
+    compact = getattr(entity, "compact_context_now", None)
+    if not callable(compact):
+        return json.dumps({"ok": False, "error": "entity does not support manual compaction"})
+    result = await compact(aggressive=bool(aggressive), passes=max(1, min(int(passes), 6)))
+    return json.dumps(result)
