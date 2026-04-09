@@ -21,13 +21,15 @@ This file records what was done on a **1 vCPU / ~1 GiB RAM / no GPU** box so we 
 **Sanity check (server):**  
 `cd /root/bumblebee && .venv/bin/bumblebee ask smoke --ollama "hello"`
 
-## GitHub issues filed on this repo
+## GitHub issues (this repo — **Bumblebee-AGI/bumblebee**)
 
 | # | Topic |
 |---|--------|
-| [#1](https://github.com/DoughPurrp/bumblebee/issues/1) | Blocker: `main` ImportError — `history_compression` + `knowledge` out of sync with `entity.py` |
-| [#2](https://github.com/DoughPurrp/bumblebee/issues/2) | `validate_ollama_models` should not require harness default when entity overrides models |
-| [#3](https://github.com/DoughPurrp/bumblebee/issues/3) | Feature: omit `tools` for Ollama models that do not support tool calling |
+| [#2](https://github.com/Bumblebee-AGI/bumblebee/issues/2) | CI: import smoke test to catch package / `entity.py` drift (replaces obsolete “truncated fork” blocker) |
+| [#3](https://github.com/Bumblebee-AGI/bumblebee/issues/3) | `validate_ollama_models` should not require harness default when entity overrides models |
+| [#4](https://github.com/Bumblebee-AGI/bumblebee/issues/4) | Feature: omit `tools` for Ollama models that do not support tool calling |
+
+Previously filed on a private fork; **tracked here** after the project moved public.
 
 ## Not goals for this host
 
