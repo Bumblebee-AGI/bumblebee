@@ -50,6 +50,12 @@ _TOOL_CONTINUATION_USER = (
     "results, call another tool, or state the exact failure. Do not stop at progress chatter."
 )
 
+_RESEARCH_TOOLS = frozenset({
+    "search_web", "fetch_url", "read_wikipedia", "get_news",
+    "search_youtube", "read_reddit", "read_reddit_post",
+})
+
+
 def _build_post_tool_nudge(
     tool_calls: list[ToolCallSpec],
     tool_msgs: list[dict[str, Any]],
@@ -77,7 +83,19 @@ def _build_post_tool_nudge(
         sent_lines = "\n".join(f"  > {m[:120]}" for m in already_sent[-4:])
         sent_block = f"You already told the user:\n{sent_lines}\nDon't repeat yourself. Continue from where you left off.\n"
 
+    research_count = sum(1 for tc in tool_calls if tc.name in _RESEARCH_TOOLS)
     multi = len(tool_calls) >= 2
+
+    if research_count >= 2:
+        return (
+            f"Same turn. Tool results are ready:\n{tool_block}\n"
+            f"{sent_block}"
+            f"The user asked: {user_snippet}\n"
+            "You batched multiple searches — slow down. Use think() to digest what you found "
+            "from the FIRST result. Share that finding with say(). "
+            "Then do the next search in a separate round. "
+            "One topic at a time — let each result shape the next query."
+        )
     if multi:
         return (
             f"Same turn. Tool results are ready:\n{tool_block}\n"
@@ -85,6 +103,16 @@ def _build_post_tool_nudge(
             f"The user asked: {user_snippet}\n"
             "Share each finding using say() as a separate short message. "
             "Don't bundle into one wall of text. Then call end_turn."
+        )
+    if research_count == 1:
+        return (
+            f"Same turn. Tool results are ready:\n{tool_block}\n"
+            f"{sent_block}"
+            f"The user asked: {user_snippet}\n"
+            "Read the results carefully. Use think() to digest what you found. "
+            "Share the key findings with say(). If the user's question has more parts, "
+            "search the next part now — one search at a time. "
+            "If a result mentions a good source, consider fetch_url before moving on."
         )
     return (
         f"Same turn. Tool results are ready:\n{tool_block}\n"

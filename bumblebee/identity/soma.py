@@ -445,12 +445,30 @@ class BarEngine:
 
     # --- Persistence ---
 
+    def _apply_offline_decay(self, saved_at: float) -> None:
+        """Simulate bar decay for the time the process was not running."""
+        elapsed_hours = (time.time() - saved_at) / 3600.0
+        if elapsed_hours <= 0:
+            return
+        elapsed_hours = min(elapsed_hours, 24.0)
+        for name in self._ordered_names:
+            rate = self._decay_rates.get(name, 0.0)
+            if rate < 0:
+                self._values[name] += rate * elapsed_hours
+        self._clamp_all()
+        log.info(
+            "soma_offline_decay_applied",
+            elapsed_hours=round(elapsed_hours, 2),
+            values={k: round(v, 1) for k, v in self._values.items()},
+        )
+
     def save_state(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "values": dict(self._values),
             "history": list(self._history),
             "ordered_names": list(self._ordered_names),
+            "saved_at": time.time(),
         }
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
@@ -471,6 +489,9 @@ class BarEngine:
                 self._history.append({k: float(snap.get(k, 0)) for k in self._ordered_names})
             if not self._history:
                 self._history.append(dict(self._values))
+            saved_at = data.get("saved_at")
+            if saved_at is not None:
+                self._apply_offline_decay(float(saved_at))
             log.info("soma_bar_state_restored", values={k: round(v, 1) for k, v in self._values.items()})
             return True
         except Exception:
@@ -1470,6 +1491,7 @@ class TonicBody:
             "values": dict(self.bars._values),
             "history": list(self.bars._history),
             "ordered_names": list(self.bars._ordered_names),
+            "saved_at": time.time(),
         }
         payload = json.dumps(data, separators=(",", ":"))
         try:
@@ -1502,6 +1524,9 @@ class TonicBody:
                 self.bars._history.append({k: float(snap.get(k, 0)) for k in self.bars._ordered_names})
             if not self.bars._history:
                 self.bars._history.append(dict(self.bars._values))
+            saved_at = data.get("saved_at")
+            if saved_at is not None:
+                self.bars._apply_offline_decay(float(saved_at))
             log.info("soma_bar_state_restored_db", values={k: round(v, 1) for k, v in self.bars._values.items()})
             return True
         except Exception:

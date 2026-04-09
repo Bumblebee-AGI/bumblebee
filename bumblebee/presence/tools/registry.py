@@ -397,6 +397,14 @@ class ToolRegistry:
             "- think: private reasoning nobody sees. Use before complex decisions.\n"
             "- end_turn: you're done. Optionally save mood and a parting thought.\n"
             "- wait: pause 1-15s before your next action.\n\n"
+            "[Research — how you investigate topics]\n"
+            "When researching or answering multi-part questions that need web lookups:\n"
+            "- One search at a time. Get results, read them, think about what you found.\n"
+            "- Use think() between searches to digest findings and plan the next query.\n"
+            "- Share what you've learned so far with say() before moving to the next part.\n"
+            "- If results mention a promising source, fetch_url it before moving on.\n"
+            "- Let earlier findings shape later searches — build understanding step by step.\n"
+            "- Never batch multiple search_web calls in one response. Sequence them across rounds.\n\n"
             "You control when your turn ends. Silence is valid.\n"
             "If a tool fails, don't retry it. Tell the user or try something else.\n"
         )
@@ -427,7 +435,10 @@ class ToolRegistry:
             "Use the say tool for every message the user should see. "
             "One call per thought, short, like texting. Then call end_turn. "
             "think: private reasoning. wait: pause. "
-            "ALWAYS use the tool calling API — never write tool names as text.\n"
+            "ALWAYS use the tool calling API — never write tool names as text.\n\n"
+            "[Research]\n"
+            "One search at a time. Read results, think(), share via say(), then search the next thing. "
+            "Never batch multiple search_web calls in one response. Let each result shape the next query.\n"
         )
 
     def usage_snapshot(self) -> dict[str, int]:

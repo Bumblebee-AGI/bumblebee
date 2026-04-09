@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from bumblebee.config import EntityConfig
 
@@ -34,7 +35,7 @@ class DriveSystem:
         self._d.expression.growth_rate = 0.01 + 0.035 * t.get("openness", 0.5)
         self._d.autonomy.growth_rate = 0.008 + 0.03 * t.get("assertiveness", 0.5)
         self._d.comfort.growth_rate = 0.01 + 0.04 * t.get("neuroticism", 0.3)
-        self._last_initiative: float = 0.0
+        self._last_initiative: float = time.time()
 
     def all_drives(self) -> list[Drive]:
         return [
@@ -56,7 +57,7 @@ class DriveSystem:
     def reset_levels(self) -> None:
         for d in self.all_drives():
             d.level = 0.0
-        self._last_initiative = 0.0
+        self._last_initiative = time.time()
 
     def tick(self, silence_seconds: float = 0.0) -> list[Drive]:
         """Grow drives on heartbeat; return drives that crossed threshold."""

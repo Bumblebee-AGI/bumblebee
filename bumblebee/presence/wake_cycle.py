@@ -27,7 +27,7 @@ class WakeCycleEngine:
     def __init__(self, cfg: EntityConfig) -> None:
         self.cfg = cfg
         self._auto: AutonomySettings = cfg.harness.autonomy
-        self._last_cycle_at: float = 0.0
+        self._last_cycle_at: float = time.time()
         self._cycle_count_this_hour: int = 0
         self._hour_start: float = time.time()
         self._running: bool = False
@@ -260,7 +260,8 @@ class WakeCycleEngine:
             log.exception("autonomous_perceive_failed", error=str(e))
             return
 
-        sent_messages = any(n in ("say",) for n in tool_names)
+        _OUTBOUND_TOOLS = {"say", "send_dm", "send_message_to"}
+        sent_messages = any(n in _OUTBOUND_TOOLS for n in tool_names)
         used_end_turn = "end_turn" in tool_names
 
         tonic = getattr(entity, "tonic", None)
