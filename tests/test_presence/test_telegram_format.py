@@ -278,8 +278,8 @@ def test_build_status_html_reports_soma_gen_snapshot():
 
         class _HistoryCompression:
             enabled = True
-            compaction_threshold_ratio = 0.75
-            compaction_target_ratio = 0.20
+            compaction_threshold_ratio = 0.6
+            compaction_target_ratio = 0.08
 
         history_compression = _HistoryCompression()
 

@@ -889,7 +889,7 @@ class Entity:
         hc = self.config.cognition.history_compression
         if not hc.enabled:
             return
-        ctx_limit = int(self.config.cognition.max_context_tokens or 32768)
+        ctx_limit = int(self.config.cognition.max_context_tokens or 16384)
         threshold = int(ctx_limit * hc.compaction_threshold_ratio)
         model = self.config.cognition.deliberate_model or self.config.harness.models.deliberate
         num_ctx = self.config.effective_ollama_num_ctx()
@@ -1739,18 +1739,21 @@ class Entity:
             ok, missing = await validate_ollama_models(self.config, self.client)
             if not ok:
                 self.dormant = True
+                # Second value: main.py routes this text only when True (reflex turns, or here).
+                route_via_main = tc.inp.platform in ("discord", "telegram")
                 return (
                     f"I can't fully wake — Ollama doesn't have these models yet: {', '.join(missing)}. "
                     "Pull them with `ollama pull` and I'll be here.",
-                    False,
+                    route_via_main,
                 )
         except Exception as e:
             log.warning("ollama_unreachable", error=str(e))
             self.dormant = True
+            route_via_main = tc.inp.platform in ("discord", "telegram")
             return (
                 "I can't reach the inference server. It feels like sleep without dreams. "
                 "When Ollama is back, I'll surface again.",
-                False,
+                route_via_main,
             )
         self.dormant = False
         return None

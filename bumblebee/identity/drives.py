@@ -67,6 +67,21 @@ class DriveSystem:
             self._d.connection.level = min(1.0, self._d.connection.level + self._d.connection.growth_rate * 0.5)
         self._d.curiosity.level = min(1.0, self._d.curiosity.level + self._d.curiosity.growth_rate * 0.3)
         self._d.expression.level = min(1.0, self._d.expression.level + self._d.expression.growth_rate * 0.2)
+        # Long idle (YAML ``restlessness_decay`` seconds): mind wants stimulation again
+        try:
+            rd = float(getattr(self.entity.drives, "restlessness_decay", 3600) or 3600)
+        except (TypeError, ValueError):
+            rd = 3600.0
+        rd = max(60.0, rd)
+        if silence_seconds > rd:
+            self._d.curiosity.level = min(
+                1.0,
+                self._d.curiosity.level + self._d.curiosity.growth_rate * 0.55,
+            )
+            self._d.connection.level = min(
+                1.0,
+                self._d.connection.level + self._d.connection.growth_rate * 0.25,
+            )
         for d in self.all_drives():
             if d.level >= d.threshold:
                 crossed.append(d)

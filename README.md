@@ -163,7 +163,7 @@ cognition:
   always_deliberate: true
   thinking_mode: false
   temperature: 0.75
-  max_context_tokens: 32768
+  max_context_tokens: 16384
 
 presence:
   tool_activity: true
@@ -311,9 +311,9 @@ cognition:
   thinking_mode: true
   temperature: 0.75
   reflex_max_tokens: 1024
-  deliberate_max_tokens: 32768
-  thinking_budget: 4096
-  max_context_tokens: 65536
+  deliberate_max_tokens: 16384
+  thinking_budget: 2048
+  max_context_tokens: 16384
   escalation_threshold: 0.4
   tool_continuation_rounds: 21
 

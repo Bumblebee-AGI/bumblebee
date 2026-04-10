@@ -65,7 +65,15 @@ class WakeCycleEngine:
             return None
 
         now = time.time()
-        if now - self._last_cycle_at < self._auto.min_cycle_gap_seconds:
+        ic = 0
+        dr = getattr(self.cfg, "drives", None)
+        if dr is not None:
+            try:
+                ic = int(getattr(dr, "initiative_cooldown", 0) or 0)
+            except (TypeError, ValueError):
+                ic = 0
+        min_gap = max(int(self._auto.min_cycle_gap_seconds), max(0, ic))
+        if now - self._last_cycle_at < min_gap:
             return None
 
         if silence_seconds < self._auto.silence_threshold_seconds:

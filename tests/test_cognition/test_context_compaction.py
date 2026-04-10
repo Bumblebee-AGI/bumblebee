@@ -413,8 +413,8 @@ class TestKnowledgeFlush:
 class TestConfigWiring:
     def test_defaults(self):
         hc = HistoryCompressionSettings()
-        assert hc.compaction_threshold_ratio == 0.75
-        assert hc.compaction_target_ratio == 0.20
+        assert hc.compaction_threshold_ratio == 0.6
+        assert hc.compaction_target_ratio == 0.08
         assert hc.compaction_protect_last_n == 12
         assert hc.compaction_protect_first_n == 2
         assert hc.compaction_max_passes == 3
@@ -445,7 +445,7 @@ class TestConfigWiring:
         assert hc.compaction_threshold_ratio == 0.65
         assert hc.compaction_protect_last_n == 20
         assert hc.compaction_flush_to_knowledge is False
-        assert hc.compaction_target_ratio == 0.20
+        assert hc.compaction_target_ratio == 0.08
 
     def test_clamping(self):
         h = HarnessConfig()

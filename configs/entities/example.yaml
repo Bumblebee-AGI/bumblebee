@@ -40,7 +40,7 @@ cognition:
   deliberate_model: "gemma4:26b"
   thinking_mode: true
   temperature: 0.75
-  max_context_tokens: 32768
+  max_context_tokens: 16384
   thinking_budget: 4096
 
 # Optional: Firecrawl API key in env (see harness default.yaml ``firecrawl.api_key_env``).

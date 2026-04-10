@@ -371,6 +371,32 @@ class PersonalityEngine:
             ),
             f"Right now I feel {emotional_state.primary.value}, intensity about {emotional_state.intensity:.1f}.",
         ]
+        bp = self.entity.personality.behavioral_patterns
+        if isinstance(bp, dict) and bp:
+            lines = [
+                f"{str(k).replace('_', ' ')}: {v}"
+                for k, v in bp.items()
+                if v and str(v).strip()
+            ]
+            if lines:
+                parts.append(
+                    "How you tend to move through situations:\n"
+                    + "\n".join(f"  — {ln}" for ln in lines[:12])
+                )
+        topics = [str(t).strip() for t in (self.entity.drives.curiosity_topics or []) if str(t).strip()]
+        if topics:
+            parts.append(
+                "Topics and threads that reliably pull your attention (lean in when they show up): "
+                + "; ".join(topics[:14])
+            )
+        try:
+            at = int(self.entity.drives.attachment_threshold)
+            parts.append(
+                f"Attachment: you deepen ties over repeated real exchanges — "
+                f"roughly {at}+ meaningful back-and-forths before someone feels like a steady presence."
+            )
+        except (TypeError, ValueError):
+            pass
         if nar:
             parts.append(f"Who I'm becoming: {nar[:600]}")
         if inner:

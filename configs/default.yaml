@@ -41,9 +41,9 @@ cognition:
   thinking_mode: true
   temperature: 0.75
   reflex_max_tokens: 1024
-  deliberate_max_tokens: 32768
-  thinking_budget: 4096
-  max_context_tokens: 65536
+  deliberate_max_tokens: 16384
+  thinking_budget: 2048
+  max_context_tokens: 16384
   escalation_threshold: 0.4
   image_token_budget: 280
   # Nudge the model when it describes a tool step but returns no tool_calls (multi-step tasks).
@@ -55,8 +55,8 @@ cognition:
   # The message-count trim (rolling_history_max_messages on the entity) remains as a safety net.
   # history_compression:
   #   enabled: true
-  #   compaction_threshold_ratio: 0.75   # trigger at this fraction of max_context_tokens
-  #   compaction_target_ratio: 0.20      # tail token budget = threshold * this
+  #   compaction_threshold_ratio: 0.6    # trigger at this fraction of max_context_tokens
+  #   compaction_target_ratio: 0.08      # tail token budget = threshold * this
   #   compaction_protect_last_n: 12      # minimum protected tail messages
   #   compaction_protect_first_n: 2      # protected head messages (first exchange)
   #   compaction_max_passes: 3           # max compression passes per pre-flight

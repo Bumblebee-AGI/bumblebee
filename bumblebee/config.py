@@ -81,10 +81,10 @@ class ModelSettings:
 class CognitionSettings:
     thinking_mode: bool = True
     temperature: float = 0.75
-    reflex_max_tokens: int = 512
-    deliberate_max_tokens: int = 2048
-    thinking_budget: int = 4096
-    max_context_tokens: int = 32768
+    reflex_max_tokens: int = 1024
+    deliberate_max_tokens: int = 16384
+    thinking_budget: int = 2048
+    max_context_tokens: int = 16384
     escalation_threshold: float = 0.4
     image_token_budget: int = 280
     # After tool results, nudge the model up to this many times when it still sounds mid-task
@@ -349,7 +349,10 @@ class EntityPersonality:
 class EntityDrives:
     curiosity_topics: list[str] = field(default_factory=list)
     attachment_threshold: int = 5
+    # Seconds of silence after which curiosity/connection tick harder (see DriveSystem.tick).
     restlessness_decay: int = 3600
+    # Legacy: min seconds between proactive daemon messages when autonomy is off. When autonomy
+    # is on, also floors the gap between autonomous wake cycles (with min_cycle_gap_seconds).
     initiative_cooldown: int = 1800
 
 
@@ -370,8 +373,8 @@ class HistoryCompressionSettings:
     format_per_message_chars: int = 2200
 
     # --- proactive context compaction (Hermes-style) ---
-    compaction_threshold_ratio: float = 0.75
-    compaction_target_ratio: float = 0.20
+    compaction_threshold_ratio: float = 0.6
+    compaction_target_ratio: float = 0.08
     compaction_protect_last_n: int = 12
     compaction_protect_first_n: int = 2
     compaction_max_passes: int = 3
@@ -391,7 +394,7 @@ class EntityCognition:
     history_message_char_limit: int = 4000
     thinking_mode: bool = True
     temperature: float = 0.75
-    max_context_tokens: int = 32768
+    max_context_tokens: int = 16384
     thinking_budget: int = 4096
     history_compression: HistoryCompressionSettings = field(default_factory=HistoryCompressionSettings)
     # 0 = use harness.cognition.tool_continuation_rounds
@@ -694,10 +697,10 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
                 400, int(hc_raw.get("format_per_message_chars", 2200) or 2200)
             ),
             compaction_threshold_ratio=max(
-                0.10, min(0.95, float(hc_raw.get("compaction_threshold_ratio", 0.75) or 0.75))
+                0.10, min(0.95, float(hc_raw.get("compaction_threshold_ratio", 0.6) or 0.6))
             ),
             compaction_target_ratio=max(
-                0.10, min(0.80, float(hc_raw.get("compaction_target_ratio", 0.20) or 0.20))
+                0.05, min(0.80, float(hc_raw.get("compaction_target_ratio", 0.08) or 0.08))
             ),
             compaction_protect_last_n=max(
                 4, int(hc_raw.get("compaction_protect_last_n", 12) or 12)
