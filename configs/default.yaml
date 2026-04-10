@@ -226,6 +226,16 @@ autonomy:
   desire_wake_threshold: 0.72      # 0..1 urgency threshold for desire-triggered wake
   max_desires_considered: 3        # how many top desire pressures to surface in wake context
   allow_tool_calls_on_wake: true   # if true, wake cycles may use tools to explore/act
+  # Sustained wake: chain multiple full perceive() rounds per trigger (keep working).
+  wake_session_max_rounds: 1        # 1 = legacy single round; try 4–8 for longer unattended sessions
+  wake_session_wall_seconds: 1200  # hard cap on wall time per wake trigger (~20 min)
+  wake_session_say_budget_per_round: 6   # say() cap per round when max_rounds > 1
+  wake_session_pause_seconds: 2.0 # pause between rounds (lets I/O settle)
+  wake_session_extra_tool_steps: 10 # extra agent-loop steps per round when max_rounds > 1
+  wake_wide_mode: false              # broader tool budget + freedom prompt during wakes
+  wake_wide_bonus_steps: 16          # added to agent loop when wake_wide_mode
+  wake_user_visible_status: true    # italic status lines + typing (Telegram, CLI whisper, …)
+  wake_verbose_worker_log: true     # multi-line banner in worker logs (soma, GEN, poker)
   # Optional internal disposition prompts — large bundled deck in configs/poker_prompts/default.yaml
   poker_prompts:
     enabled: false

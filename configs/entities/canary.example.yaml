@@ -98,6 +98,19 @@ cognition:
   max_context_tokens: 16384
   thinking_budget: 2048
 
+# Optional: merge onto harness autonomy (see configs/default.yaml). Sustained multi-round wake.
+# autonomy:
+#   enabled: true
+#   wake_session_max_rounds: 6
+#   wake_session_wall_seconds: 2400
+#   wake_session_say_budget_per_round: 8
+#   wake_session_pause_seconds: 2.0
+#   wake_session_extra_tool_steps: 12
+#   wake_wide_mode: true
+#   wake_wide_bonus_steps: 20
+#   wake_user_visible_status: true
+#   wake_verbose_worker_log: true
+
 presence:
   tool_activity: true
   platforms:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -275,6 +275,21 @@ class AutonomySettings:
     desire_wake_threshold: float = 0.72
     max_desires_considered: int = 3
     allow_tool_calls_on_wake: bool = True
+    # Sustained wake: chain multiple full perceive() runs per trigger (multi-round “keep working”).
+    # wake_session_max_rounds=1 preserves legacy single-pass behavior.
+    wake_session_max_rounds: int = 1
+    wake_session_wall_seconds: int = 1200
+    wake_session_say_budget_per_round: int = 6
+    wake_session_pause_seconds: float = 2.0
+    # Extra agent-loop steps per round when wake_session_max_rounds > 1 (capped in deliberate.py).
+    wake_session_extra_tool_steps: int = 10
+    # Wider tool budget + prompt nudge — use for long exploratory wakes.
+    wake_wide_mode: bool = False
+    wake_wide_bonus_steps: int = 16
+    # Italic status lines + typing indicator on supported platforms (Telegram, CLI whisper, etc.).
+    wake_user_visible_status: bool = True
+    # Multi-line human banner in worker logs (reason, soma, GEN, poker, delivery).
+    wake_verbose_worker_log: bool = True
     summon: SummonSettings = field(default_factory=SummonSettings)
     poker_prompts: PokerPromptSettings = field(default_factory=PokerPromptSettings)
 
@@ -535,6 +550,25 @@ def _merge_dict(base: dict, override: dict) -> dict:
     return out
 
 
+def _merge_autonomy_from_entity_yaml(base: AutonomySettings, over: dict[str, Any]) -> AutonomySettings:
+    """Merge entity YAML ``autonomy:`` (top-level) onto harness defaults."""
+    d = dict(over)
+    summon_raw = d.pop("summon", None) or {}
+    poker_raw = d.pop("poker_prompts", None) or {}
+    kw: dict[str, Any] = {}
+    for f in fields(AutonomySettings):
+        name = f.name
+        if name == "summon":
+            kw[name] = SummonSettings(**{**base.summon.__dict__, **summon_raw})
+        elif name == "poker_prompts":
+            kw[name] = PokerPromptSettings(**{**base.poker_prompts.__dict__, **poker_raw})
+        elif name in d:
+            kw[name] = d[name]
+        else:
+            kw[name] = getattr(base, name)
+    return AutonomySettings(**kw)
+
+
 def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
     fc_raw = {**FirecrawlSettings().__dict__, **(d.get("firecrawl") or {})}
     for bkey in ("prefer_for_fetch", "prefer_for_search"):
@@ -768,9 +802,16 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
             max_entries=max(10, int(jr.get("max_entries", 1000) or 1000)),
         ),
     )
+    harness_eff = harness
+    auto_over = data.get("autonomy")
+    if isinstance(auto_over, dict) and auto_over:
+        harness_eff = replace(
+            harness,
+            autonomy=_merge_autonomy_from_entity_yaml(harness.autonomy, auto_over),
+        )
     return EntityConfig(
         name=name,
-        harness=harness,
+        harness=harness_eff,
         personality=personality,
         drives=drives,
         cognition=ec,

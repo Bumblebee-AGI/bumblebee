@@ -196,6 +196,8 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return "📓 writing in journal..."
     if tool_name == "read_journal":
         return None
+    if tool_name == "end_wake_session":
+        return "🌅 ending autonomous wake session..."
     if tool_name == "list_skills":
         return "🧠 checking procedural memory..."
     if tool_name == "read_skill":

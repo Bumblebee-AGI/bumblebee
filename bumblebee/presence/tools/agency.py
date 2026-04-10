@@ -27,6 +27,20 @@ async def think(thought: str) -> str:
 
 
 @tool(
+    "end_wake_session",
+    "End the sustained autonomous wake early — you are done exploring for this whole wake, "
+    "not just the current round. Only meaningful during multi-round autonomous sessions. "
+    "After this round completes, no further wake continuations will run.",
+)
+async def end_wake_session(reason: str = "") -> str:
+    ctx = get_tool_runtime()
+    if ctx.state is not None:
+        ctx.state["_wake_session_done"] = True
+    r = (reason or "").strip()
+    return "[wake session end requested]" + (f" ({r})" if r else "")
+
+
+@tool(
     "end_turn",
     "You're done with this turn. Optionally record your mood and a parting "
     "thought. Call this when you've said what you want to say — or decided "

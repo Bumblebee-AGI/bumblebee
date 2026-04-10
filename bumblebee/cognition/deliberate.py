@@ -231,8 +231,16 @@ class DeliberateCognition:
         thinking_acc: list[str] = []
         last: ChatCompletionResult | None = None
         num_ctx = self.entity.effective_ollama_num_ctx()
+        step_cap = self._agent_step_cap()
+        meta = getattr(_inp, "metadata", None) or {}
+        if isinstance(meta, dict):
+            ss = meta.get("sustained_session")
+            if isinstance(ss, dict):
+                extra = int(ss.get("extra_tool_steps", 0) or 0)
+                if extra > 0:
+                    step_cap = min(40, step_cap + extra)
         loop_state = AgentLoopState(
-            step_budget=self._agent_step_cap(),
+            step_budget=step_cap,
             user_requested_tools="use tools" in (_inp.text or "").lower(),
         )
         _messages_sent_to_user: list[str] = []

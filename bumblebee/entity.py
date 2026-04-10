@@ -604,6 +604,7 @@ class Entity:
     def _register_tools(self) -> None:
         self.tools.register_decorated(agency_tools.think)
         self.tools.register_decorated(agency_tools.say)
+        self.tools.register_decorated(agency_tools.end_wake_session)
         self.tools.register_decorated(agency_tools.end_turn)
         self.tools.register_decorated(agency_tools.wait)
         self.tools.register_decorated(agency_tools.observe)
@@ -1242,7 +1243,7 @@ class Entity:
             # Model explicitly ended its turn.  Still verify adequacy when
             # no real tools ran — the model may have teased a deliverable
             # via say() ("try something like this:") without providing it.
-            _agency = {"think", "say", "end_turn", "wait"}
+            _agency = {"think", "say", "end_turn", "end_wake_session", "wait"}
             real = sum(
                 1 for p in (tool_state.get("tool_output_previews") or [])
                 if isinstance(p, dict) and p.get("tool") not in _agency
@@ -2145,7 +2146,17 @@ class Entity:
     async def _run_agent_loop(self, tc: TurnContext) -> None:
         """Iterate the deliberate agent loop, executing tools and collecting intermediate output."""
         if tc.inp.platform == "autonomous":
-            tc.tool_state["_message_budget"] = self.config.harness.autonomy.messages_per_cycle
+            auto = self.config.harness.autonomy
+            meta = tc.inp.metadata or {}
+            ss = meta.get("sustained_session") if isinstance(meta, dict) else None
+            mr = int(ss.get("max_rounds", 1) or 1) if isinstance(ss, dict) else 1
+            wake_x = bool(ss.get("wake_enhanced")) if isinstance(ss, dict) else False
+            if isinstance(ss, dict) and (mr > 1 or wake_x):
+                tc.tool_state["_message_budget"] = max(
+                    1, int(auto.wake_session_say_budget_per_round),
+                )
+            else:
+                tc.tool_state["_message_budget"] = int(auto.messages_per_cycle)
         desktop_session = tc.inp.metadata.get("desktop_session") if isinstance(tc.inp.metadata, dict) else None
         if isinstance(desktop_session, dict):
             session_id = str(desktop_session.get("session_id") or "").strip()
@@ -2231,7 +2242,7 @@ class Entity:
         if tc.route in ("reflex", "deliberate"):
             # When say() was the sole output channel (no file/shell/web tools),
             # the final reply text is a redundant echo — skip it on chat platforms.
-            _agency = {"think", "say", "end_turn", "wait"}
+            _agency = {"think", "say", "end_turn", "end_wake_session", "wait"}
             real_work_done = any(
                 isinstance(p, dict) and p.get("tool") not in _agency
                 for p in (tc.tool_state.get("tool_output_previews") or [])
