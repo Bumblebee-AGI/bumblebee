@@ -180,7 +180,7 @@ soma:
     enabled: true
     model: ""  # empty uses reflex model; set to e.g. "gemma3:1b" for a dedicated small noise model
     cycle_seconds: 90
-    temperature: 0.95
+    temperature: 1.05
     max_tokens: 240
     max_fragments: 8
   # Subconscious wake voice — generates the prompt for autonomous wake cycles.

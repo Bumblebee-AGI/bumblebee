@@ -203,7 +203,7 @@ def default_soma_config() -> dict[str, Any]:
             "enabled": True,
             "model": "",
             "cycle_seconds": 90,
-            "temperature": 0.95,
+            "temperature": 1.05,
             "max_tokens": 240,
             "max_fragments": 8,
         },

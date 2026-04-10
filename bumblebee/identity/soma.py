@@ -1079,6 +1079,12 @@ _NOISE_SHAPE_HINTS: tuple[str, ...] = (
     "Include one tiny contradiction or self-correction across two lines.",
     "Use one inert factual datum (number, count, time) tied to context.",
     "One fragment should mention a minor irritation or desire without overexplaining.",
+    "Include one memory flicker linked to something in the current conversation.",
+    "One line should feel impulsive or petty; keep the next line calmer.",
+    "Include one domestic or tool/chore detail with no explanation.",
+    "Start one fragment mid-thought, like the sentence began earlier.",
+    "Use one line that sounds like words you almost sent but did not.",
+    "Mix one terse spike with one longer drifting line.",
 )
 
 
@@ -1146,13 +1152,13 @@ class NoiseEngine:
             "to people — the stray, uneven chatter underneath: half-sentences, "
             "boredom, stray sense-memories, dumb jokes, tiny itches, flat facts, "
             "random questions, nothing grand.\n\n"
-            "Read the body state and recents below. Output 3-6 separate thoughts as "
+            "Read the body state and recents below. Output 3-7 separate thoughts as "
             "plain lines (or separate short paragraphs). First person, present tense, "
             "mostly lowercase. They can be different lengths — a three-word spike "
             "next to a longer mumble is good.\n\n"
             "Do NOT write as one cohesive literary monologue. Keep it grounded in this "
-            "entity's recent context. At least half the lines should clearly connect to "
-            "recent events, journal, or conversation themes.\n\n"
+            "entity's recent context. Frequently connect lines to recent events, journal, "
+            "or conversation themes.\n\n"
             "Avoid high-fantasy/RPG or mystical language (quest, oracle, prophecy, spell, "
             "mana, relic, destiny). Occasional compact figurative phrasing is okay only if "
             "it stays concrete and context-linked.\n\n"
@@ -1170,7 +1176,7 @@ class NoiseEngine:
             f"LAST CONVERSATION:\n{conversation_tail or '(silence)'}\n\n"
             f"{prev_block}"
             f"Shape pressure (follow this in this batch only):\n{shape}\n\n"
-            "What crosses your mind? (3-6 fragments, uneven, context-linked.)"
+            "What crosses your mind? (3-7 fragments, uneven, context-linked.)"
         )
 
         try:
@@ -1275,7 +1281,7 @@ def _split_noise_fragments(text: str) -> list[str]:
                 and not _looks_disallowed_style(cleaned)
             ):
                 fragments.append(cleaned)
-    return fragments[:6]
+    return fragments[:7]
 
 
 # ---------------------------------------------------------------------------
