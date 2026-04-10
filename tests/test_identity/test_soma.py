@@ -746,3 +746,13 @@ class TestSomaEbb:
             body.should_skip_post_turn_noise(route="deliberate", platform="cli"),
             bool,
         )
+
+    def test_noise_generation_mode_quiet_defaults_entropic(self):
+        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+        assert body._noise_generation_mode(journal_tail="", conversation_tail="") == "entropic"
+
+    def test_noise_generation_mode_high_signal_becomes_coherent(self):
+        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+        body.emit({"type": "message_received", "from": "alice"})
+        body.emit({"type": "action", "name": "search_web"})
+        assert body._noise_generation_mode(journal_tail="", conversation_tail="ok") == "coherent"

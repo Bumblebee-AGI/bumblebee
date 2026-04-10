@@ -1127,6 +1127,7 @@ class NoiseEngine:
         journal_tail: str,
         conversation_tail: str,
         entity_name: str,
+        mode: str = "entropic",
         num_ctx: int | None = None,
     ) -> list[str]:
         """Call the small model and return new noise fragments."""
@@ -1147,11 +1148,22 @@ class NoiseEngine:
                 + "\n\n"
             )
 
+        mode_norm = "coherent" if str(mode).strip().lower() == "coherent" else "entropic"
+        mode_guidance = (
+            "MODE: coherent/high-signal. Stay noisy and emergent, but pointed: most lines orbit "
+            "one central live preoccupation from current events/conversation. Vary angle, pressure, "
+            "and texture more than topic.\n\n"
+            if mode_norm == "coherent"
+            else "MODE: entropic/quiet. Maximize randomness/chaos and weird emergent leaps while "
+            "still grounded in lived context. Fragments can jump topics abruptly and feel electric.\n\n"
+        )
+
         system = (
             f"You are the inner voice of {entity_name}. Not the part that speaks "
             "to people — the stray, uneven chatter underneath: half-sentences, "
             "boredom, stray sense-memories, dumb jokes, tiny itches, flat facts, "
             "random questions, nothing grand.\n\n"
+            f"{mode_guidance}"
             "Read the body state and recents below. Output 3-7 separate thoughts as "
             "plain lines (or separate short paragraphs). First person, present tense, "
             "mostly lowercase. They can be different lengths — a three-word spike "
@@ -1589,6 +1601,10 @@ class TonicBody:
         pct = self.bars.snapshot_pct()
         bars_line = ", ".join(f"{n}: {pct[n]}%" for n in self.bars.ordered_names)
         affects_line = self.renderer.render_affects(self._current_affects)
+        noise_mode = self._noise_generation_mode(
+            journal_tail=journal_tail,
+            conversation_tail=conversation_tail,
+        )
         await self.noise.generate(
             client,
             model,
@@ -1598,9 +1614,29 @@ class TonicBody:
             journal_tail=journal_tail,
             conversation_tail=conversation_tail,
             entity_name=entity_name,
+            mode=noise_mode,
             num_ctx=num_ctx,
         )
         self.flush_body_md()
+
+    def _noise_generation_mode(self, *, journal_tail: str = "", conversation_tail: str = "") -> str:
+        """Choose GEN style based on immediate stimulation.
+
+        High internal salience or active external signal -> coherent mode.
+        Quiet periods -> entropic mode (more sparse, jumpy associations).
+        """
+        sal = self.compute_salience()
+        recent = self._recent_events[-8:]
+        high_signal_types = {"message_received", "message_sent", "action", "appraisal", "world_poke"}
+        signal_events = sum(1 for ev in recent if str(ev.get("type") or "") in high_signal_types)
+        conv_load = len((conversation_tail or "").strip())
+        journal_load = len((journal_tail or "").strip())
+
+        if sal >= 0.58 or signal_events >= 2 or conv_load >= 220:
+            return "coherent"
+        if sal >= 0.42 and (signal_events >= 1 or conv_load >= 120 or journal_load >= 250):
+            return "coherent"
+        return "entropic"
 
     async def compose_wake_stirring(
         self,
