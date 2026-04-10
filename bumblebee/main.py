@@ -636,9 +636,11 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
     )
     ent = Entity(ec)
     try:
-        inf = await check_inference(ec, ent.client)
+        inf = await asyncio.wait_for(check_inference(ec, ent.client), timeout=8.0)
         if not inf.get("ok"):
             click.echo(f"Warning: inference not healthy: {inf}", err=True)
+    except TimeoutError:
+        click.echo("Warning: inference check timed out (continuing startup).", err=True)
     except Exception as e:
         click.echo(f"Warning: inference check failed: {e}", err=True)
 

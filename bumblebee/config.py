@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import os
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
@@ -878,8 +880,16 @@ async def validate_ollama_models(entity: EntityConfig, provider: Any) -> tuple[b
     fn = getattr(provider, "ensure_models", None)
     if not callable(fn):
         return True, []
-    ok, missing = await fn(
-        entity.cognition.reflex_model,
-        entity.cognition.deliberate_model,
-    )
+    # Keep turn startup responsive when inference is down: model listing can
+    # inherit long transport retries/timeouts from providers.
+    try:
+        ok, missing = await asyncio.wait_for(
+            fn(
+                entity.cognition.reflex_model,
+                entity.cognition.deliberate_model,
+            ),
+            timeout=8.0,
+        )
+    except TimeoutError:
+        return False, ["inference_check_timeout"]
     return ok, missing

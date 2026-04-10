@@ -1742,6 +1742,12 @@ class Entity:
                 self.dormant = True
                 # Second value: main.py routes this text only when True (reflex turns, or here).
                 route_via_main = tc.inp.platform in ("discord", "telegram")
+                if missing == ["inference_check_timeout"]:
+                    return (
+                        "I can’t confirm model readiness right now (inference check timed out). "
+                        "If Ollama/gateway is cold-starting, give it a few seconds and try again.",
+                        route_via_main,
+                    )
                 return (
                     f"I can't fully wake — Ollama doesn't have these models yet: {', '.join(missing)}. "
                     "Pull them with `ollama pull` and I'll be here.",
