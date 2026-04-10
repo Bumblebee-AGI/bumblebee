@@ -82,6 +82,12 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         category="Introspection",
     ),
     TelegramCommandSpec(
+        name="body",
+        summary="Print soma/body.md from the execution host (local or Railway workspace)",
+        usage="/body",
+        category="Introspection",
+    ),
+    TelegramCommandSpec(
         name="feelings",
         summary="Detailed emotional read",
         usage="/feelings",
@@ -121,6 +127,12 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         name="ping",
         summary="Quick liveness check",
         usage="/ping",
+        category="Runtime",
+    ),
+    TelegramCommandSpec(
+        name="busy",
+        summary="Toggle the pinned busy/working line while I reply (per chat)",
+        usage="/busy  or  /busy on  or  /busy off  or  /busy status",
         category="Runtime",
     ),
     TelegramCommandSpec(
@@ -799,10 +811,43 @@ def format_tools_html(entity: "Entity") -> str:
     return "\n".join(lines)
 
 
+def format_body_md_reply_html_chunks(
+    raw: str,
+    *,
+    rel_path: str = "soma/body.md",
+    chunk_chars: int = 2500,
+) -> list[str]:
+    """HTML fragments for Telegram: raw ``body.md`` in one or more ``<pre>`` blocks (not via the model)."""
+    raw = raw if raw is not None else ""
+    lp = html.escape(rel_path.strip() or "soma/body.md")
+    if not raw:
+        return [f"<b>{lp}</b> <i>(empty file)</i>"]
+    n = (len(raw) + chunk_chars - 1) // chunk_chars
+    out: list[str] = []
+    for i, start in enumerate(range(0, len(raw), chunk_chars)):
+        chunk = raw[start : start + chunk_chars]
+        suffix = f" ({i + 1}/{n})" if n > 1 else ""
+        out.append(f"<b>{lp}</b>{suffix}\n<pre>{html.escape(chunk)}</pre>")
+    return out
+
+
 def format_ping_html(app_version: str) -> str:
     return (
         f"pong · bumblebee v{html.escape(app_version)}\n"
         f"server_time_unix · <code>{int(time.time())}</code>"
+    )
+
+
+def format_busy_status_html(*, enabled: bool) -> str:
+    """After /busy: whether the pinned monospace working line is on for this chat."""
+    if enabled:
+        return (
+            "<b>Busy indicator: on</b> for this chat — the pinned working line shows while I reply.\n"
+            "<code>/busy off</code> to hide it."
+        )
+    return (
+        "<b>Busy indicator: off</b> for this chat — no pinned working line.\n"
+        "<code>/busy on</code> to show it again."
     )
 
 

@@ -9,6 +9,8 @@ from typing import Any
 KEY_ENFORCED = "telegram.privacy.enforced"
 KEY_USER_IDS = "telegram.privacy.user_ids"
 KEY_CHAT_IDS = "telegram.privacy.chat_ids"
+# Chats where the pinned busy/working line is disabled (/busy off).
+KEY_BUSY_DISABLED_CHAT_IDS = "telegram.busy.disabled_chat_ids"
 
 
 async def entity_state_get(conn: Any, key: str) -> str | None:
@@ -59,6 +61,15 @@ async def save_telegram_privacy_open(conn: Any) -> None:
     await entity_state_set(conn, KEY_ENFORCED, "0")
     await entity_state_set(conn, KEY_USER_IDS, "[]")
     await entity_state_set(conn, KEY_CHAT_IDS, "[]")
+
+
+async def load_telegram_busy_disabled_chat_ids(conn: Any) -> set[int]:
+    """Chats that opted out of the pinned busy indicator (default: none → busy on everywhere)."""
+    return _parse_id_set(await entity_state_get(conn, KEY_BUSY_DISABLED_CHAT_IDS))
+
+
+async def save_telegram_busy_disabled_chat_ids(conn: Any, chat_ids: set[int]) -> None:
+    await entity_state_set(conn, KEY_BUSY_DISABLED_CHAT_IDS, json.dumps(sorted(chat_ids)))
 
 
 async def save_telegram_privacy_enforced(

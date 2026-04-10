@@ -28,10 +28,17 @@ from bumblebee.presence.tools.execution_rpc import (
     self_update_tool_block_message,
 )
 from bumblebee.utils.self_update import perform_self_update
+from bumblebee.presence.tools.execution_rpc import (
+    get_execution_client_for_entity,
+    local_tool_block_message,
+    read_only_workspace_fs_allowed,
+)
 from bumblebee.presence.platforms.telegram_format import (
     build_status_html,
     command_menu_items,
     format_access_denied,
+    format_body_md_reply_html_chunks,
+    format_busy_status_html,
     format_commands_page,
     format_feelings_html,
     format_help_html,
@@ -64,7 +71,9 @@ from bumblebee.presence.platforms.telegram_format import (
     split_telegram_chunks,
 )
 from bumblebee.presence.platforms.telegram_privacy import (
+    load_telegram_busy_disabled_chat_ids,
     load_telegram_privacy_from_db,
+    save_telegram_busy_disabled_chat_ids,
     save_telegram_privacy_enforced,
     save_telegram_privacy_open,
 )
@@ -264,6 +273,8 @@ class TelegramPlatform(Platform):
         self._message_ring_cap = 200
         # chat_id -> busy indicator message_id while pinned (delete "X pinned a message" service line)
         self._busy_pin_notice_cleanup: dict[int, int] = {}
+        # Chats that opted out via /busy off (persisted in entity_state).
+        self._busy_disabled_chats: set[int] = set()
         self._active_summon: dict[str, Any] | None = None
         try:
             _auto = entity.config.harness.autonomy
@@ -290,6 +301,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("help", self._on_help_command), group=_g)
         self.app.add_handler(CommandHandler("commands", self._on_commands_command), group=_g)
         self.app.add_handler(CommandHandler("status", self._on_status_command), group=_g)
+        self.app.add_handler(CommandHandler("body", self._on_body_command), group=_g)
         self.app.add_handler(CommandHandler("memories", self._on_memories_command), group=_g)
         self.app.add_handler(CommandHandler("feelings", self._on_feelings_command), group=_g)
         self.app.add_handler(CommandHandler("me", self._on_me_command), group=_g)
@@ -297,6 +309,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("tools", self._on_tools_command), group=_g)
         self.app.add_handler(CommandHandler("routines", self._on_routines_command), group=_g)
         self.app.add_handler(CommandHandler("ping", self._on_ping_command), group=_g)
+        self.app.add_handler(CommandHandler("busy", self._on_busy_command), group=_g)
         self.app.add_handler(CommandHandler("update", self._on_update_command), group=_g)
         self.app.add_handler(CommandHandler("context", self._on_context_command), group=_g)
         self.app.add_handler(CommandHandler("compact", self._on_compact_command), group=_g)
@@ -331,6 +344,18 @@ class TelegramPlatform(Platform):
             self._db_chat_allow = chats
         except Exception as e:
             log.warning("telegram_privacy_load_failed", error=str(e))
+
+    async def _refresh_busy_prefs_from_db(self) -> None:
+        try:
+            async with self._entity.store.session() as conn:
+                disabled = await load_telegram_busy_disabled_chat_ids(conn)
+            self._busy_disabled_chats = disabled
+        except Exception as e:
+            log.warning("telegram_busy_prefs_load_failed", error=str(e))
+
+    def busy_indicator_enabled_for(self, chat_id: int) -> bool:
+        """Whether to show the pinned busy line for this chat (see /busy)."""
+        return int(chat_id) not in self._busy_disabled_chats
 
     def _allowed(self, update: Update) -> bool:
         chat = update.effective_chat
@@ -1137,6 +1162,48 @@ class TelegramPlatform(Platform):
         body = await build_status_html(self._entity, self._app_version)
         await self._reply_html(update, body)
 
+    async def _on_body_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Serve ``soma/body.md`` from the execution host (RPC or local workspace), not via the model."""
+        if not await self._take_update_if_fresh(update):
+            return
+        if not await self._check_allowed(update, notify=True):
+            return
+        _ = context
+        if not read_only_workspace_fs_allowed(self._entity):
+            await self._reply_html(
+                update,
+                "<b>Cannot read soma/body.md</b>\n<pre>"
+                + html.escape(local_tool_block_message(self._entity))
+                + "</pre>",
+            )
+            return
+        client = get_execution_client_for_entity(self._entity)
+        res = await client.call(
+            "read_file",
+            {"path": "soma/body.md", "max_bytes": 256_000},
+        )
+        if not res.get("ok"):
+            err = str(res.get("error") or "read failed")
+            await self._reply_html(
+                update,
+                "<b>Could not read soma/body.md</b>\n<pre>" + html.escape(err[:4000]) + "</pre>",
+            )
+            return
+        text = str(res.get("content") or "")
+        chat_id = self._remember_last_chat(update)
+        if chat_id is None:
+            return
+        frags = format_body_md_reply_html_chunks(text)
+        for i, frag in enumerate(frags):
+            await self.app.bot.send_message(
+                chat_id=chat_id,
+                text=frag,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            if i < len(frags) - 1:
+                await asyncio.sleep(0.06)
+
     async def _on_memories_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):
             return
@@ -1207,6 +1274,53 @@ class TelegramPlatform(Platform):
             return
         _ = context
         await self._reply_html(update, format_ping_html(self._app_version))
+
+    async def _on_busy_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        if not await self._check_allowed(update, notify=True):
+            return
+        msg = update.effective_message
+        if not msg:
+            return
+        chat_id = int(msg.chat_id)
+        args = [str(a).strip().lower() for a in (context.args or []) if str(a).strip()]
+        sub = args[0] if args else "toggle"
+        if sub in ("status", "st", "?"):
+            await self._reply_html(
+                update,
+                format_busy_status_html(enabled=self.busy_indicator_enabled_for(chat_id)),
+            )
+            return
+        if sub in ("toggle", "t"):
+            if chat_id in self._busy_disabled_chats:
+                self._busy_disabled_chats.discard(chat_id)
+            else:
+                self._busy_disabled_chats.add(chat_id)
+        elif sub in ("on", "enable", "yes", "true", "1"):
+            self._busy_disabled_chats.discard(chat_id)
+        elif sub in ("off", "disable", "no", "false", "0"):
+            self._busy_disabled_chats.add(chat_id)
+        else:
+            await self._reply_html(
+                update,
+                format_unknown_command(f"/busy {' '.join(args)}"),
+            )
+            return
+        try:
+            async with self._entity.store.session() as conn:
+                await save_telegram_busy_disabled_chat_ids(conn, self._busy_disabled_chats)
+        except Exception as e:
+            log.warning("telegram_busy_prefs_save_failed", error=str(e))
+            await self._reply_html(
+                update,
+                "<b>Could not save preference.</b> Try again in a moment.",
+            )
+            return
+        await self._reply_html(
+            update,
+            format_busy_status_html(enabled=self.busy_indicator_enabled_for(chat_id)),
+        )
 
     async def _on_update_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):
@@ -1646,6 +1760,7 @@ class TelegramPlatform(Platform):
 
     async def connect(self) -> None:
         await self._refresh_privacy_from_db()
+        await self._refresh_busy_prefs_from_db()
         await self.app.initialize()
         await self.app.start()
         try:

@@ -3,6 +3,7 @@ from bumblebee.presence.platforms.telegram_format import (
     _relative_time,
     build_status_html,
     command_menu_items,
+    format_body_md_reply_html_chunks,
     telegram_registered_slash_command_names,
     format_commands_page,
     format_remote_session_caption,
@@ -48,6 +49,17 @@ def test_commands_page_supports_filter():
     assert "/models" in out
 
 
+def test_body_md_reply_chunks_pre_and_escape():
+    chunks = format_body_md_reply_html_chunks("# hi\n", chunk_chars=500)
+    assert len(chunks) == 1
+    assert "<pre>" in chunks[0] and "</pre>" in chunks[0]
+    assert "# hi" in chunks[0]
+    amp = format_body_md_reply_html_chunks("a & b < c", chunk_chars=500)
+    assert "&amp;" in amp[0] and "&lt;" in amp[0]
+    many = format_body_md_reply_html_chunks("x" * 6000, chunk_chars=100)
+    assert len(many) >= 2
+
+
 def test_command_menu_items_are_short():
     items = command_menu_items()
     assert items
@@ -58,6 +70,8 @@ def test_command_menu_items_are_short():
     assert any(name == "session_status" for name, _ in items)
     assert any(name == "session_stop" for name, _ in items)
     assert any(name == "compact" for name, _ in items)
+    assert any(name == "busy" for name, _ in items)
+    assert any(name == "body" for name, _ in items)
     assert all(len(desc) <= 256 for _, desc in items)
 
 
@@ -71,6 +85,8 @@ def test_telegram_registered_slash_names_include_aliases():
     assert "session_status" in names
     assert "session_stop" in names
     assert "compact" in names
+    assert "busy" in names
+    assert "body" in names
     for name, _ in command_menu_items():
         assert name in names
 

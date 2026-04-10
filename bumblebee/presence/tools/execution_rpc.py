@@ -746,9 +746,8 @@ def self_update_tool_block_message(entity: Any) -> str:
     )
 
 
-def get_execution_client() -> ExecutionRPCClient:
-    ctx = require_tool_runtime()
-    entity = ctx.entity
+def get_execution_client_for_entity(entity: Any) -> ExecutionRPCClient:
+    """Build or return cached execution client (RPC and/or local disk under workspace)."""
     key = f"{entity.config.name}:{id(entity)}"
     cached = _CLIENTS.get(key)
     if cached is not None:
@@ -779,3 +778,7 @@ def get_execution_client() -> ExecutionRPCClient:
     )
     _CLIENTS[key] = client
     return client
+
+
+def get_execution_client() -> ExecutionRPCClient:
+    return get_execution_client_for_entity(require_tool_runtime().entity)

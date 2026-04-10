@@ -245,7 +245,7 @@ presence:
 
 4. Run with `bumblebee run canary --ollama`.
 
-Includes `/start`, `/help`, `/status`, `/feelings`, `/me`, `/privacy`, photo and vision support, voice note transcription, typing indicators, auto-split long replies, and a **busy indicator** during model work: short pinned message with a rotating spinner, removed when the reply is ready (does not feed the agent or `observe`). Operator and user allowlists for access control.
+Includes `/start`, `/help`, `/commands`, `/status`, `/body` (raw `soma/body.md` via the execution host), `/feelings`, `/me`, `/privacy`, photo and vision support, voice notes as audio input, typing indicators, auto-split long replies, and a **busy indicator** during each `perceive` turn: monospace pinned line with a braille spinner and Claude Code–style gerunds (`/busy` to disable per chat). Operator and user allowlists for access control.
 
 ### Discord
 
@@ -475,7 +475,7 @@ configs/
 └── entities/          # per-entity YAML overrides
 ```
 
-The **Mintlify** site source lives in **[Bumblebee-AGI/docs](https://github.com/Bumblebee-AGI/docs)** (often cloned beside this repo as `docs-main/`). Deep-dive pages include **GEN / noise pipeline** and the **Telegram** guide (busy indicator). The **Architecture → Soma** section above matches that site at a high level.
+The **Mintlify** site source lives in **[Bumblebee-AGI/docs](https://github.com/Bumblebee-AGI/docs)** (often cloned beside this repo as `docs-main/`). Deep-dive pages include **GEN / noise pipeline** and the **Telegram** guide (busy line, `/busy`, `/body`). The **Architecture → Soma** section above matches that site at a high level.
 
 ---
 

@@ -791,13 +791,14 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
                     reply_to_mid = int(raw_mid)
                 except (TypeError, ValueError):
                     reply_to_mid = None
-            busy_task = asyncio.create_task(
-                telegram_p.run_busy_indicator(
-                    int(inp.channel),
-                    reply_to_message_id=reply_to_mid,
-                    stop=stop_busy,
+            if telegram_p.busy_indicator_enabled_for(int(inp.channel)):
+                busy_task = asyncio.create_task(
+                    telegram_p.run_busy_indicator(
+                        int(inp.channel),
+                        reply_to_message_id=reply_to_mid,
+                        stop=stop_busy,
+                    )
                 )
-            )
         try:
             try:
                 reply, needs_platform_route = await ent.perceive(
