@@ -7,6 +7,7 @@ import base64
 import html
 import io
 import os
+import random
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -81,11 +82,80 @@ _MESSAGE_DEDUP_CAP = 8192
 # Ephemeral busy indicator: each frame must differ (Telegram may no-op identical edits).
 _BUSY_BRAILLE = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 _BUSY_EDIT_INTERVAL_SEC = 0.9
+# Pick a new random gerund after this many spinner edits (braille-only between rotations).
+_BUSY_WORD_ROTATE_EVERY = 20
+
+# Claude Code–style spinner verbs (gerunds); braille animates between rotations.
+_BUSY_ING_WORDS: tuple[str, ...] = (
+    "accomplishing",
+    "actioning",
+    "actualizing",
+    "baking",
+    "brewing",
+    "calculating",
+    "cerebrating",
+    "churning",
+    "clauding",
+    "coalescing",
+    "cogitating",
+    "computing",
+    "conjuring",
+    "considering",
+    "cooking",
+    "crafting",
+    "creating",
+    "crunching",
+    "deliberating",
+    "determining",
+    "doing",
+    "effecting",
+    "finagling",
+    "forging",
+    "forming",
+    "generating",
+    "hatching",
+    "herding",
+    "honking",
+    "hustling",
+    "ideating",
+    "inferring",
+    "manifesting",
+    "marinating",
+    "moseying",
+    "mulling",
+    "mustering",
+    "musing",
+    "noodling",
+    "percolating",
+    "pondering",
+    "processing",
+    "puttering",
+    "reticulating",
+    "ruminating",
+    "schlepping",
+    "shucking",
+    "simmering",
+    "smooshing",
+    "spinning",
+    "stewing",
+    "synthesizing",
+    "thinking",
+    "transmuting",
+    "vibing",
+    "working",
+    # Reported in the wild / extras
+    "catapulting",
+    "sauteing",
+    "gusting",
+    "seasoning",
+)
 
 
-def _busy_indicator_text(frame: int) -> str:
+def _busy_indicator_html(frame: int, ing_word: str) -> str:
+    """HTML for the busy line: monospace via <code> (Telegram HTML parse mode)."""
     spin = _BUSY_BRAILLE[frame % len(_BUSY_BRAILLE)]
-    return f"{spin} Working…"
+    inner = f"{spin}  {ing_word}"
+    return f"<code>{html.escape(inner)}</code>"
 
 
 def merge_telegram_operator_user_ids(yaml_ids: object) -> set[int] | None:
@@ -192,6 +262,8 @@ class TelegramPlatform(Platform):
         self._remote_sessions_lock = asyncio.Lock()
         self._message_ring: list[dict[str, Any]] = []
         self._message_ring_cap = 200
+        # chat_id -> busy indicator message_id while pinned (delete "X pinned a message" service line)
+        self._busy_pin_notice_cleanup: dict[int, int] = {}
         self._active_summon: dict[str, Any] | None = None
         try:
             _auto = entity.config.harness.autonomy
@@ -232,6 +304,10 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("session_start", self._on_session_start), group=_g)
         self.app.add_handler(CommandHandler("session_status", self._on_session_status), group=_g)
         self.app.add_handler(CommandHandler("session_stop", self._on_session_stop), group=_g)
+        self.app.add_handler(
+            MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, self._on_pinned_message_notice),
+            group=_g,
+        )
         self.app.add_handler(MessageHandler(filters.PHOTO, self._on_photo), group=_g)
         self.app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._on_voice), group=_g)
         self.app.add_handler(MessageHandler(filters.Document.ALL, self._on_doc_image), group=_g)
@@ -1592,6 +1668,28 @@ class TelegramPlatform(Platform):
         except Exception as e:
             log.debug("send_typing_failed", error=str(e))
 
+    async def _on_pinned_message_notice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Delete the system 'pinned a message' line when it refers to our busy-indicator pin.
+
+        Telegram may attribute the service line to the bot or the user (e.g. private vs group);
+        we only require that ``pinned_message`` matches the message we pinned for the busy line.
+        """
+        if not await self._take_update_if_fresh(update):
+            return
+        msg = update.message
+        if not msg or not msg.pinned_message:
+            return
+        chat_id = int(msg.chat_id)
+        expected_mid = self._busy_pin_notice_cleanup.get(chat_id)
+        if expected_mid is None:
+            return
+        if int(msg.pinned_message.message_id) != int(expected_mid):
+            return
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=int(msg.message_id))
+        except TelegramError as e:
+            log.debug("busy_pin_notice_delete_failed", error=str(e))
+
     async def run_busy_indicator(
         self,
         chat_id: int,
@@ -1603,11 +1701,13 @@ class TelegramPlatform(Platform):
 
         Uses the raw Bot API (not ``send_message``) so group summon and the message ring stay untouched.
         """
+        ing_word = random.choice(_BUSY_ING_WORDS)
         mid: int | None = None
         frame = 0
         send_kw: dict[str, Any] = {
             "chat_id": chat_id,
-            "text": _busy_indicator_text(0),
+            "text": _busy_indicator_html(0, ing_word),
+            "parse_mode": "HTML",
             "disable_notification": True,
         }
         if reply_to_message_id is not None:
@@ -1619,6 +1719,7 @@ class TelegramPlatform(Platform):
             log.debug("busy_indicator_send_failed", error=str(e))
             return
 
+        self._busy_pin_notice_cleanup[chat_id] = mid
         try:
             await self.app.bot.pin_chat_message(
                 chat_id=chat_id,
@@ -1638,11 +1739,17 @@ class TelegramPlatform(Platform):
                 if stop.is_set():
                     break
                 frame += 1
+                if (
+                    frame > 1
+                    and (frame - 1) % _BUSY_WORD_ROTATE_EVERY == 0
+                ):
+                    ing_word = random.choice(_BUSY_ING_WORDS)
                 try:
                     await self.app.bot.edit_message_text(
                         chat_id=chat_id,
                         message_id=mid,
-                        text=_busy_indicator_text(frame),
+                        text=_busy_indicator_html(frame, ing_word),
+                        parse_mode="HTML",
                     )
                 except RetryAfter as e:
                     try:
@@ -1653,6 +1760,7 @@ class TelegramPlatform(Platform):
                     log.debug("busy_indicator_edit_failed", error=str(e))
                     break
         finally:
+            self._busy_pin_notice_cleanup.pop(chat_id, None)
             if mid is not None:
                 try:
                     await self.app.bot.unpin_chat_message(
