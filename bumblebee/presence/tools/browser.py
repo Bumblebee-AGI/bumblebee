@@ -1,8 +1,10 @@
-"""Browser automation tools routed through execution backend."""
+"""Browser tools: RPC controls plus local Playwright screenshot capture."""
 
 from __future__ import annotations
 
 import json
+import time
+from pathlib import Path
 
 from bumblebee.presence.tools.execution_rpc import get_execution_client
 from bumblebee.presence.tools.registry import tool
@@ -98,3 +100,83 @@ async def browser_type(selector: str, text: str) -> str:
     if isinstance(res, dict) and res.get("session_id"):
         _set_session_id(str(res["session_id"]))
     return _json(res if isinstance(res, dict) else {"ok": False, "error": "invalid result"})
+
+
+@tool(
+    name="send_screenshot",
+    description=(
+        "Open a URL with local Playwright, take a screenshot, and send it to the current chat. "
+        "Use this when someone asks for 'send me a screenshot of this page'."
+    ),
+)
+async def send_screenshot(
+    url: str,
+    full_page: bool = True,
+    wait_seconds: float = 1.5,
+    width: int = 1366,
+    height: int = 900,
+) -> str:
+    u = (url or "").strip()
+    if not u:
+        return json.dumps({"ok": False, "error": "url is required"})
+    if not (u.startswith("http://") or u.startswith("https://")):
+        return json.dumps({"ok": False, "error": "url must start with http:// or https://"})
+
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": (
+                    "playwright not installed. Install extras: pip install 'bumblebee[browser]' "
+                    "and run: playwright install chromium"
+                ),
+            }
+        )
+
+    ctx = require_tool_runtime()
+    entity = ctx.entity
+    data_dir = Path(entity.config.db_path()).expanduser().resolve().parent
+    out_dir = data_dir / "screenshots"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"shot_{int(time.time())}.png"
+
+    w = max(640, min(int(width), 2560))
+    h = max(480, min(int(height), 1600))
+    ws = max(0.0, min(float(wait_seconds), 15.0))
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(viewport={"width": w, "height": h})
+            page = await context.new_page()
+            await page.goto(u, wait_until="networkidle", timeout=60000)
+            if ws > 0:
+                await page.wait_for_timeout(int(ws * 1000))
+            await page.screenshot(path=str(out_path), full_page=bool(full_page))
+            await context.close()
+            await browser.close()
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)[:500], "url": u})
+
+    sent = False
+    if ctx.platform is not None and ctx.inp is not None:
+        send_img = getattr(ctx.platform, "send_image", None)
+        if callable(send_img):
+            try:
+                await send_img(ctx.inp.channel, str(out_path))
+                sent = True
+            except Exception:
+                sent = False
+
+    return json.dumps(
+        {
+            "ok": True,
+            "url": u,
+            "path": str(out_path),
+            "sent": sent,
+            "full_page": bool(full_page),
+            "viewport": {"width": w, "height": h},
+        },
+        ensure_ascii=False,
+    )

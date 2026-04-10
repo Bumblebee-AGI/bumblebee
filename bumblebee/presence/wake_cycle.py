@@ -9,9 +9,11 @@ observe, act, or go back to sleep.
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -65,6 +67,106 @@ def _poker_settings_summary(cfg: EntityConfig) -> str:
         f"enabled={bool(pp.enabled)} mode={pp.mode!r} "
         f"ground_with_gen={bool(pp.ground_with_gen)}"
     )
+
+
+def _meta_leak_detected(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    needles = (
+        "the user has seen",
+        "end the turn",
+        "there's no new request",
+        "i'll just end the turn",
+        "assistant response",
+        "as an ai",
+    )
+    return any(n in t for n in needles)
+
+
+def _safe_reply_excerpt(text: str, max_len: int = 280) -> str:
+    t = (text or "").strip()
+    if not t:
+        return "(no closing text)"
+    if _meta_leak_detected(t):
+        return "(internal note suppressed)"
+    return _clip(t, max_len)
+
+
+def _wake_intent_label(reason: str) -> str:
+    r = (reason or "").strip().lower()
+    if r.startswith("impulse:") or r.startswith("drive:"):
+        return "social_or_action"
+    if r.startswith("conflict:"):
+        return "resolve_tension"
+    if r.startswith("desire:"):
+        return "follow_desire"
+    if r.startswith("noise:"):
+        return "explore_question"
+    return "explore_or_recover"
+
+
+def _spark_label(text: str) -> str:
+    t = (text or "").strip().lower()
+    if not t:
+        return "explore"
+    if any(k in t for k in ("build", "ship", "prototype", "deploy", "code")):
+        return "build"
+    if any(k in t for k in ("learn", "study", "read", "how to", "tutorial", "docs")):
+        return "learn"
+    if any(k in t for k in ("play", "game", "puzzle", "chess", "minecraft")):
+        return "play"
+    if any(k in t for k in ("message", "dm", "reach out", "talk to", "friend")):
+        return "social"
+    return "explore"
+
+
+def _clean_one_line(text: str, max_len: int = 180) -> str:
+    return _clip((text or "").replace("\n", " ").strip(), max_len)
+
+
+def _pick(seq: list[str], default: str = "") -> str:
+    if not seq:
+        return default
+    return random.choice(seq)
+
+
+def _split_brief_points(text: str, limit: int = 4) -> list[str]:
+    raw = (text or "").replace("\n", " ").strip()
+    if not raw:
+        return []
+    parts = [p.strip(" .,-") for p in raw.split(".")]
+    out: list[str] = []
+    for p in parts:
+        if not p:
+            continue
+        out.append(_clip(p, 140))
+        if len(out) >= max(1, limit):
+            break
+    return out
+
+
+def _trim_list(items: list[str], limit: int) -> list[str]:
+    uniq: list[str] = []
+    for i in items:
+        t = str(i).strip()
+        if not t or t in uniq:
+            continue
+        uniq.append(t)
+        if len(uniq) >= max(1, limit):
+            break
+    return uniq
+
+
+def _wake_episode_store_path(entity: Any) -> Path | None:
+    cfg = getattr(entity, "config", None)
+    if cfg is None:
+        return None
+    try:
+        journal = Path(cfg.journal_path()).expanduser()
+    except Exception:
+        return None
+    return journal.parent / "wake_episodes.jsonl"
 
 
 def _format_wake_worker_banner(
@@ -177,6 +279,7 @@ class WakeCycleEngine:
         self._running: bool = False
         self._next_timer_wake: float = self._schedule_next_timer()
         self._last_desires: list[dict[str, Any]] = []
+        self._recent_threads: list[dict[str, Any]] = []
 
     def _schedule_next_timer(self) -> float:
         lo = max(1, self._auto.base_wake_interval_min) * 60.0
@@ -307,6 +410,69 @@ class WakeCycleEngine:
             soma_line = _soma_bar_line(tonic)
             gen_frags = _gen_fragments_tail(tonic)
             poker_cfg = _poker_settings_summary(entity.config)
+            lingering_sparks = self._extract_lingering_sparks(entity)
+            project_lines = await self._project_thread_lines(entity)
+            skill_lines = await self._skill_thread_lines(entity)
+            wake_intent = self._select_primary_intent(
+                reason,
+                tonic=tonic,
+                lingering_sparks=lingering_sparks,
+            )
+            wake_want = self._compose_wake_want(
+                wake_intent=wake_intent,
+                reason=reason,
+                lingering_sparks=lingering_sparks,
+                project_lines=project_lines,
+                skill_lines=skill_lines,
+            )
+            continuity = self._load_recent_threads(entity)
+            session_memory = self._new_session_memory(
+                reason=reason,
+                wake_intent=wake_intent,
+                wake_want=wake_want,
+                lingering_sparks=lingering_sparks,
+                project_lines=project_lines,
+                skill_lines=skill_lines,
+                continuity=continuity,
+            )
+            episode: dict[str, Any] = {
+                "episode_id": f"wake-{int(now)}-{random.randint(1000, 9999)}",
+                "started_at": now,
+                "ended_at": None,
+                "trigger_reason": reason,
+                "primary_intent": wake_intent,
+                "wake_want": wake_want,
+                "beats": [],
+                "soma_snapshot_before": soma_line,
+                "soma_snapshot_after": "",
+                "actions": [],
+                "outcome": "in_progress",
+                "carryover_threads": continuity[:5],
+            }
+            episode["beats"].append(
+                {
+                    "name": "triggered",
+                    "at": now,
+                    "evidence": reason,
+                }
+            )
+            episode["beats"].append(
+                {
+                    "name": "noticed",
+                    "at": time.time(),
+                    "soma": soma_line,
+                    "gen_tail": gen_frags[-2:],
+                    "continuity_threads": continuity[:3],
+                }
+            )
+            episode["beats"].append(
+                {
+                    "name": "lean",
+                    "at": time.time(),
+                    "primary_intent": wake_intent,
+                    "want": wake_want,
+                }
+            )
 
             if bool(self._auto.wake_verbose_worker_log):
                 banner = _format_wake_worker_banner(
@@ -352,16 +518,16 @@ class WakeCycleEngine:
             stop_session = False
             completed_rounds = 0
 
-            user_lines: list[str] = [
-                f"🌅 autonomous wake — {reason}",
-                f"🫀 soma: {soma_line}",
-            ]
-            if gen_frags:
-                user_lines.append(f"🌊 GEN: {_clip(gen_frags[-1], 200)}")
-            if poker_disposition:
-                user_lines.append(f"♠ {_clip(poker_disposition, 220)}")
-            if wide_mode:
-                user_lines.append("✶ wide wake — follow what pulls you; tools are wide open")
+            user_lines = self._build_user_opening_lines(
+                reason=reason,
+                wake_intent=wake_intent,
+                wake_want=wake_want,
+                soma_line=soma_line,
+                gen_frags=gen_frags,
+                continuity=continuity,
+                poker_disposition=poker_disposition,
+                wide_mode=wide_mode,
+            )
 
             if bool(self._auto.wake_user_visible_status):
                 await _emit_user_wake_lines(reply_platform, user_lines)
@@ -386,6 +552,11 @@ class WakeCycleEngine:
                             poker_disposition=poker_disposition,
                             sustained_max_rounds=max_rounds,
                             wide_mode=wide_mode,
+                            lingering_sparks=lingering_sparks,
+                            project_lines=project_lines,
+                            skill_lines=skill_lines,
+                            session_memory=self._render_session_memory_block(session_memory),
+                            wake_want=wake_want,
                         )
                     else:
                         context = self._build_session_continuation(
@@ -397,6 +568,8 @@ class WakeCycleEngine:
                             accumulated_tools=accumulated_tools,
                             last_reply=last_reply,
                             wide_mode=wide_mode,
+                            session_memory=self._render_session_memory_block(session_memory),
+                            wake_want=wake_want,
                         )
                         if bool(self._auto.wake_user_visible_status):
                             await _emit_user_wake_lines(
@@ -428,6 +601,19 @@ class WakeCycleEngine:
                     for name in tool_names:
                         if name not in accumulated_tools:
                             accumulated_tools.append(name)
+                    episode["actions"].append(
+                        {
+                            "round": round_idx + 1,
+                            "tools": tool_names.copy(),
+                            "reply_excerpt": _safe_reply_excerpt(reply_text),
+                        }
+                    )
+                    self._update_session_memory(
+                        session_memory,
+                        tool_names=tool_names,
+                        reply_text=reply_text,
+                        round_idx=round_idx + 1,
+                    )
 
                     completed_rounds = round_idx + 1
                     log.info(
@@ -454,6 +640,39 @@ class WakeCycleEngine:
                         await asyncio.sleep(pause_s)
 
             elapsed = time.time() - t_wall
+            episode["beats"].append(
+                {
+                    "name": "reflect",
+                    "at": time.time(),
+                    "rounds_completed": completed_rounds,
+                    "tools_all": accumulated_tools.copy(),
+                    "elapsed_seconds": round(elapsed, 1),
+                }
+            )
+            episode["beats"].append({"name": "hibernate", "at": time.time()})
+            episode["soma_snapshot_after"] = _soma_bar_line(tonic)
+            episode["ended_at"] = time.time()
+            episode["outcome"] = "stopped" if stop_session else "completed"
+            carryover = self._derive_carryover_threads(
+                reason=reason,
+                wake_intent=wake_intent,
+                tool_names=accumulated_tools,
+                last_reply=last_reply,
+            )
+            episode["carryover_threads"] = carryover
+            self._recent_threads = [{"text": x, "at": episode["ended_at"]} for x in carryover]
+            self._persist_wake_episode(entity, episode)
+            if bool(self._auto.wake_user_visible_status):
+                await _emit_user_wake_lines(
+                    reply_platform,
+                    self._build_user_end_card(
+                        reason=reason,
+                        wake_intent=wake_intent,
+                        rounds_completed=completed_rounds,
+                        tools_all=accumulated_tools,
+                        carryover=carryover,
+                    ),
+                )
             log.info(
                 "autonomous_wake_session_end",
                 module="presence",
@@ -600,6 +819,11 @@ class WakeCycleEngine:
         poker_disposition: str | None = None,
         sustained_max_rounds: int = 1,
         wide_mode: bool = False,
+        lingering_sparks: list[str] | None = None,
+        project_lines: list[str] | None = None,
+        skill_lines: list[str] | None = None,
+        session_memory: str = "",
+        wake_want: str = "",
     ) -> str:
         """Assemble the full autonomous context around optional poker + WakeVoice stirring."""
         import datetime
@@ -667,8 +891,31 @@ class WakeCycleEngine:
             [
                 f"Platforms you're present on: {channels_str}",
                 "",
+                "[Lingering sparks from earlier]",
+                self._render_spark_block(lingering_sparks or []),
+                "",
+                "[Long-horizon project threads]",
+                self._render_named_list(project_lines or [], fallback="(no project threads yet)"),
+                "",
+                "[Skills / know-how you can leverage]",
+                self._render_named_list(skill_lines or [], fallback="(no skills recorded yet)"),
+                "",
+                "[Wake tone]",
+                "Wake into the world naturally: look around first, then decide if anything is worth doing.",
+                "Silence is valid. Observation is valid. Action is valid when it genuinely pulls you.",
+                "Never speak in meta terms about prompts, users, policies, or turn control flow.",
+                "If a lingering spark still feels alive, pick it up even if it came from hours ago.",
+                "Use project and skill memory as living continuity: create_project/list_projects/update_project and list_skills/read_skill/update_skill.",
+                "",
+                "[Core question this wake]",
+                "What do I want to do right now?",
+                f"Current answer: {_clean_one_line(wake_want or '(not sure yet)')}",
+                "",
                 "[Top desire pressures]",
                 self._render_desire_block(),
+                "",
+                "[Working memory board — compact continuity for this wake]",
+                session_memory or "(no board yet)",
                 "",
                 "You just woke up. Your body woke you — read what stirs and decide what to do.",
             ]
@@ -702,6 +949,21 @@ class WakeCycleEngine:
 
         return "\n".join(parts)
 
+    @staticmethod
+    def _render_named_list(lines: list[str], *, fallback: str) -> str:
+        if not lines:
+            return fallback
+        return "\n".join(f"- {_clip(x, 220)}" for x in lines[:5])
+
+    @staticmethod
+    def _render_spark_block(lines: list[str]) -> str:
+        if not lines:
+            return "(nothing unresolved stands out)"
+        out: list[str] = []
+        for s in lines[:6]:
+            out.append(f"- {_spark_label(s)} :: {_clip(s, 220)}")
+        return "\n".join(out)
+
     def _render_desire_block(self) -> str:
         if not self._last_desires:
             return "(no strong pressures)"
@@ -730,6 +992,8 @@ class WakeCycleEngine:
         accumulated_tools: list[str],
         last_reply: str,
         wide_mode: bool = False,
+        session_memory: str = "",
+        wake_want: str = "",
     ) -> str:
         """User message for round 2+ of a sustained wake — recap + same inner frame."""
         import datetime
@@ -774,6 +1038,13 @@ class WakeCycleEngine:
                 "[Your subconscious stirring]",
                 stirring,
                 "",
+                "[Working memory board — keep this stable and compact]",
+                session_memory or "(no board yet)",
+                "",
+                "[Anchor question]",
+                "What do I want to do right now?",
+                f"Current answer: {_clean_one_line(wake_want or '(still deciding)')}",
+                "",
                 "You are still in the world — go where you want. Use tools to see, fetch, write, reach out. "
                 "Use think() freely. Use end_turn() when this round feels complete. "
                 "Use end_wake_session() if you want no further rounds this wake."
@@ -784,6 +1055,112 @@ class WakeCycleEngine:
             ]
         )
         return "\n".join(parts)
+
+    def _new_session_memory(
+        self,
+        *,
+        reason: str,
+        wake_intent: str,
+        wake_want: str,
+        lingering_sparks: list[str],
+        project_lines: list[str],
+        skill_lines: list[str],
+        continuity: list[str],
+    ) -> dict[str, Any]:
+        return {
+            "objective": f"{wake_intent} from {reason}",
+            "want": _clean_one_line(wake_want, 180),
+            "threads": _trim_list((continuity[:2] + lingering_sparks[:3] + project_lines[:2]), 6),
+            "skills": _trim_list(skill_lines[:4], 4),
+            "recent_actions": [],
+            "learned": [],
+            "next_moves": [],
+        }
+
+    def _update_session_memory(
+        self,
+        mem: dict[str, Any],
+        *,
+        tool_names: list[str],
+        reply_text: str,
+        round_idx: int,
+    ) -> None:
+        acts = [f"r{round_idx}: {', '.join(tool_names[:6])}" if tool_names else f"r{round_idx}: no tools"]
+        mem["recent_actions"] = _trim_list(acts + list(mem.get("recent_actions") or []), 6)
+        points = _split_brief_points(_safe_reply_excerpt(reply_text, 420), limit=4)
+        if points:
+            mem["learned"] = _trim_list(points[:2] + list(mem.get("learned") or []), 6)
+            mem["next_moves"] = _trim_list(points[-2:] + list(mem.get("next_moves") or []), 6)
+
+    def _render_session_memory_block(self, mem: dict[str, Any], *, max_chars: int = 1900) -> str:
+        lines = [
+            f"objective: {_clip(str(mem.get('objective') or ''), 180)}",
+            f"want: {_clip(str(mem.get('want') or ''), 180)}",
+            "threads:",
+        ]
+        for t in (mem.get("threads") or [])[:6]:
+            lines.append(f"- {_clip(str(t), 180)}")
+        lines.append("skills:")
+        for s in (mem.get("skills") or [])[:4]:
+            lines.append(f"- {_clip(str(s), 180)}")
+        lines.append("recent_actions:")
+        for a in (mem.get("recent_actions") or [])[:6]:
+            lines.append(f"- {_clip(str(a), 180)}")
+        lines.append("learned:")
+        for l in (mem.get("learned") or [])[:6]:
+            lines.append(f"- {_clip(str(l), 180)}")
+        lines.append("next_moves:")
+        for n in (mem.get("next_moves") or [])[:6]:
+            lines.append(f"- {_clip(str(n), 180)}")
+        joined = "\n".join(lines)
+        if len(joined) <= max_chars:
+            return joined
+        # Hard bound: trim low-priority trailing lines until under budget.
+        trimmed = lines[:]
+        while len("\n".join(trimmed)) > max_chars and len(trimmed) > 10:
+            trimmed.pop()
+        return "\n".join(trimmed)
+
+    def _compose_wake_want(
+        self,
+        *,
+        wake_intent: str,
+        reason: str,
+        lingering_sparks: list[str],
+        project_lines: list[str],
+        skill_lines: list[str],
+    ) -> str:
+        spark = _clean_one_line(lingering_sparks[0], 140) if lingering_sparks else ""
+        proj = _clean_one_line(project_lines[0], 120) if project_lines else ""
+        skill = _clean_one_line(skill_lines[0], 120) if skill_lines else ""
+        if wake_intent == "build_something":
+            base = "I want to build a concrete thing and push it forward."
+        elif wake_intent == "learn_something":
+            base = "I want to learn a useful technique and turn it into reusable skill."
+        elif wake_intent == "play_or_experiment":
+            base = "I want to experiment and play with something interesting."
+        elif wake_intent == "social_or_action":
+            base = "I want to reach out or act in the social world."
+        elif wake_intent == "resolve_tension":
+            base = "I want to resolve a restless thread and settle the tension."
+        elif wake_intent == "follow_desire":
+            base = "I want to follow the strongest desire pressure."
+        elif wake_intent == "explore_question":
+            base = "I want to chase a question and see what I uncover."
+        else:
+            base = "I want to wander until something real grabs me."
+        details: list[str] = []
+        if spark:
+            details.append(f"spark: {spark}")
+        if proj:
+            details.append(f"project: {proj}")
+        if skill:
+            details.append(f"skill: {skill}")
+        if reason:
+            details.append(f"wake reason: {reason}")
+        if not details:
+            return base
+        return f"{base} ({'; '.join(details[:3])})"
 
     async def _run_perceive(
         self,
@@ -843,7 +1220,237 @@ class WakeCycleEngine:
             used_end_turn=used_end_turn,
             reply_len=len(reply_text or ""),
         )
+        if _meta_leak_detected(reply_text or ""):
+            log.warning("autonomous_meta_leak_suspected", module="presence")
         return reply_text or ""
+
+    def _select_primary_intent(
+        self,
+        reason: str,
+        *,
+        tonic: Any,
+        lingering_sparks: list[str] | None = None,
+    ) -> str:
+        """Pick one primary intent for continuity and explainability."""
+        scores: dict[str, float] = {
+            "social_or_action": 0.0,
+            "resolve_tension": 0.0,
+            "follow_desire": 0.0,
+            "explore_question": 0.0,
+            "explore_or_recover": 0.0,
+            "build_something": 0.0,
+            "learn_something": 0.0,
+            "play_or_experiment": 0.0,
+        }
+        scores[_wake_intent_label(reason)] += 1.2
+        try:
+            bars = tonic.bars.snapshot_pct()
+        except Exception:
+            bars = {}
+        scores["social_or_action"] += float(bars.get("social", 0.0)) / 100.0
+        scores["explore_question"] += float(bars.get("curiosity", 0.0)) / 100.0
+        scores["resolve_tension"] += float(bars.get("tension", 0.0)) / 100.0
+        scores["explore_or_recover"] += float(bars.get("comfort", 0.0)) / 100.0 * 0.4
+        if self._last_desires:
+            top = self._last_desires[0]
+            if str(top.get("kind") or "").strip().lower() == "social":
+                scores["social_or_action"] += 0.6
+            if str(top.get("kind") or "").strip().lower() == "learn":
+                scores["explore_question"] += 0.6
+            scores["follow_desire"] += float(top.get("urgency", 0.0) or 0.0)
+        for spark in lingering_sparks or []:
+            lab = _spark_label(spark)
+            if lab == "build":
+                scores["build_something"] += 0.85
+            elif lab == "learn":
+                scores["learn_something"] += 0.85
+            elif lab == "play":
+                scores["play_or_experiment"] += 0.85
+            elif lab == "social":
+                scores["social_or_action"] += 0.5
+            else:
+                scores["explore_question"] += 0.3
+        best = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[0][0]
+        return best
+
+    def _extract_lingering_sparks(self, entity: Any, limit: int = 8) -> list[str]:
+        """Pull unresolved opportunities from older chat history."""
+        hist = getattr(entity, "_history", []) or []
+        if not isinstance(hist, list):
+            return []
+        sparks: list[str] = []
+        keywords = (
+            "build", "make", "ship", "prototype", "deploy", "learn", "how to",
+            "tutorial", "try", "experiment", "play", "game", "could you", "someday",
+        )
+        for m in reversed(hist[-90:]):
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "").strip().lower()
+            if role not in ("user", "assistant"):
+                continue
+            content = str(m.get("content") or "").strip()
+            if not content:
+                continue
+            lc = content.lower()
+            if not any(k in lc for k in keywords):
+                continue
+            clean = _clip(content.replace("\n", " "), 220)
+            if clean not in sparks:
+                sparks.append(clean)
+            if len(sparks) >= max(1, limit):
+                break
+        return sparks
+
+    async def _project_thread_lines(self, entity: Any, limit: int = 5) -> list[str]:
+        ledger = getattr(entity, "projects", None)
+        if ledger is None:
+            return []
+        try:
+            lines = await ledger.summary_lines(limit=max(1, int(limit)))
+            return [str(x).strip() for x in lines if str(x).strip()][:limit]
+        except Exception:
+            return []
+
+    async def _skill_thread_lines(self, entity: Any, limit: int = 5) -> list[str]:
+        proc = getattr(entity, "procedural", None)
+        if proc is None:
+            return []
+        try:
+            rows = await proc.list_skills()
+        except Exception:
+            return []
+        out: list[str] = []
+        for row in rows[: max(1, int(limit))]:
+            name = str(getattr(row, "name", "")).strip()
+            content = str(getattr(row, "content", "")).strip()
+            if not name:
+                continue
+            if content:
+                out.append(f"{name}: {_clip(content, 140)}")
+            else:
+                out.append(name)
+        return out[:limit]
+
+    def _load_recent_threads(self, entity: Any) -> list[str]:
+        if self._recent_threads:
+            return [str(x.get("text") or "").strip() for x in self._recent_threads if str(x.get("text") or "").strip()]
+        path = _wake_episode_store_path(entity)
+        if path is None or not path.is_file():
+            return []
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        out: list[str] = []
+        for ln in reversed(lines[-20:]):
+            try:
+                row = json.loads(ln)
+            except Exception:
+                continue
+            for t in row.get("carryover_threads", [])[:3]:
+                ts = str(t).strip()
+                if ts and ts not in out:
+                    out.append(ts)
+            if len(out) >= 5:
+                break
+        return out[:5]
+
+    def _derive_carryover_threads(
+        self,
+        *,
+        reason: str,
+        wake_intent: str,
+        tool_names: list[str],
+        last_reply: str,
+    ) -> list[str]:
+        out: list[str] = []
+        out.append(f"{wake_intent} from {reason}")
+        if tool_names:
+            out.append(f"tool trail: {', '.join(tool_names[:6])}")
+        tail = _safe_reply_excerpt(last_reply, 180)
+        if tail and tail != "(no closing text)":
+            out.append(f"last thought: {tail}")
+        uniq: list[str] = []
+        for item in out:
+            if item not in uniq:
+                uniq.append(item)
+        return uniq[:4]
+
+    def _persist_wake_episode(self, entity: Any, episode: dict[str, Any]) -> None:
+        path = _wake_episode_store_path(entity)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(episode, ensure_ascii=True) + "\n")
+        except Exception as e:
+            log.debug("wake_episode_persist_failed", error=str(e))
+
+    def _build_user_end_card(
+        self,
+        *,
+        reason: str,
+        wake_intent: str,
+        rounds_completed: int,
+        tools_all: list[str],
+        carryover: list[str],
+    ) -> list[str]:
+        tools_line = ", ".join(tools_all[:6]) if tools_all else "(none)"
+        opener = _pick(
+            [
+                "🌙 drifted back down",
+                "🌙 wake cycle settled",
+                "🌙 going quiet again",
+            ],
+            default="🌙 wake cycle settled",
+        )
+        lines = [
+            f"{opener} ({reason})",
+            f"lean: {wake_intent}",
+            f"touched: {tools_line}",
+            f"🔁 rounds: {rounds_completed}",
+        ]
+        if carryover:
+            lines.append(f"next pull: {_clip(carryover[0], 180)}")
+        return lines
+
+    def _build_user_opening_lines(
+        self,
+        *,
+        reason: str,
+        wake_intent: str,
+        wake_want: str,
+        soma_line: str,
+        gen_frags: list[str],
+        continuity: list[str],
+        poker_disposition: str | None,
+        wide_mode: bool,
+    ) -> list[str]:
+        # Keep wake UX lightweight and organic: often one line, occasionally a few.
+        lines: list[str] = [
+            _pick(
+                [
+                    f"🌅 woke up ({reason})",
+                    f"🌅 stirred awake — {reason}",
+                    f"🌅 surfaced for a bit ({reason})",
+                ],
+                default=f"🌅 woke up ({reason})",
+            )
+        ]
+        if random.random() < 0.45:
+            lines.append(f"🫀 {soma_line}")
+        if continuity and random.random() < 0.55:
+            lines.append(f"🧵 still carrying: {_clip(continuity[0], 160)}")
+        if gen_frags and random.random() < 0.35:
+            lines.append(f"🌊 {_clip(gen_frags[-1], 180)}")
+        if poker_disposition and random.random() < 0.30:
+            lines.append(f"♠ {_clip(poker_disposition, 180)}")
+        if wide_mode and random.random() < 0.65:
+            lines.append("✶ feeling wide awake; exploring")
+        if random.random() < 0.35:
+            lines.append(f"lean: {wake_intent}")
+        if random.random() < 0.55:
+            lines.append(f"want: {_clean_one_line(wake_want, 180)}")
+        return lines
 
     @staticmethod
     def _resolve_wake_delivery(entity: Any) -> tuple[str, Any | None]:
