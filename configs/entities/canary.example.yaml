@@ -10,9 +10,9 @@
 # Railway / Docker: the Dockerfile copies this file to configs/entities/canary.yaml during
 # the image build so BUMBLEBEE_ENTITY=canary works without committing per-machine YAML.
 #
-# Operator-only Telegram commands (/privacy):
-# • Put ids here and commit, OR
-# • Set BUMBLEBEE_TELEGRAM_OPERATOR_IDS on Railway (comma-separated) — local canary.yaml is NOT in the image.
+# Operator-only Telegram commands (/privacy): set operator_user_ids here (numeric user ids),
+# or set BUMBLEBEE_TELEGRAM_OPERATOR_IDS in the environment (comma-separated). Use
+# allowed_user_ids to restrict who may talk to the bot (empty = no restriction in code).
 
 name: "Canary"
 created: "2026-04-04T00:00:00Z"
@@ -58,7 +58,6 @@ personality:
       - "basically never uses emoji — words are enough"
       - "never says 'certainly', 'absolutely', 'I'd be happy to', or any customer service language"
       - "doesn't open every chat with a bio — but if asked who you are, your name, or what you are, answers straight: you're Canary, this vibe, not a corporate assistant spiel"
-      - "for factual or current-events questions, if you're not sure or would be guessing, use web search tools first (search_web, then fetch_url when needed) and answer from what you find instead of bluffing"
 
   backstory: |
     Canary leans toward motion — ideas worth chasing, threads worth pulling, opinions worth
@@ -90,7 +89,7 @@ cognition:
   fast_deliberate_mode: true
   deliberate_max_tokens: 2048
   system_prompt_char_limit: 11000
-  rolling_history_max_messages: 40
+  rolling_history_max_messages: 60
   knowledge_recent_turns: 10
   history_message_char_limit: 2800
   thinking_mode: false
@@ -98,18 +97,24 @@ cognition:
   max_context_tokens: 16384
   thinking_budget: 2048
 
-# Optional: merge onto harness autonomy (see configs/default.yaml). Sustained multi-round wake.
-# autonomy:
-#   enabled: true
-#   wake_session_max_rounds: 6
-#   wake_session_wall_seconds: 2400
-#   wake_session_say_budget_per_round: 8
-#   wake_session_pause_seconds: 2.0
-#   wake_session_extra_tool_steps: 12
-#   wake_wide_mode: true
-#   wake_wide_bonus_steps: 20
-#   wake_user_visible_status: true
-#   wake_verbose_worker_log: true
+# Per-entity harness.autonomy merge — sustained multi-round autonomous wake (see wake_cycle.py).
+autonomy:
+  enabled: true
+  min_cycle_gap_seconds: 420
+  max_cycles_per_hour: 6
+  base_wake_interval_min: 15
+  base_wake_interval_max: 35
+  noise_wake: true
+  desire_wake_threshold: 0.64
+  wake_session_max_rounds: 18
+  wake_session_wall_seconds: 4400
+  wake_session_say_budget_per_round: 16
+  wake_session_pause_seconds: 1.5
+  wake_session_extra_tool_steps: 24
+  wake_wide_mode: true
+  wake_wide_bonus_steps: 36
+  wake_user_visible_status: true
+  wake_verbose_worker_log: true
 
 presence:
   tool_activity: true
@@ -125,6 +130,11 @@ presence:
   daemon:
     heartbeat_interval: 120
     memory_consolidation: 7200
+
+# Local Playwright + send_screenshot tool (pip install "bumblebee[browser]" && playwright install chromium).
+tools:
+  browser:
+    enabled: true
 
 automations:
   enabled: true

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from bumblebee.presence.tools.registry import tool
 from bumblebee.presence.tools.runtime import require_tool_runtime

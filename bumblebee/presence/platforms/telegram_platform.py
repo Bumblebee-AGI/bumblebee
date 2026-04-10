@@ -1910,17 +1910,23 @@ class TelegramPlatform(Platform):
             return
         chat_id = int(channel)
         ct = (content_type or "").lower()
-        try:
-            if ct.startswith("image/"):
+        if ct.startswith("image/"):
+            try:
                 await self.app.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(data))
-            else:
-                await self.app.bot.send_document(
-                    chat_id=chat_id,
-                    document=io.BytesIO(data),
-                    filename=filename[:255],
-                )
+                return
+            except Exception as e:
+                # Some images are rejected by Telegram's photo pipeline
+                # (e.g. Image_process_failed). Fallback to document upload.
+                log.warning("telegram_send_attachment_photo_failed", error=str(e))
+        try:
+            await self.app.bot.send_document(
+                chat_id=chat_id,
+                document=io.BytesIO(data),
+                filename=filename[:255],
+            )
         except Exception as e:
             log.warning("telegram_send_attachment_failed", error=str(e))
+            raise RuntimeError(f"telegram attachment delivery failed: {e}") from e
 
     async def send_message(self, channel: str, content: str) -> None:
         chat_id = int(channel)
@@ -1949,13 +1955,25 @@ class TelegramPlatform(Platform):
     async def send_image(self, channel: str, path: str) -> None:
         p = Path(path)
         if not p.is_file():
-            return
+            raise RuntimeError(f"image file not found: {path}")
         chat_id = int(channel)
         try:
             with p.open("rb") as f:
                 await self.app.bot.send_photo(chat_id=chat_id, photo=f)
+            return
+        except Exception as e:
+            # Fall back to document when Telegram cannot process as a photo.
+            log.warning("telegram_send_image_photo_failed", error=str(e))
+        try:
+            with p.open("rb") as f:
+                await self.app.bot.send_document(
+                    chat_id=chat_id,
+                    document=f,
+                    filename=p.name[:255],
+                )
         except Exception as e:
             log.warning("telegram_send_image_failed", error=str(e))
+            raise RuntimeError(f"telegram image delivery failed: {e}") from e
 
     async def send_tool_activity(self, description: str) -> None:
         if not description.strip() or not self.last_chat_id:

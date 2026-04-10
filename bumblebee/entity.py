@@ -725,12 +725,14 @@ class Entity:
         if self._tool_enabled("code", True):
             self.tools.register_decorated(code_tools.execute_python)
             self.tools.register_decorated(code_tools.execute_javascript)
+        # Local Playwright screenshot: always registered so search_tools / describe_tool / the
+        # model tool list match reality. Actual capture is gated inside send_screenshot.
+        self.tools.register_decorated(browser_tools.send_screenshot)
         if self._tool_enabled("browser", False):
             self.tools.register_decorated(browser_tools.browser_navigate)
             self.tools.register_decorated(browser_tools.browser_screenshot)
             self.tools.register_decorated(browser_tools.browser_click)
             self.tools.register_decorated(browser_tools.browser_type)
-            self.tools.register_decorated(browser_tools.send_screenshot)
         if self._tool_enabled("remote_session", False):
             self.tools.register_decorated(remote_session_tools.desktop_session_status)
             self.tools.register_decorated(remote_session_tools.desktop_session_view)

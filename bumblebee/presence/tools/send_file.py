@@ -48,6 +48,27 @@ async def send_file(path: str, message: str = "") -> str:
     data = content.encode("utf-8")
     filename = PurePosixPath(path).name or "file.txt"
     content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    # read_file RPC returns text content, so binary payloads (images/audio/video/etc.)
+    # cannot be reconstructed safely here.
+    if (
+        content_type.startswith("image/")
+        or content_type.startswith("audio/")
+        or content_type.startswith("video/")
+        or content_type in {
+            "application/octet-stream",
+            "application/pdf",
+            "application/zip",
+            "application/x-zip-compressed",
+        }
+    ):
+        return json.dumps(
+            {
+                "error": (
+                    f"send_file cannot deliver binary payloads safely ({content_type}). "
+                    "Use screenshot/image-specific tools (e.g. send_screenshot) or text files."
+                )
+            }
+        )
 
     send_attach = getattr(platform, "send_attachment_bytes", None)
     if not callable(send_attach):

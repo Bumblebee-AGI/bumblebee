@@ -105,8 +105,9 @@ async def browser_type(selector: str, text: str) -> str:
 @tool(
     name="send_screenshot",
     description=(
-        "Open a URL with local Playwright, take a screenshot, and send it to the current chat. "
-        "Use this when someone asks for 'send me a screenshot of this page'."
+        "Open a URL with local Playwright, take a screenshot, and send it to the current chat as an attachment. "
+        "Requires tools.browser.enabled: true in entity YAML plus pip install 'bumblebee[browser]' and "
+        "playwright install chromium on the worker. Use when someone asks for a webpage screenshot."
     ),
 )
 async def send_screenshot(
@@ -122,6 +123,22 @@ async def send_screenshot(
     if not (u.startswith("http://") or u.startswith("https://")):
         return json.dumps({"ok": False, "error": "url must start with http:// or https://"})
 
+    ctx = require_tool_runtime()
+    entity = ctx.entity
+    if not entity._tool_enabled("browser", False):
+        return json.dumps(
+            {
+                "ok": False,
+                "error": (
+                    "send_screenshot is disabled: set tools.browser.enabled: true under your entity YAML "
+                    "(e.g. configs/entities/canary.yaml) and restart the worker. "
+                    "The tool stays visible in your kit so you can see this message instead of false "
+                    "'tool missing' replies."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
     try:
         from playwright.async_api import async_playwright
     except ImportError:
@@ -135,12 +152,10 @@ async def send_screenshot(
             }
         )
 
-    ctx = require_tool_runtime()
-    entity = ctx.entity
     data_dir = Path(entity.config.db_path()).expanduser().resolve().parent
     out_dir = data_dir / "screenshots"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"shot_{int(time.time())}.png"
+    out_path = out_dir / f"shot_{int(time.time())}.jpg"
 
     w = max(640, min(int(width), 2560))
     h = max(480, min(int(height), 1600))
@@ -153,28 +168,68 @@ async def send_screenshot(
             await page.goto(u, wait_until="networkidle", timeout=60000)
             if ws > 0:
                 await page.wait_for_timeout(int(ws * 1000))
-            await page.screenshot(path=str(out_path), full_page=bool(full_page))
+            await page.screenshot(
+                path=str(out_path),
+                full_page=bool(full_page),
+                type="jpeg",
+                quality=78,
+            )
             await context.close()
             await browser.close()
     except Exception as e:
         return json.dumps({"ok": False, "error": str(e)[:500], "url": u})
 
-    sent = False
-    if ctx.platform is not None and ctx.inp is not None:
-        send_img = getattr(ctx.platform, "send_image", None)
-        if callable(send_img):
-            try:
-                await send_img(ctx.inp.channel, str(out_path))
-                sent = True
-            except Exception:
-                sent = False
+    if ctx.platform is None or ctx.inp is None:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "no active chat context to send image",
+                "url": u,
+                "path": str(out_path),
+            },
+            ensure_ascii=False,
+        )
+    send_attach = getattr(ctx.platform, "send_attachment_bytes", None)
+    send_img = getattr(ctx.platform, "send_image", None)
+    if not callable(send_attach) and not callable(send_img):
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "current platform cannot send attachments/images",
+                "url": u,
+                "path": str(out_path),
+            },
+            ensure_ascii=False,
+        )
+    try:
+        if callable(send_attach):
+            data = out_path.read_bytes()
+            await send_attach(
+                ctx.inp.channel,
+                data,
+                content_type="application/octet-stream",
+                filename=f"screenshot_{int(time.time())}.jpg",
+            )
+        else:
+            # Fallback for platforms without attachment bytes API.
+            await send_img(ctx.inp.channel, str(out_path))
+    except Exception as e:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": f"screenshot delivery failed: {str(e)[:300]}",
+                "url": u,
+                "path": str(out_path),
+            },
+            ensure_ascii=False,
+        )
 
     return json.dumps(
         {
             "ok": True,
             "url": u,
             "path": str(out_path),
-            "sent": sent,
+            "sent": True,
             "full_page": bool(full_page),
             "viewport": {"width": w, "height": h},
         },

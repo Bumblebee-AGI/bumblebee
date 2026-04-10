@@ -145,6 +145,8 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return f"🌐 opening {domain}..." if domain else "🌐 opening page..."
     if tool_name == "browser_screenshot":
         return "📸 taking a screenshot..."
+    if tool_name == "send_screenshot":
+        return "📸 capturing and sending screenshot..."
     if tool_name == "browser_click":
         return "👆 clicking..."
     if tool_name == "browser_type":
@@ -408,6 +410,9 @@ class ToolRegistry:
             "first — it uses the real journal path on disk. For other files use **send_file**. "
             "Do not stop after read_file or list_directory when they want a download. "
             "**read_journal** returns recent entry chunks; **read_file** is for raw text in your reply.\n\n"
+            "[Web screenshots]\n"
+            "If the user asks for a webpage screenshot, use **send_screenshot(url)**. "
+            "Do not use execute_python + send_file for screenshots.\n\n"
             "[Grounding]\n"
             "Questions about the workspace, files, or host state: use tools first, then answer "
             "from results. Don't guess from priors.\n"
@@ -434,6 +439,7 @@ class ToolRegistry:
             "update_knowledge when you learn something worth keeping. Don't wait to be asked.\n\n"
             "[Files]\n"
             "User wants journal.md as a download → send_journal_file(). Other files → send_file(path).\n"
+            "For webpage screenshots, use send_screenshot(url), not execute_python + send_file.\n"
         )
 
     def usage_snapshot(self) -> dict[str, int]:
