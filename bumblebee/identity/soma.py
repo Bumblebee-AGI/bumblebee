@@ -1069,18 +1069,16 @@ def _format_event_for_noise(ev: dict[str, Any]) -> str:
 
 # Rotating "shape pressure" to keep batches varied but grounded.
 _NOISE_SHAPE_HINTS: tuple[str, ...] = (
-    "At least one fragment under eight words; plain and literal.",
-    "Include one concrete body sensation (jaw, breath, shoulders, eyes, stomach).",
-    "Include one dry environment detail (light, temperature, object placement, room noise).",
-    "One fragment is a practical next-step thought (do X, then Y).",
-    "Include one tiny social afterimage (a phrase, tone, or reaction) without analysis.",
-    "One fragment should be simple time math (minutes, schedule, how long).",
-    "Use one fragment that is an unfinished note-to-self.",
-    "Include one mundane task/chore thought, no symbolism.",
+    "At least one fragment under eight words; sharp and specific.",
+    "Include one concrete body sensation and one social trace (tone/phrase/reaction).",
+    "Pull one fragment directly from recent events or conversation vocabulary.",
+    "One fragment is a practical next-step thought; one is associative or sideways.",
+    "Include one unfinished note-to-self and one line with momentum.",
+    "Use one vivid but grounded image from ordinary life; no fantasy framing.",
     "One line can be a short question; other lines should be statements.",
-    "Use one inert factual datum (number, count, price, timestamp).",
-    "Include one direct self-instruction in five to ten words.",
-    "One fragment should mention a minor irritation without dramatizing it.",
+    "Include one tiny contradiction or self-correction across two lines.",
+    "Use one inert factual datum (number, count, time) tied to context.",
+    "One fragment should mention a minor irritation or desire without overexplaining.",
 )
 
 
@@ -1097,7 +1095,7 @@ class NoiseEngine:
         self,
         cycle_seconds: float = 60.0,
         max_fragments: int = 8,
-        temperature: float = 0.95,
+        temperature: float = 1.05,
         max_tokens: int = 240,
     ) -> None:
         self.cycle_seconds = cycle_seconds
@@ -1148,13 +1146,16 @@ class NoiseEngine:
             "to people — the stray, uneven chatter underneath: half-sentences, "
             "boredom, stray sense-memories, dumb jokes, tiny itches, flat facts, "
             "random questions, nothing grand.\n\n"
-            "Read the body state and recents below. Output 2-5 separate thoughts as "
+            "Read the body state and recents below. Output 3-6 separate thoughts as "
             "plain lines (or separate short paragraphs). First person, present tense, "
             "mostly lowercase. They can be different lengths — a three-word spike "
             "next to a longer mumble is good.\n\n"
-            "Do NOT write as one cohesive literary monologue. Keep wording literal and "
-            "grounded. No metaphors, no similes, no symbolic object language, no RPG/fantasy "
-            "flavor, no mystical framing.\n\n"
+            "Do NOT write as one cohesive literary monologue. Keep it grounded in this "
+            "entity's recent context. At least half the lines should clearly connect to "
+            "recent events, journal, or conversation themes.\n\n"
+            "Avoid high-fantasy/RPG or mystical language (quest, oracle, prophecy, spell, "
+            "mana, relic, destiny). Occasional compact figurative phrasing is okay only if "
+            "it stays concrete and context-linked.\n\n"
             "No bullet points, no labels like 'thought:', no preamble, no quoting "
             "the prompt. Not analytical — just scraps.\n\n"
             "Each call: different substance than before. Never rephrase your last "
@@ -1169,7 +1170,7 @@ class NoiseEngine:
             f"LAST CONVERSATION:\n{conversation_tail or '(silence)'}\n\n"
             f"{prev_block}"
             f"Shape pressure (follow this in this batch only):\n{shape}\n\n"
-            "What crosses your mind? (2-5 fragments, uneven, not one voice.)"
+            "What crosses your mind? (3-6 fragments, uneven, context-linked.)"
         )
 
         try:
@@ -1224,16 +1225,14 @@ def _fragment_is_duplicate(candidate: str, existing: Iterable[str], threshold: f
 
 def _split_noise_fragments(text: str) -> list[str]:
     """Split raw noise output into individual fragments."""
-    figurative_patterns = (
-        r"\bas if\b",
-        r"\blike (?:a|an|the)\b",
-        r"\bis (?:a|an|the)\b.{0,40}\b(?:symbol|metaphor|echo|ghost|altar|oracle|spell|quest)\b",
-        r"\b(?:quest|oracle|prophecy|mana|spell|dungeon|artifact|relic)\b",
+    banned_style_patterns = (
+        r"\b(?:quest|oracle|prophecy|mana|spell|dungeon|artifact|relic|destiny)\b",
+        r"\b(?:chosen one|ancient rite|arcane|eldritch)\b",
     )
 
-    def _looks_too_figurative(line: str) -> bool:
+    def _looks_disallowed_style(line: str) -> bool:
         lower = line.lower()
-        for pat in figurative_patterns:
+        for pat in banned_style_patterns:
             if re.search(pat, lower):
                 return True
         return False
@@ -1273,10 +1272,10 @@ def _split_noise_fragments(text: str) -> list[str]:
                 cleaned
                 and cleaned.lower() not in low_signal
                 and len(cleaned) >= 2
-                and not _looks_too_figurative(cleaned)
+                and not _looks_disallowed_style(cleaned)
             ):
                 fragments.append(cleaned)
-    return fragments[:5]
+    return fragments[:6]
 
 
 # ---------------------------------------------------------------------------
