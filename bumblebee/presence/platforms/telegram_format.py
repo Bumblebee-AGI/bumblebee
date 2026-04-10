@@ -381,7 +381,7 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
     gen_model = ""
     gen_cycle_s = 0.0
     gen_temp = 1.1
-    gen_max_tokens = 150
+    gen_max_tokens = 240
     appraisal_enabled = False
     soma_db_restored = False
     state_hydrated = False
@@ -398,7 +398,7 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
         gen_model = str(getattr(entity.tonic, "_noise_model", "") or "").strip()
         gen_cycle_s = float(getattr(entity.tonic.noise, "cycle_seconds", 0.0) or 0.0)
         gen_temp = float(getattr(entity.tonic.noise, "temperature", 1.1) or 1.1)
-        gen_max_tokens = int(getattr(entity.tonic.noise, "max_tokens", 150) or 150)
+        gen_max_tokens = int(getattr(entity.tonic.noise, "max_tokens", 240) or 240)
         appraisal_enabled = bool(getattr(entity.tonic, "_appraisal_enabled", False))
         soma_db_restored = bool(getattr(entity, "_soma_db_restored", False))
         state_hydrated = bool(getattr(entity, "_state_hydrated", False))

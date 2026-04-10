@@ -776,10 +776,27 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
         elif inp.platform == "telegram":
             reply_pf = telegram_p
         stop_typing = asyncio.Event()
+        stop_busy = asyncio.Event()
         typing_task: asyncio.Task[None] | None = None
+        busy_task: asyncio.Task[None] | None = None
         if inp.platform == "telegram" and telegram_p:
             typing_task = asyncio.create_task(
                 _telegram_typing_worker(int(inp.channel), stop_typing)
+            )
+            reply_to_mid = None
+            meta = inp.metadata if isinstance(inp.metadata, dict) else {}
+            raw_mid = meta.get("telegram_message_id")
+            if raw_mid is not None:
+                try:
+                    reply_to_mid = int(raw_mid)
+                except (TypeError, ValueError):
+                    reply_to_mid = None
+            busy_task = asyncio.create_task(
+                telegram_p.run_busy_indicator(
+                    int(inp.channel),
+                    reply_to_message_id=reply_to_mid,
+                    stop=stop_busy,
+                )
             )
         try:
             try:
@@ -796,6 +813,12 @@ async def _run(entity_name: str, *, worker_mode: bool = False) -> None:
                 try:
                     await typing_task
                 except asyncio.CancelledError:
+                    pass
+            stop_busy.set()
+            if busy_task is not None:
+                try:
+                    await busy_task
+                except Exception:
                     pass
         if inp.platform == "cli":
             return reply

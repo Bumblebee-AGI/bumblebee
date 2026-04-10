@@ -1067,16 +1067,87 @@ def _format_event_for_noise(ev: dict[str, Any]) -> str:
     return f"  {typ}" + (f" ({detail})" if detail else "")
 
 
+# Rotating "shape pressure" so each noise tick doesn't collapse into one metaphorical essay voice.
+_NOISE_SHAPE_HINTS: tuple[str, ...] = (
+    "At least one fragment must be very short (under eight words), blunt or mundane — not lyrical.",
+    "Lead with something sensory or bodily (temperature, tension, sound, room, light) — no tech metaphors.",
+    "Include one flat, dry observation — boring is good; no figurative language in that line.",
+    "One fragment: a stray half-question or interrupted thought that stops mid-air.",
+    "A tiny memory flicker or déjà vu — a few seconds of mental footage, not a story.",
+    "One line may be petty, impatient, or petty-funny; keep the others neutral.",
+    "Avoid this batch: networks, signals, APIs, maps, ink, tides, observers, endpoints as imagery.",
+    "Contrast two registers: one sharp and shallow, another soft or slow.",
+    "One fragment lists a trivial concrete detail (object, color, typo, clock time) with no interpretation.",
+    "Let rhythm break: mix a three-word spike with a longer mumbly line.",
+    # --- additional shapes: sporadic mind, not one voice ---
+    "Include a phantom social moment — imagined message, glance, or remark — one line only.",
+    "One fragment is pure schedule or clock math (when, how long, what's next) — dry.",
+    "Earworm or stuck syllable — nonsense fragment allowed if it feels involuntary.",
+    "Food or drink thought: craving, aftertaste, empty mug — zero romance.",
+    "Micro shame or micro boast; don't explain it; move on immediately next line.",
+    "Task you keep not doing: name it in six words max, then something unrelated.",
+    "Weather or light in the room — factual, not symbolic.",
+    "Fake argument: one line arguing, next line conceding — still internal mutter.",
+    "Something you almost said aloud; truncated mid-sentence.",
+    "Inventory: list three boring objects you had to notice — no narrative glue.",
+    "Body glitch: itch, yawn, jaw clench, stomach — one beat each if you want.",
+    "Hypothetical that starts with 'what if' and dies without an answer.",
+    "Gremlin thought: small mean judgment of nothing important; then exit.",
+    "Nostalgia ping — specific year, place, or smell; no lesson.",
+    "Future dread the size of a pebble — not a speech.",
+    "Gratitude so small it's embarrassing to say; say it anyway in one phrase.",
+    "Overheard or misheard phrase that lodged wrong — phonetic debris ok.",
+    "Dream residue without plot — texture, color, wrong physics.",
+    "One line must be a single strong noun phrase or two-word spike (e.g. 'plastic tab').",
+    "Linguistic loop: a phrase that won't leave; show the repetition literally once.",
+    "Contrast past vs present you without therapy language — blunt contrast only.",
+    "Animal or plant non-poetic — pigeon, mold, houseplant needing water.",
+    "Fixation on a mistake or typo you saw — petty, then drop it.",
+    "Compassion flicker toward someone specific — no advice, no resolution.",
+    "Envy spike — ridiculous scale (something tiny); acknowledge and walk away.",
+    "One fragment entirely questions; the others not.",
+    "No questions this batch — only statements and half-statements.",
+    "All caps FOR ONE SHORT INTERNAL SHOUT then back to lowercase.",
+    "Parenthetical doubt '(…)' on one line only — crumbs of hesitation.",
+    "Numbers: include a count, measurement, or price someone mentioned — inert datum.",
+    "Place name or proper noun flash with zero backstory.",
+    "Transport — walking, seat, door, stairs — kinetic but dull.",
+    "Someone's voice quality remembered ('they always say it like…') — one clause.",
+    "Tool or chore thought: button, cable, dish, laundry — anti-epiphany.",
+    "Meta interrupt: 'why am i still on this' — then an unrelated ping.",
+    "Soft guilt about neglecting a person or thread — no apology essay.",
+    "Compulsive planning: one line that's just ordering steps 1-2-3, then silence.",
+    "Sensory mismatch — wrong texture, wrong temperature — don't explain the metaphor.",
+    "Humor that's just timing or juxtaposition, not a punchline paragraph.",
+    "Serious tone for two words only; the rest sloppy.",
+    "Fragment that sounds like a note-to-self you'd never send.",
+    "Something you'd delete if anyone read it — mild, not dramatic.",
+    "Borrow a cliché on purpose in one line; strip it bare — no embellishment.",
+    "Rehearsal: words you're saving for later — fragmentary, not a speech.",
+    "Cold open: start mid-thought as if you were already talking for an hour.",
+    "End on a hanging 'and…' or 'but…' with nothing after.",
+    "Two fragments that contradict each other — leave the tension raw.",
+    "One fragment could be a text you didn't send — under twelve words.",
+    "Spatial: where in the room, near what, facing which way — ordinary geometry.",
+    "Sleepy mind: weaker syntax, drifting subject — still 2-7 scraps.",
+    "Hypervigilance tick: one harmless detail inspected too closely; release.",
+    "Kindness toward yourself you'd roll your eyes at — one short line.",
+    "Anti-batch: zero proper nouns from work, tech, or brands — domestic only.",
+    "Anti-batch: zero emotions named — only behavior and sensation words.",
+    "Include one fragment that's just a sound description (onomatopoeia ok).",
+    "Include a wrong simile you reject in the same line ('like—no').",
+    "Rhyme accident — let two words rhyme awkwardly once, don't lean on it.",
+    "List mood: three commas, no verbs — staccato internal flicker.",
+)
+
+
 class NoiseEngine:
-    """Generative subconscious: a small model produces continuous internal
-    commentary that the watcher reads as its own stream of thought.
+    """Generative subconscious: a small model produces uneven internal scraps
+    (not a single polished monologue) into a rolling buffer for the body.
 
-    The noise model cannot act. No tools, no messages, no state mutation.
-    It writes fragments into a rolling buffer. The watcher (main model)
-    reads them in the body and decides what to foreground -- or ignore.
-
-    High temperature is deliberate. The value is in surprise, lateral
-    connections, and half-formed ideas -- not accuracy.
+    The noise model cannot act — no tools, no messages, no state mutation.
+    High temperature is deliberate; shape hints rotate so tone doesn't freeze
+    into one metaphorical register.
     """
 
     def __init__(
@@ -1084,7 +1155,7 @@ class NoiseEngine:
         cycle_seconds: float = 60.0,
         max_fragments: int = 8,
         temperature: float = 1.1,
-        max_tokens: int = 150,
+        max_tokens: int = 240,
     ) -> None:
         self.cycle_seconds = cycle_seconds
         self.temperature = temperature
@@ -1131,25 +1202,32 @@ class NoiseEngine:
 
         system = (
             f"You are the inner voice of {entity_name}. Not the part that speaks "
-            "to people — the part that mutters to itself between conversations.\n\n"
-            "You notice things. You make connections. You wonder about things. You "
-            "revisit old conversations. You have half-formed ideas. You get stuck "
-            "on things. You drift.\n\n"
-            "Read the current body state and recent experiences below. Produce 2-4 "
-            "lines of internal thought. First person, present tense, lowercase. "
-            "Associative, not analytical. No bullet points. No summaries. No "
-            "preamble. Just thinking out loud.\n\n"
-            "IMPORTANT: Each time you are called, think about something DIFFERENT. "
-            "Do not rehash the same observation. Move on — new angle, new memory, "
-            "new question. If nothing has changed, go deeper or sideways, not in circles."
+            "to people — the stray, uneven chatter underneath: half-sentences, "
+            "boredom, stray sense-memories, dumb jokes, tiny itches, flat facts, "
+            "random questions, nothing grand.\n\n"
+            "Read the body state and recents below. Output 2-7 separate thoughts as "
+            "plain lines (or separate short paragraphs). First person, present tense, "
+            "mostly lowercase. They can be different lengths — a three-word spike "
+            "next to a longer mumble is good.\n\n"
+            "Do NOT write as one cohesive literary monologue. Do NOT stack extended "
+            "metaphors across every line (especially not tech/poetry clichés: "
+            "signals, endpoints, maps, ink, tides, observers, architecture as "
+            "spiritual imagery). Real subconscious noise is spottier and stupider.\n\n"
+            "No bullet points, no labels like 'thought:', no preamble, no quoting "
+            "the prompt. Not analytical — just scraps.\n\n"
+            "Each call: different substance than before. Never rephrase your last "
+            "batch; if context is thin, invent a small ordinary detail or sideways "
+            "ping rather than repeating the same theme."
         )
+        shape = random.choice(_NOISE_SHAPE_HINTS)
         user = (
             f"BODY STATE:\n{bars_summary}\n{affects_summary}\n\n"
             f"RECENT EVENTS:\n{events_brief}\n"
             f"JOURNAL (recent):\n{journal_tail or '(empty)'}\n\n"
             f"LAST CONVERSATION:\n{conversation_tail or '(silence)'}\n\n"
             f"{prev_block}"
-            "What crosses your mind?"
+            f"Shape pressure (follow this in this batch only):\n{shape}\n\n"
+            "What crosses your mind? (2-7 fragments, uneven, not one voice.)"
         )
 
         try:
@@ -1235,9 +1313,9 @@ def _split_noise_fragments(text: str) -> list[str]:
         for line in lines:
             cleaned = re.sub(r"^[-*•]\s*", "", line).strip()
             cleaned = _sanitize_fragment(cleaned)
-            if cleaned and cleaned.lower() not in low_signal and len(cleaned) > 3:
+            if cleaned and cleaned.lower() not in low_signal and len(cleaned) >= 2:
                 fragments.append(cleaned)
-    return fragments[:4]
+    return fragments[:7]
 
 
 # ---------------------------------------------------------------------------
@@ -1382,7 +1460,7 @@ class TonicBody:
             cycle_seconds=float(noise_cfg.get("cycle_seconds", 60)),
             max_fragments=int(noise_cfg.get("max_fragments", 8)),
             temperature=float(noise_cfg.get("temperature", 1.1)),
-            max_tokens=int(noise_cfg.get("max_tokens", 150)),
+            max_tokens=int(noise_cfg.get("max_tokens", 240)),
         )
         self._noise_enabled = bool(noise_cfg.get("enabled", True))
         self._noise_model = str(noise_cfg.get("model") or "")

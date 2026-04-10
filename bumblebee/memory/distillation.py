@@ -215,7 +215,7 @@ class ExperienceDistiller:
             sections = [(k.title, k.body) for k in result.knowledge]
             written = append_knowledge_sections(entity_config, sections)
             if written:
-                knowledge_store.refresh_after_edit()
+                await knowledge_store.refresh_after_edit()
             counts["knowledge"] = written
 
         for ri in result.relational:

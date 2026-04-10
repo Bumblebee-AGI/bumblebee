@@ -545,18 +545,18 @@ class TestSplitNoiseFragments:
             assert not f.startswith("-")
             assert not f.startswith("*")
 
-    def test_caps_at_four_fragments(self):
+    def test_caps_at_seven_fragments(self):
         text = "\n\n".join(f"thought {i}" for i in range(10))
         frags = _split_noise_fragments(text)
-        assert len(frags) <= 4
+        assert len(frags) <= 7
 
     def test_empty_input(self):
         assert _split_noise_fragments("") == []
 
     def test_filters_short_fragments(self):
-        text = "ok\n\na real thought about something"
+        text = "a\n\na real thought about something"
         frags = _split_noise_fragments(text)
-        assert "ok" not in frags
+        assert "a" not in frags
         assert len(frags) == 1
 
     def test_sanitizes_control_tokens_and_role_prefixes(self):

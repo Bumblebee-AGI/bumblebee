@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import structlog
 from telegram import BotCommand, InputMediaPhoto, Update
 from telegram.constants import ChatAction
+from telegram.error import RetryAfter, TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.helpers import escape_markdown
 
@@ -76,6 +77,15 @@ log = structlog.get_logger("bumblebee.presence.telegram")
 _UPDATE_DEDUP_CAP = 8192
 # (chat_id, message_id) — skip re-entrancy / redelivery before or during LLM work.
 _MESSAGE_DEDUP_CAP = 8192
+
+# Ephemeral busy indicator: each frame must differ (Telegram may no-op identical edits).
+_BUSY_BRAILLE = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_BUSY_EDIT_INTERVAL_SEC = 0.9
+
+
+def _busy_indicator_text(frame: int) -> str:
+    spin = _BUSY_BRAILLE[frame % len(_BUSY_BRAILLE)]
+    return f"{spin} Working…"
 
 
 def merge_telegram_operator_user_ids(yaml_ids: object) -> set[int] | None:
@@ -550,6 +560,14 @@ class TelegramPlatform(Platform):
         msg = update.message or update.edited_message
         if not msg:
             return
+        bot_id, _ = self._bot_identity()
+        from_user = getattr(msg, "from_user", None)
+        if bot_id is not None and from_user is not None:
+            try:
+                if int(getattr(from_user, "id", 0) or 0) == bot_id:
+                    return
+            except (TypeError, ValueError):
+                pass
         u = update.effective_user
         sender = _telegram_display_name(u) if u else "unknown"
         text = (msg.text or msg.caption or "").strip()
@@ -1573,6 +1591,80 @@ class TelegramPlatform(Platform):
             await self.app.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         except Exception as e:
             log.debug("send_typing_failed", error=str(e))
+
+    async def run_busy_indicator(
+        self,
+        chat_id: int,
+        *,
+        reply_to_message_id: int | None = None,
+        stop: asyncio.Event,
+    ) -> None:
+        """Show an updating busy message; delete it when ``stop`` is set.
+
+        Uses the raw Bot API (not ``send_message``) so group summon and the message ring stay untouched.
+        """
+        mid: int | None = None
+        frame = 0
+        send_kw: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": _busy_indicator_text(0),
+            "disable_notification": True,
+        }
+        if reply_to_message_id is not None:
+            send_kw["reply_to_message_id"] = reply_to_message_id
+        try:
+            sent = await self.app.bot.send_message(**send_kw)
+            mid = int(sent.message_id)
+        except Exception as e:
+            log.debug("busy_indicator_send_failed", error=str(e))
+            return
+
+        try:
+            await self.app.bot.pin_chat_message(
+                chat_id=chat_id,
+                message_id=mid,
+                disable_notification=True,
+            )
+        except TelegramError as e:
+            log.debug("busy_indicator_pin_failed", error=str(e))
+
+        try:
+            while not stop.is_set():
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=_BUSY_EDIT_INTERVAL_SEC)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+                if stop.is_set():
+                    break
+                frame += 1
+                try:
+                    await self.app.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=mid,
+                        text=_busy_indicator_text(frame),
+                    )
+                except RetryAfter as e:
+                    try:
+                        await asyncio.sleep(float(e.retry_after) + 0.05)
+                    except (TypeError, ValueError):
+                        await asyncio.sleep(1.0)
+                except TelegramError as e:
+                    log.debug("busy_indicator_edit_failed", error=str(e))
+                    break
+        finally:
+            if mid is not None:
+                try:
+                    await self.app.bot.unpin_chat_message(
+                        chat_id=chat_id,
+                        message_id=mid,
+                    )
+                except TelegramError:
+                    pass
+                try:
+                    await self.app.bot.delete_message(chat_id=chat_id, message_id=mid)
+                except TelegramError as e:
+                    log.debug("busy_indicator_delete_failed", error=str(e))
 
     async def send_attachment_bytes(
         self,

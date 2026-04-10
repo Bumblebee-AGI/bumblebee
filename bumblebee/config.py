@@ -204,7 +204,7 @@ def default_soma_config() -> dict[str, Any]:
             "model": "",
             "cycle_seconds": 90,
             "temperature": 1.1,
-            "max_tokens": 150,
+            "max_tokens": 240,
             "max_fragments": 8,
         },
         "wake_voice": {

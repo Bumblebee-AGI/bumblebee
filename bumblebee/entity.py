@@ -1872,8 +1872,13 @@ class Entity:
         except Exception as e:
             log.debug("post_turn_noise_tick_failed", error=str(e))
 
-    async def maybe_distill(self) -> None:
-        """Check if experience distillation is due and run it if so."""
+    async def maybe_distill(self, conn: Any | None = None) -> None:
+        """Check if experience distillation is due and run it if so.
+
+        When ``conn`` is provided (same handle as the active perceive/commit transaction),
+        routing writes reuse it. Opening a second DB session inside that transaction can
+        deadlock on SQLite/Postgres when distill touches the same rows (e.g. relational).
+        """
         if not self._distiller._settings.enabled:
             return
         emotion_cat, intensity = self.tonic.snapshot_for_emotion()
@@ -1912,7 +1917,7 @@ class Entity:
         if result is None:
             return
         try:
-            async with self.store.session() as db:
+            if conn is not None:
                 counts = await self._distiller.route_results(
                     result,
                     entity_config=self.config,
@@ -1920,9 +1925,21 @@ class Entity:
                     relational=self.relational,
                     beliefs=self.beliefs,
                     journal=self.journal,
-                    conn=db,
+                    conn=conn,
                     client=self.client,
                 )
+            else:
+                async with self.store.session() as db:
+                    counts = await self._distiller.route_results(
+                        result,
+                        entity_config=self.config,
+                        knowledge_store=self.knowledge,
+                        relational=self.relational,
+                        beliefs=self.beliefs,
+                        journal=self.journal,
+                        conn=db,
+                        client=self.client,
+                    )
             log.info("distillation_completed", **counts)
         except Exception as e:
             log.warning("distillation_route_failed", error=str(e))
@@ -2382,7 +2399,7 @@ class Entity:
             log.debug("soma_db_save_in_commit_failed", error=str(e))
         await self._tick_noise_post_turn(tc)
         try:
-            await self.maybe_distill()
+            await self.maybe_distill(conn=tc.db)
         except Exception as e:
             log.debug("distillation_in_commit_failed", error=str(e))
         log.info(
