@@ -96,7 +96,7 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
     TelegramCommandSpec(
         name="memories",
         summary="Recent episodic memory summaries",
-        usage="/memories [count]",
+        usage="/memories [count]  (alias: /memeories)",
         category="Introspection",
     ),
     TelegramCommandSpec(
@@ -518,13 +518,43 @@ async def build_status_html(entity: "Entity", app_version: str) -> str:
     return f"{header}\n\n" + "\n\n".join(sections)
 
 
-def format_memories_html(entity_name: str, summaries: list[str]) -> str:
-    en = html.escape(entity_name)
-    if not summaries:
-        return f"<b>Memories</b>\n\n<i>Nothing recalled yet.</i>"
-    lines = [f"<b>Memories</b>\n"]
-    for i, s in enumerate(summaries, 1):
-        lines.append(f"  {i}. {html.escape(s[:500])}\n")
+def format_memories_html(entity_name: str, entries: list[Any], *, requested_count: int | None = None) -> str:
+    _ = entity_name
+    want = max(1, int(requested_count or len(entries) or 5))
+    if not entries:
+        return (
+            "<b>Memories</b>\n\n"
+            "<i>No episodic memories yet.</i>\n"
+            "Talk with me a bit more, then try <code>/memories 5</code>."
+        )
+    lines = [
+        "<b>Memories</b>",
+        f"<i>Showing {len(entries)} of {want} requested.</i>",
+        "",
+    ]
+    for i, row in enumerate(entries, 1):
+        if isinstance(row, str):
+            summary = row
+            ago = ""
+            sig = None
+        else:
+            summary = str(getattr(row, "summary", "") or "")
+            ago = _relative_time(getattr(row, "timestamp", None))
+            sig_raw = getattr(row, "significance", None)
+            try:
+                sig = float(sig_raw) if sig_raw is not None else None
+            except (TypeError, ValueError):
+                sig = None
+        summary = summary.strip()
+        if not summary:
+            continue
+        meta_parts: list[str] = []
+        if ago:
+            meta_parts.append(ago)
+        if sig is not None:
+            meta_parts.append(f"sig {sig:.2f}")
+        meta = f" <i>({' · '.join(meta_parts)})</i>" if meta_parts else ""
+        lines.append(f"{i}. {html.escape(summary[:500])}{meta}")
     return "\n".join(lines)
 
 
@@ -553,12 +583,21 @@ def _mini_bar(value: float, width: int = 8) -> str:
     return "\u2588" * filled + "\u2591" * (width - filled)
 
 
-def format_me_html(entity_name: str, relationship: Any | None) -> str:
-    en = html.escape(entity_name)
+def format_me_html(
+    entity_name: str,
+    relationship: Any | None,
+    *,
+    target_label: str | None = None,
+    recent_memories: list[str] | None = None,
+) -> str:
+    _ = entity_name
+    who = html.escape((target_label or "you").strip() or "you")
+    mem = [m.strip() for m in (recent_memories or []) if str(m).strip()]
     if relationship is None:
         return (
-            f"<b>Relationship</b>\n\n"
-            "<i>No profile yet.</i> Talk a little more and check again with <code>/me</code>."
+            f"<b>Relationship · {who}</b>\n\n"
+            "<i>No relationship profile yet.</i>\n"
+            "If you just started chatting, send a few messages and check again."
         )
     first_met_ago = _fmt_duration(max(0.0, time.time() - float(relationship.first_met)))
     last_seen_ago = _fmt_duration(max(0.0, time.time() - float(relationship.last_interaction)))
@@ -567,8 +606,8 @@ def format_me_html(entity_name: str, relationship: Any | None) -> str:
     warm_bar = _mini_bar(relationship.warmth)
     trust_bar = _mini_bar(relationship.trust)
 
-    return (
-        f"<b>Relationship</b>\n\n"
+    out = (
+        f"<b>Relationship · {who}</b>\n\n"
         f"  Name: {html.escape(str(relationship.name) or 'unknown')}\n"
         f"  Dynamic: {html.escape(str(relationship.dynamic) or 'forming')}\n\n"
         f"  Familiarity: <code>{fam_bar}</code> {relationship.familiarity:.2f}\n"
@@ -578,6 +617,11 @@ def format_me_html(entity_name: str, relationship: Any | None) -> str:
         f"  First met: {html.escape(first_met_ago)} ago\n"
         f"  Last seen: {html.escape(last_seen_ago)} ago"
     )
+    if mem:
+        out += "\n\n<b>Recent shared memory traces</b>\n"
+        for i, m in enumerate(mem[:3], 1):
+            out += f"\n  {i}. {html.escape(m[:220])}"
+    return out
 
 
 def format_models_html(entity: "Entity") -> str:

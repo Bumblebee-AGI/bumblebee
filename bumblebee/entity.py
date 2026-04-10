@@ -61,7 +61,7 @@ from bumblebee.memory.procedural import ProceduralMemoryStore
 from bumblebee.memory.projects import ProjectLedger
 from bumblebee.memory.relational import RelationalMemory
 from bumblebee.memory.self_model import SelfModelStore
-from bumblebee.models import EmotionCategory, EmotionalState, ImprintRecord, Input, is_group_like_chat, speaker_label_for_model
+from bumblebee.models import Episode, EmotionCategory, EmotionalState, ImprintRecord, Input, is_group_like_chat, speaker_label_for_model
 from bumblebee.presence.embodiment import Embodiment
 from bumblebee.presence.initiative import InitiativeEngine
 from bumblebee.presence.platforms.base import Platform
@@ -550,6 +550,10 @@ class Entity:
         async with self.store.session() as conn:
             return await self.episodic.recent_summaries(conn, limit)
 
+    async def fetch_cli_recent_episodes(self, limit: int = 5) -> list[Episode]:
+        async with self.store.session() as conn:
+            return await self.episodic.recent_for_evolution(conn, limit)
+
     async def read_stored_attachment(self, storage_ref: str) -> bytes | None:
         """Load bytes for a ``storage_ref`` produced by inbound attachment persistence (outbound / tools)."""
         return await load_stored_attachment(self.attachments, storage_ref)
@@ -685,6 +689,7 @@ class Entity:
             self.tools.register_decorated(browser_tools.browser_screenshot)
             self.tools.register_decorated(browser_tools.browser_click)
             self.tools.register_decorated(browser_tools.browser_type)
+            self.tools.register_decorated(browser_tools.send_screenshot)
         if self._tool_enabled("remote_session", False):
             self.tools.register_decorated(remote_session_tools.desktop_session_status)
             self.tools.register_decorated(remote_session_tools.desktop_session_view)
@@ -853,7 +858,7 @@ class Entity:
         return [{"role": "user", "content": prefix}] + hist + [user_msg]
 
     async def _trim_history_with_compression(self) -> None:
-        keep = max(8, int(self.config.cognition.rolling_history_max_messages or 40))
+        keep = max(8, int(self.config.cognition.rolling_history_max_messages or 60))
         if len(self._history) <= keep:
             return
         dropped = self._history[:-keep]

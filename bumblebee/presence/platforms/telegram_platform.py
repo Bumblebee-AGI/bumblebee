@@ -93,6 +93,7 @@ _BUSY_BRAILLE = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 _BUSY_EDIT_INTERVAL_SEC = 0.9
 # Pick a new random gerund after this many spinner edits (braille-only between rotations).
 _BUSY_WORD_ROTATE_EVERY = 20
+_BUSY_PIN_NOTICE_GRACE_SEC = 30.0
 
 # Claude Code–style spinner verbs (gerunds); braille animates between rotations.
 _BUSY_ING_WORDS: tuple[str, ...] = (
@@ -273,6 +274,8 @@ class TelegramPlatform(Platform):
         self._message_ring_cap = 200
         # chat_id -> busy indicator message_id while pinned (delete "X pinned a message" service line)
         self._busy_pin_notice_cleanup: dict[int, int] = {}
+        # Late Telegram delivery race: keep just-unpinned busy message ids briefly.
+        self._busy_recent_pin_notice_cleanup: dict[int, tuple[int, float]] = {}
         # Chats that opted out via /busy off (persisted in entity_state).
         self._busy_disabled_chats: set[int] = set()
         self._active_summon: dict[str, Any] | None = None
@@ -303,6 +306,8 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("status", self._on_status_command), group=_g)
         self.app.add_handler(CommandHandler("body", self._on_body_command), group=_g)
         self.app.add_handler(CommandHandler("memories", self._on_memories_command), group=_g)
+        # Common typo alias kept intentionally for UX.
+        self.app.add_handler(CommandHandler("memeories", self._on_memories_command), group=_g)
         self.app.add_handler(CommandHandler("feelings", self._on_feelings_command), group=_g)
         self.app.add_handler(CommandHandler("me", self._on_me_command), group=_g)
         self.app.add_handler(CommandHandler("models", self._on_models_command), group=_g)
@@ -930,16 +935,27 @@ class TelegramPlatform(Platform):
         return page, query
 
     @staticmethod
-    def _parse_memories_count(args: list[str], default: int = 5) -> int:
+    def _parse_memories_count_or_error(
+        args: list[str],
+        *,
+        default: int = 5,
+        min_count: int = 1,
+        max_count: int = 12,
+    ) -> tuple[int, str | None]:
         if not args:
-            return default
-        raw = args[0].strip()
+            return default, None
+        raw = (args[0] or "").strip()
         if not raw:
-            return default
+            return default, None
+        if not raw.lstrip("+-").isdigit():
+            return default, "Count must be a number. Example: <code>/memories 5</code>."
         try:
-            return max(1, min(10, int(raw)))
+            val = int(raw)
         except ValueError:
-            return default
+            return default, "Count must be a number. Example: <code>/memories 5</code>."
+        if val < min_count or val > max_count:
+            return default, f"Count must be between <code>{min_count}</code> and <code>{max_count}</code>."
+        return val, None
 
     @staticmethod
     def _parse_compact_args(args: list[str]) -> tuple[str, bool, int]:
@@ -1197,9 +1213,18 @@ class TelegramPlatform(Platform):
             return
         if not await self._check_allowed(update, notify=True):
             return
-        limit = self._parse_memories_count(list(context.args or []), default=5)
-        summaries = await self._entity.fetch_cli_recent_summaries(limit)
-        body = format_memories_html(self._entity.config.name, summaries)
+        args = list(context.args or [])
+        limit, err = self._parse_memories_count_or_error(args, default=5, min_count=1, max_count=12)
+        if err:
+            await self._reply_html(
+                update,
+                "<b>Memories</b>\n\n"
+                f"{err}\n"
+                "Usage: <code>/memories [count]</code> (alias: <code>/memeories</code>).",
+            )
+            return
+        episodes = await self._entity.fetch_cli_recent_episodes(limit)
+        body = format_memories_html(self._entity.config.name, episodes, requested_count=limit)
         await self._reply_html(update, body)
 
     async def _on_feelings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1216,12 +1241,29 @@ class TelegramPlatform(Platform):
             return
         if not await self._check_allowed(update, notify=True):
             return
-        _ = context
+        args = [str(a).strip() for a in (context.args or []) if str(a).strip()]
         u = update.effective_user
         person_id = str(u.id) if u else "unknown"
+        target_label = _telegram_display_name(u) if u else "you"
+        if args:
+            target = " ".join(args).strip()
+            route = self._entity.resolve_person_route(target, platform="telegram", prefer_private=True)
+            if route and str(route.get("person_id") or "").strip():
+                person_id = str(route.get("person_id"))
+                target_label = str(route.get("person_name") or target_label)
         async with self._entity.store.session() as db:
             rel = await self._entity.relational.get(db, person_id)
-        await self._reply_html(update, format_me_html(self._entity.config.name, rel))
+            traces = await self._entity.episodic.recall_about_person(db, person_id, limit=3)
+        memory_summaries = [str(ep.summary or "") for ep in traces if str(ep.summary or "").strip()]
+        await self._reply_html(
+            update,
+            format_me_html(
+                self._entity.config.name,
+                rel,
+                target_label=target_label,
+                recent_memories=memory_summaries,
+            ),
+        )
 
     async def _on_models_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):
@@ -1752,11 +1794,20 @@ class TelegramPlatform(Platform):
         chat_id = int(msg.chat_id)
         expected_mid = self._busy_pin_notice_cleanup.get(chat_id)
         if expected_mid is None:
+            recent = self._busy_recent_pin_notice_cleanup.get(chat_id)
+            if recent is not None:
+                mid, expires_at = recent
+                if time.monotonic() <= float(expires_at):
+                    expected_mid = int(mid)
+                else:
+                    self._busy_recent_pin_notice_cleanup.pop(chat_id, None)
+        if expected_mid is None:
             return
         if int(msg.pinned_message.message_id) != int(expected_mid):
             return
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=int(msg.message_id))
+            self._busy_recent_pin_notice_cleanup.pop(chat_id, None)
         except TelegramError as e:
             log.debug("busy_pin_notice_delete_failed", error=str(e))
 
@@ -1830,7 +1881,12 @@ class TelegramPlatform(Platform):
                     log.debug("busy_indicator_edit_failed", error=str(e))
                     break
         finally:
-            self._busy_pin_notice_cleanup.pop(chat_id, None)
+            last_mid = self._busy_pin_notice_cleanup.pop(chat_id, None)
+            if last_mid is not None:
+                self._busy_recent_pin_notice_cleanup[chat_id] = (
+                    int(last_mid),
+                    float(time.monotonic() + _BUSY_PIN_NOTICE_GRACE_SEC),
+                )
             if mid is not None:
                 try:
                     await self.app.bot.unpin_chat_message(

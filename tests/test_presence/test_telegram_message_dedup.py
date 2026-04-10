@@ -12,6 +12,18 @@ class _StubEntity:
     """TelegramPlatform only needs an object for typing; callback tests skip connect()."""
 
 
+def test_parse_memories_count_or_error_accepts_valid_range() -> None:
+    count, err = TelegramPlatform._parse_memories_count_or_error(["8"], default=5, min_count=1, max_count=12)
+    assert count == 8
+    assert err is None
+
+
+def test_parse_memories_count_or_error_rejects_invalid_input() -> None:
+    count, err = TelegramPlatform._parse_memories_count_or_error(["abc"], default=5, min_count=1, max_count=12)
+    assert count == 5
+    assert "Count must be a number" in str(err)
+
+
 @pytest.mark.asyncio
 async def test_telegram_skips_second_callback_same_message_id() -> None:
     calls: list[int] = []

@@ -10,6 +10,8 @@ from bumblebee.presence.platforms.telegram_format import (
     format_session_status_html,
     format_routines_html,
     format_start_html,
+    format_me_html,
+    format_memories_html,
     format_tools_html,
     split_telegram_chunks,
 )
@@ -87,8 +89,49 @@ def test_telegram_registered_slash_names_include_aliases():
     assert "compact" in names
     assert "busy" in names
     assert "body" in names
+    assert "memeories" not in names
     for name, _ in command_menu_items():
         assert name in names
+
+
+def test_format_memories_html_renders_episode_like_rows():
+    class _Ep:
+        summary = "Discussed migration strategy."
+        timestamp = __import__("time").time() - 120
+        significance = 0.73
+
+    out = format_memories_html("Bee", [_Ep()], requested_count=5)
+    assert "Showing 1 of 5 requested" in out
+    assert "Discussed migration strategy." in out
+    assert "sig 0.73" in out
+
+
+def test_format_memories_html_empty_state_guides_user():
+    out = format_memories_html("Bee", [], requested_count=5)
+    assert "No episodic memories yet" in out
+    assert "/memories 5" in out
+
+
+def test_format_me_html_includes_target_and_traces():
+    class _Rel:
+        name = "Maya"
+        dynamic = "warming"
+        familiarity = 0.44
+        warmth = 0.52
+        trust = 0.61
+        interaction_count = 7
+        first_met = __import__("time").time() - 86_400
+        last_interaction = __import__("time").time() - 60
+
+    out = format_me_html(
+        "Bee",
+        _Rel(),
+        target_label="Maya",
+        recent_memories=["planned onboarding flow", "resolved CI regression"],
+    )
+    assert "Relationship · Maya" in out
+    assert "Recent shared memory traces" in out
+    assert "planned onboarding flow" in out
 
 
 def test_routines_html_lists_automations():
