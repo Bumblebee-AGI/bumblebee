@@ -5,15 +5,41 @@ from __future__ import annotations
 import json
 import math
 import time
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from bumblebee.storage.protocol import RelationalStore
 from bumblebee.models import Relationship
 
+if TYPE_CHECKING:
+    from bumblebee.config import MemoryHarnessSettings
+
+
+def _decay_toward_floor(
+    value: float,
+    floor: float,
+    dt_hours: float,
+    half_life_hours: float,
+) -> float:
+    """Exponential approach: excess above floor halves every half_life_hours (soma-style homeostasis)."""
+    if dt_hours <= 0 or half_life_hours <= 0:
+        return max(floor, min(1.0, float(value)))
+    floor = max(0.0, min(1.0, float(floor)))
+    v = max(floor, min(1.0, float(value)))
+    span = max(0.0, v - floor)
+    if span <= 0:
+        return floor
+    decay = math.exp(-math.log(2.0) * float(dt_hours) / float(half_life_hours))
+    return max(floor, min(1.0, floor + span * decay))
+
 
 class RelationalMemory:
-    def __init__(self, store: RelationalStore) -> None:
+    def __init__(
+        self,
+        store: RelationalStore,
+        memory_settings: Optional["MemoryHarnessSettings"] = None,
+    ) -> None:
         self.store = store
+        self._mem = memory_settings
 
     async def get(self, conn, person_id: str) -> Optional[Relationship]:
         cur = await conn.execute("SELECT * FROM relationships WHERE person_id = ?", (person_id,))
@@ -38,6 +64,17 @@ class RelationalMemory:
             unresolved=json.loads(row[11] or "[]"),
         )
 
+    def _familiarity_settings(self) -> tuple[float, float, float, float]:
+        m = self._mem
+        if m is None:
+            return (336.0, 0.08, 0.017, 0.007)
+        return (
+            max(1.0, float(getattr(m, "familiarity_decay_half_life_hours", 336.0) or 336.0)),
+            max(0.0, min(0.5, float(getattr(m, "familiarity_floor", 0.08) or 0.08))),
+            max(0.0, min(0.08, float(getattr(m, "familiarity_bump_meaningful", 0.017) or 0.017))),
+            max(0.0, min(0.05, float(getattr(m, "familiarity_bump_light", 0.007) or 0.007))),
+        )
+
     async def upsert_interaction(
         self,
         conn,
@@ -47,12 +84,21 @@ class RelationalMemory:
         warmth_delta: float = 0.0,
         trust_delta: float = 0.0,
         note: Optional[str] = None,
+        meaningful: bool = True,
     ) -> Relationship:
         now = time.time()
+        half_life_h, fam_floor, bump_hi, bump_lo = self._familiarity_settings()
+        bump = bump_hi if meaningful else bump_lo
         existing = await self.get(conn, person_id)
         if existing:
             n = existing.interaction_count + 1
-            fam = min(1.0, math.log1p(n) / math.log1p(50))
+            dt_hours = max(0.0, (now - float(existing.last_interaction)) / 3600.0)
+            fam = _decay_toward_floor(
+                existing.familiarity, fam_floor, dt_hours, half_life_h
+            )
+            fam = min(1.0, fam + bump)
+            cap = min(1.0, math.log1p(n) / math.log1p(80))
+            fam = min(fam, cap)
             warmth = max(-1.0, min(1.0, existing.warmth + warmth_delta))
             trust = max(0.0, min(1.0, existing.trust + trust_delta))
             notes = list(existing.notes)

@@ -160,3 +160,26 @@ def test_compose_wake_want_mentions_intent_and_sources() -> None:
     assert "I want to learn" in want
     assert "spark:" in want
 
+
+def test_maybe_revise_want_pivots_when_stalled() -> None:
+    eng = _engine(allow_tools=True)
+    mem = eng._new_session_memory(
+        reason="timer",
+        wake_intent="explore_question",
+        wake_want="I want to chase a question and see what I uncover.",
+        lingering_sparks=["learn rss parsing from last chat"],
+        project_lines=[],
+        skill_lines=[],
+        continuity=[],
+    )
+    revised = eng._maybe_revise_want(
+        mem,
+        tool_names=["search_web", "fetch_url"],
+        reply_text="not sure. can't find anything useful. no result.",
+        round_idx=2,
+    )
+    assert revised is not None
+    assert "I want to learn one specific missing piece" in str(mem.get("want") or "")
+    assert float(mem.get("want_confidence") or 0.0) >= 0.5
+    assert int(mem.get("want_revision_count") or 0) >= 1
+

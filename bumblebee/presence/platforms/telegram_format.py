@@ -532,11 +532,25 @@ def format_memories_html(entity_name: str, entries: list[Any], *, requested_coun
         f"<i>Showing {len(entries)} of {want} requested.</i>",
         "",
     ]
+    sep = "<code>────────────────────</code>"
     for i, row in enumerate(entries, 1):
-        if isinstance(row, str):
+        if isinstance(row, dict):
+            kind = str(row.get("kind") or "memory").strip().lower()
+            title = str(row.get("title") or kind or "memory").strip()
+            body = str(row.get("body") or "").strip()
+            summary = f"{title}: {body}" if body else title
+            ts_raw = row.get("timestamp")
+            try:
+                ago = _relative_time(float(ts_raw)) if ts_raw else ""
+            except (TypeError, ValueError):
+                ago = ""
+            sig = None
+            type_label = kind
+        elif isinstance(row, str):
             summary = row
             ago = ""
             sig = None
+            type_label = "memory"
         else:
             summary = str(getattr(row, "summary", "") or "")
             ago = _relative_time(getattr(row, "timestamp", None))
@@ -545,16 +559,22 @@ def format_memories_html(entity_name: str, entries: list[Any], *, requested_coun
                 sig = float(sig_raw) if sig_raw is not None else None
             except (TypeError, ValueError):
                 sig = None
+            type_label = "episode"
         summary = summary.strip()
         if not summary:
             continue
         meta_parts: list[str] = []
+        meta_parts.append(type_label)
         if ago:
             meta_parts.append(ago)
         if sig is not None:
             meta_parts.append(f"sig {sig:.2f}")
-        meta = f" <i>({' · '.join(meta_parts)})</i>" if meta_parts else ""
-        lines.append(f"{i}. {html.escape(summary[:500])}{meta}")
+        meta = f"<i>{' · '.join(meta_parts)}</i>" if meta_parts else "<i>time unknown</i>"
+        lines.append(f"<b>#{i}</b> {meta}")
+        lines.append(html.escape(summary[:500]))
+        if i < len(entries):
+            lines.append(sep)
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -583,16 +603,62 @@ def _mini_bar(value: float, width: int = 8) -> str:
     return "\u2588" * filled + "\u2591" * (width - filled)
 
 
+def _relationship_band(v: float, *, bipolar: bool = False) -> str:
+    """Readable bucket labels for relationship dimensions."""
+    x = max(-1.0, min(1.0, float(v)))
+    if bipolar:
+        if x <= -0.5:
+            return "negative"
+        if x < -0.15:
+            return "cool"
+        if x < 0.2:
+            return "neutral"
+        if x < 0.5:
+            return "warm"
+        return "very warm"
+    if x < 0.2:
+        return "low"
+    if x < 0.45:
+        return "developing"
+    if x < 0.7:
+        return "solid"
+    if x < 0.9:
+        return "high"
+    return "very high"
+
+
+def _relationship_readiness(rel: Any) -> tuple[str, list[str]]:
+    """Return (readiness label, caveats) to explain model quality."""
+    caveats: list[str] = []
+    n = int(getattr(rel, "interaction_count", 0) or 0)
+    fam = float(getattr(rel, "familiarity", 0.0) or 0.0)
+    warm = float(getattr(rel, "warmth", 0.0) or 0.0)
+    trust = float(getattr(rel, "trust", 0.0) or 0.0)
+    if n < 10:
+        caveats.append("low sample size")
+    if fam > 0.9 and n < 80:
+        caveats.append("high familiarity with few logged turns — may reflect recent contact")
+    if abs(warm - trust) >= 0.45:
+        caveats.append("warmth/trust divergence")
+    if n >= 120 and trust < 0.35 and warm > 0.75:
+        caveats.append("trust likely under-updated")
+    if n >= 120 and fam >= 0.98:
+        readiness = "high-history profile"
+    elif n >= 30:
+        readiness = "stable profile"
+    else:
+        readiness = "forming profile"
+    return readiness, caveats
+
+
 def format_me_html(
     entity_name: str,
     relationship: Any | None,
     *,
     target_label: str | None = None,
-    recent_memories: list[str] | None = None,
 ) -> str:
     _ = entity_name
     who = html.escape((target_label or "you").strip() or "you")
-    mem = [m.strip() for m in (recent_memories or []) if str(m).strip()]
     if relationship is None:
         return (
             f"<b>Relationship · {who}</b>\n\n"
@@ -605,22 +671,39 @@ def format_me_html(
     fam_bar = _mini_bar(relationship.familiarity)
     warm_bar = _mini_bar(relationship.warmth)
     trust_bar = _mini_bar(relationship.trust)
+    readiness, caveats = _relationship_readiness(relationship)
+    sep = "<code>────────────────────</code>"
+    top_topics = [str(t).strip() for t in list(getattr(relationship, "topics_shared", []) or []) if str(t).strip()]
+    unresolved = [str(u).strip() for u in list(getattr(relationship, "unresolved", []) or []) if str(u).strip()]
 
     out = (
         f"<b>Relationship · {who}</b>\n\n"
-        f"  Name: {html.escape(str(relationship.name) or 'unknown')}\n"
-        f"  Dynamic: {html.escape(str(relationship.dynamic) or 'forming')}\n\n"
-        f"  Familiarity: <code>{fam_bar}</code> {relationship.familiarity:.2f}\n"
-        f"  Warmth:      <code>{warm_bar}</code> {relationship.warmth:.2f}\n"
-        f"  Trust:       <code>{trust_bar}</code> {relationship.trust:.2f}\n\n"
-        f"  Interactions: {relationship.interaction_count}\n"
-        f"  First met: {html.escape(first_met_ago)} ago\n"
-        f"  Last seen: {html.escape(last_seen_ago)} ago"
+        f"<b>Profile quality</b>: {html.escape(readiness)}\n"
+        f"<b>Dynamic</b>: {html.escape(str(relationship.dynamic) or 'forming')}\n"
+        f"{sep}\n"
+        f"<b>Signals</b>\n"
+        f"Familiarity  <code>{fam_bar}</code> {relationship.familiarity:.2f} · {_relationship_band(relationship.familiarity)}\n"
+        f"Warmth      <code>{warm_bar}</code> {relationship.warmth:.2f} · {_relationship_band(relationship.warmth, bipolar=True)}\n"
+        f"Trust       <code>{trust_bar}</code> {relationship.trust:.2f} · {_relationship_band(relationship.trust)}\n"
+        "<i>Familiarity drifts down during long gaps and rebuilds on contact (slow half-life).</i>\n"
+        f"{sep}\n"
+        f"<b>History</b>\n"
+        f"Interactions: {relationship.interaction_count}\n"
+        f"First met: {html.escape(first_met_ago)} ago\n"
+        f"Last seen: {html.escape(last_seen_ago)} ago"
     )
-    if mem:
-        out += "\n\n<b>Recent shared memory traces</b>\n"
-        for i, m in enumerate(mem[:3], 1):
-            out += f"\n  {i}. {html.escape(m[:220])}"
+    if top_topics:
+        out += "\n\n<b>Shared topics</b>\n"
+        for t in top_topics[:5]:
+            out += f"\n• {html.escape(t[:90])}"
+    if unresolved:
+        out += "\n\n<b>Open threads</b>\n"
+        for u in unresolved[:5]:
+            out += f"\n• {html.escape(u[:120])}"
+    if caveats:
+        out += "\n\n<b>Model caveats</b>\n"
+        for c in caveats:
+            out += f"\n• {html.escape(c)}"
     return out
 
 

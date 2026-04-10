@@ -158,6 +158,11 @@ def _trim_list(items: list[str], limit: int) -> list[str]:
     return uniq
 
 
+def _contains_any(text: str, needles: tuple[str, ...]) -> bool:
+    t = (text or "").strip().lower()
+    return any(n in t for n in needles)
+
+
 def _wake_episode_store_path(entity: Any) -> Path | None:
     cfg = getattr(entity, "config", None)
     if cfg is None:
@@ -448,6 +453,7 @@ class WakeCycleEngine:
                 "actions": [],
                 "outcome": "in_progress",
                 "carryover_threads": continuity[:5],
+                "want_revisions": [],
             }
             episode["beats"].append(
                 {
@@ -614,6 +620,21 @@ class WakeCycleEngine:
                         reply_text=reply_text,
                         round_idx=round_idx + 1,
                     )
+                    revised = self._maybe_revise_want(
+                        session_memory,
+                        tool_names=tool_names,
+                        reply_text=reply_text,
+                        round_idx=round_idx + 1,
+                    )
+                    if revised:
+                        episode["want_revisions"].append(
+                            {
+                                "round": round_idx + 1,
+                                "want": session_memory.get("want", ""),
+                                "confidence": session_memory.get("want_confidence", 0.0),
+                                "reason": revised,
+                            }
+                        )
 
                     completed_rounds = round_idx + 1
                     log.info(
@@ -1070,6 +1091,9 @@ class WakeCycleEngine:
         return {
             "objective": f"{wake_intent} from {reason}",
             "want": _clean_one_line(wake_want, 180),
+            "want_seed": _clean_one_line(wake_want, 180),
+            "want_confidence": 0.62,
+            "want_revision_count": 0,
             "threads": _trim_list((continuity[:2] + lingering_sparks[:3] + project_lines[:2]), 6),
             "skills": _trim_list(skill_lines[:4], 4),
             "recent_actions": [],
@@ -1092,10 +1116,103 @@ class WakeCycleEngine:
             mem["learned"] = _trim_list(points[:2] + list(mem.get("learned") or []), 6)
             mem["next_moves"] = _trim_list(points[-2:] + list(mem.get("next_moves") or []), 6)
 
+    def _maybe_revise_want(
+        self,
+        mem: dict[str, Any],
+        *,
+        tool_names: list[str],
+        reply_text: str,
+        round_idx: int,
+    ) -> str | None:
+        """
+        Revisit "what do I want to do?" mid-session.
+        Returns revision reason when changed, else None.
+        """
+        txt = (reply_text or "").strip().lower()
+        tool_blob = " ".join(tool_names).lower()
+        current = str(mem.get("want") or "").strip()
+        if not current:
+            return None
+
+        confidence = float(mem.get("want_confidence", 0.62) or 0.62)
+        reason: str | None = None
+
+        stalled = (not tool_names) or _contains_any(
+            txt,
+            (
+                "not sure",
+                "unclear",
+                "stuck",
+                "nothing useful",
+                "can't find",
+                "failed",
+                "error",
+                "no result",
+            ),
+        )
+        progress = _contains_any(
+            txt,
+            (
+                "found",
+                "learned",
+                "implemented",
+                "updated",
+                "created",
+                "working now",
+                "next i should",
+            ),
+        )
+        buildish = _contains_any(txt + " " + tool_blob, ("create_project", "update_project", "update_skill", "code", "build"))
+        learnish = _contains_any(txt + " " + tool_blob, ("search", "fetch", "read", "docs", "tutorial", "learn"))
+        socialish = _contains_any(txt + " " + tool_blob, ("say", "send_dm", "send_message_to"))
+
+        if progress:
+            confidence = min(0.95, confidence + 0.08)
+        if stalled:
+            confidence = max(0.2, confidence - 0.16)
+
+        if stalled and confidence < 0.48 and int(round_idx) >= 2:
+            # Pivot by observed action mode and available next moves.
+            next_hint = ""
+            nm = mem.get("next_moves") or []
+            if nm:
+                next_hint = _clean_one_line(str(nm[0]), 90)
+            if buildish:
+                mem["want"] = _clean_one_line(
+                    f"I want to simplify and ship one concrete step instead of wandering. {next_hint}".strip(),
+                    180,
+                )
+                reason = "stalled_then_narrowed_to_build_step"
+            elif socialish:
+                mem["want"] = _clean_one_line(
+                    f"I want to reach out and test this with someone live. {next_hint}".strip(),
+                    180,
+                )
+                reason = "stalled_then_pivoted_social_probe"
+            elif learnish:
+                mem["want"] = _clean_one_line(
+                    f"I want to learn one specific missing piece before acting. {next_hint}".strip(),
+                    180,
+                )
+                reason = "stalled_then_pivoted_learning"
+            else:
+                mem["want"] = _clean_one_line(
+                    f"I want to re-scope to the most alive thread and move one step. {next_hint}".strip(),
+                    180,
+                )
+                reason = "stalled_then_rescoped"
+            confidence = max(0.5, confidence)
+            mem["want_revision_count"] = int(mem.get("want_revision_count", 0) or 0) + 1
+
+        mem["want_confidence"] = round(confidence, 2)
+        return reason
+
     def _render_session_memory_block(self, mem: dict[str, Any], *, max_chars: int = 1900) -> str:
         lines = [
             f"objective: {_clip(str(mem.get('objective') or ''), 180)}",
             f"want: {_clip(str(mem.get('want') or ''), 180)}",
+            f"want_confidence: {float(mem.get('want_confidence', 0.0) or 0.0):.2f}",
+            f"want_revisions: {int(mem.get('want_revision_count', 0) or 0)}",
             "threads:",
         ]
         for t in (mem.get("threads") or [])[:6]:

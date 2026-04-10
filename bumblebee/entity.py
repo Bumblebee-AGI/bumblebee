@@ -268,7 +268,7 @@ class Entity:
         self.procedural = ProceduralMemoryStore(config, self.client)
         self.projects = ProjectLedger(Path(self.config.projects_path()))
         self.self_model = SelfModelStore(Path(self.config.self_model_path()))
-        self.relational = RelationalMemory(self.store)
+        self.relational = RelationalMemory(self.store, config.harness.memory)
         self.inner_voice = InnerVoiceProcessor(self.store)
         self.imprints = ImprintStore(self.store)
         self.beliefs = BeliefStore(self.store)
@@ -553,6 +553,47 @@ class Entity:
     async def fetch_cli_recent_episodes(self, limit: int = 5) -> list[Episode]:
         async with self.store.session() as conn:
             return await self.episodic.recent_for_evolution(conn, limit)
+
+    async def fetch_cli_real_memories(self, limit: int = 5) -> list[dict[str, Any]]:
+        """Return durable memory items (procedural + beliefs), newest first."""
+        k = max(1, min(20, int(limit or 5)))
+        skills = await self.procedural.list_skills()
+        out: list[dict[str, Any]] = []
+        for s in skills[: k * 3]:
+            txt = (s.content or "").strip()
+            if not txt:
+                continue
+            out.append(
+                {
+                    "kind": "procedural",
+                    "title": str(s.name or s.slug or "skill"),
+                    "body": txt[:900],
+                    "timestamp": float(s.updated_at) if s.updated_at else 0.0,
+                }
+            )
+        async with self.store.session() as conn:
+            beliefs = await self.beliefs.list_recent(conn, max(4, k * 3))
+        for b in beliefs:
+            content = str(b.get("content") or "").strip()
+            if not content:
+                continue
+            cat = str(b.get("category") or "belief").strip()
+            conf = b.get("confidence")
+            conf_txt = ""
+            try:
+                conf_txt = f" (confidence {float(conf):.2f})"
+            except (TypeError, ValueError):
+                conf_txt = ""
+            out.append(
+                {
+                    "kind": "belief",
+                    "title": cat,
+                    "body": f"{content}{conf_txt}",
+                    "timestamp": float(b.get("formed_at") or 0.0),
+                }
+            )
+        out.sort(key=lambda row: float(row.get("timestamp") or 0.0), reverse=True)
+        return out[:k]
 
     async def read_stored_attachment(self, storage_ref: str) -> bytes | None:
         """Load bytes for a ``storage_ref`` produced by inbound attachment persistence (outbound / tools)."""
@@ -2376,6 +2417,7 @@ class Entity:
                 tc.inp.person_id,
                 tc.inp.person_name,
                 warmth_delta=0.02 if tc.meaningful else 0.0,
+                meaningful=tc.meaningful,
             )
 
         await self._refresh_self_model_snapshot(note=f"completed turn via {tc.faculty} faculty")

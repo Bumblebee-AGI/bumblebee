@@ -28,6 +28,7 @@ class SkillEntry:
     name: str
     slug: str
     content: str
+    updated_at: float | None = None
 
 
 class ProceduralMemoryStore:
@@ -54,7 +55,12 @@ class ProceduralMemoryStore:
             p.write_text(raw_content + ("\n" if not raw_content.endswith("\n") else ""), encoding="utf-8")
 
         await asyncio.get_running_loop().run_in_executor(None, _write)
-        return SkillEntry(name=raw_name, slug=slug, content=raw_content)
+        updated_at = None
+        try:
+            updated_at = p.stat().st_mtime
+        except OSError:
+            updated_at = None
+        return SkillEntry(name=raw_name, slug=slug, content=raw_content, updated_at=updated_at)
 
     async def read_skill(self, name: str) -> SkillEntry | None:
         p = self._file_path(name)
@@ -65,17 +71,32 @@ class ProceduralMemoryStore:
             return p.read_text(encoding="utf-8", errors="replace")
 
         content = await asyncio.get_running_loop().run_in_executor(None, _read)
-        return SkillEntry(name=p.stem, slug=p.stem, content=content)
+        updated_at = None
+        try:
+            updated_at = p.stat().st_mtime
+        except OSError:
+            updated_at = None
+        return SkillEntry(name=p.stem, slug=p.stem, content=content, updated_at=updated_at)
 
     async def list_skills(self) -> list[SkillEntry]:
         def _scan() -> list[SkillEntry]:
             rows: list[SkillEntry] = []
-            for p in sorted(self.path.glob("*.md")):
+            files = list(self.path.glob("*.md"))
+            files.sort(
+                key=lambda fp: fp.stat().st_mtime if fp.exists() else 0.0,
+                reverse=True,
+            )
+            for p in files:
                 try:
                     content = p.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
-                rows.append(SkillEntry(name=p.stem, slug=p.stem, content=content))
+                updated_at = None
+                try:
+                    updated_at = p.stat().st_mtime
+                except OSError:
+                    updated_at = None
+                rows.append(SkillEntry(name=p.stem, slug=p.stem, content=content, updated_at=updated_at))
             return rows
 
         return await asyncio.get_running_loop().run_in_executor(None, _scan)

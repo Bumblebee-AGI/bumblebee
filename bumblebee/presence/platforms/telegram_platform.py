@@ -1223,8 +1223,8 @@ class TelegramPlatform(Platform):
                 "Usage: <code>/memories [count]</code> (alias: <code>/memeories</code>).",
             )
             return
-        episodes = await self._entity.fetch_cli_recent_episodes(limit)
-        body = format_memories_html(self._entity.config.name, episodes, requested_count=limit)
+        memories = await self._entity.fetch_cli_real_memories(limit)
+        body = format_memories_html(self._entity.config.name, memories, requested_count=limit)
         await self._reply_html(update, body)
 
     async def _on_feelings_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1253,15 +1253,12 @@ class TelegramPlatform(Platform):
                 target_label = str(route.get("person_name") or target_label)
         async with self._entity.store.session() as db:
             rel = await self._entity.relational.get(db, person_id)
-            traces = await self._entity.episodic.recall_about_person(db, person_id, limit=3)
-        memory_summaries = [str(ep.summary or "") for ep in traces if str(ep.summary or "").strip()]
         await self._reply_html(
             update,
             format_me_html(
                 self._entity.config.name,
                 rel,
                 target_label=target_label,
-                recent_memories=memory_summaries,
             ),
         )
 

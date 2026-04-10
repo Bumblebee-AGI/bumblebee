@@ -129,6 +129,11 @@ class MemoryHarnessSettings:
     narrative_every_n_consolidations: int = 3
     imprint_decay_half_life_seconds: float = 86400.0 * 30
     imprint_recall_weight: float = 0.35
+    # Familiarity: decays toward floor between interactions (half-life in hours); bumps each turn.
+    familiarity_decay_half_life_hours: float = 336.0
+    familiarity_floor: float = 0.08
+    familiarity_bump_meaningful: float = 0.017
+    familiarity_bump_light: float = 0.007
     distillation: DistillationSettings = field(default_factory=DistillationSettings)
 
 

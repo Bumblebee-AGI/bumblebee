@@ -104,6 +104,33 @@ def test_format_memories_html_renders_episode_like_rows():
     assert "Showing 1 of 5 requested" in out
     assert "Discussed migration strategy." in out
     assert "sig 0.73" in out
+    assert "#1" in out
+    assert "episode" in out
+
+
+def test_format_memories_html_renders_real_memory_dict_rows():
+    out = format_memories_html(
+        "Bee",
+        [
+            {
+                "kind": "procedural",
+                "title": "deploy-playbook",
+                "body": "Always checkpoint before rollout.",
+                "timestamp": __import__("time").time() - 30,
+            },
+            {
+                "kind": "belief",
+                "title": "preference",
+                "body": "User prefers concise updates.",
+                "timestamp": __import__("time").time() - 90,
+            },
+        ],
+        requested_count=2,
+    )
+    assert "procedural" in out
+    assert "belief" in out
+    assert "deploy-playbook" in out
+    assert "User prefers concise updates." in out
 
 
 def test_format_memories_html_empty_state_guides_user():
@@ -123,15 +150,29 @@ def test_format_me_html_includes_target_and_traces():
         first_met = __import__("time").time() - 86_400
         last_interaction = __import__("time").time() - 60
 
-    out = format_me_html(
-        "Bee",
-        _Rel(),
-        target_label="Maya",
-        recent_memories=["planned onboarding flow", "resolved CI regression"],
-    )
+    out = format_me_html("Bee", _Rel(), target_label="Maya")
     assert "Relationship · Maya" in out
-    assert "Recent shared memory traces" in out
-    assert "planned onboarding flow" in out
+    assert "Recent shared memory traces" not in out
+
+
+def test_format_memories_html_uses_visual_separators_between_items():
+    class _Ep:
+        def __init__(self, summary: str, ts: float, sig: float):
+            self.summary = summary
+            self.timestamp = ts
+            self.significance = sig
+
+    now = __import__("time").time()
+    out = format_memories_html(
+        "Bee",
+        [
+            _Ep("First memory block.", now - 30, 0.20),
+            _Ep("Second memory block.", now - 120, 0.40),
+        ],
+        requested_count=2,
+    )
+    assert "────────────────────" in out
+    assert "#1" in out and "#2" in out
 
 
 def test_routines_html_lists_automations():
