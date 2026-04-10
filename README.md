@@ -31,6 +31,11 @@ ollama pull gemma4:26b       # chat + reasoning
 ollama pull nomic-embed-text  # memory similarity (~274 MB)
 ```
 
+> [!IMPORTANT]
+> `nomic-embed-text` is required for normal memory retrieval speed. If it is missing, first-turn startup can look like a hang while embedding calls retry/time out.
+> For local users seeing "model is on but does nothing", run:
+> `ollama pull nomic-embed-text`
+
 ### Install
 
 ```bash
@@ -53,6 +58,7 @@ bumblebee run canary --ollama
 ```
 
 Add `--pull-models` on a fresh machine to auto-download models.
+If startup appears idle on local installs, verify both models are present with `ollama list` (`gemma4:26b` and `nomic-embed-text`, or your configured equivalents).
 
 ---
 

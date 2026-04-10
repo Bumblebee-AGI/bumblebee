@@ -953,23 +953,11 @@ class TelegramPlatform(Platform):
             return ("usage", False, 1)
         if a0 in {"now", "run"}:
             return ("run", False, 1)
-        if a0 in {"aggressive", "hard"}:
-            return ("run", True, 2)
-        if a0 in {"passes", "pass"}:
-            if len(args) < 2:
-                return ("usage", False, 1)
-            try:
-                p = max(1, min(6, int(str(args[1]).strip())))
-            except ValueError:
-                return ("usage", False, 1)
-            return ("run", False, p)
-        # /compact 3  -> run with 3 passes
+        # Backwards-compatible aliases from earlier compaction behavior.
+        if a0 in {"aggressive", "hard", "passes", "pass"}:
+            return ("run", False, 1)
         if a0.lstrip("+-").isdigit():
-            try:
-                p = max(1, min(6, int(a0)))
-            except ValueError:
-                return ("usage", False, 1)
-            return ("run", False, p)
+            return ("run", False, 1)
         return ("usage", False, 1)
 
     async def _on_whoami(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1425,13 +1413,11 @@ class TelegramPlatform(Platform):
             await self._reply_html(
                 update,
                 (
-                    "<b>Context compaction</b>\n\n"
+                    "<b>Context refresh</b>\n\n"
                     "Usage:\n"
-                    "• <code>/compact</code> — run one pass now\n"
-                    "• <code>/compact aggressive</code> — stronger pass\n"
-                    "• <code>/compact passes N</code> — choose 1..6 passes\n"
-                    "• <code>/compact status</code> — show summary + history footprint\n\n"
-                    "Compaction preserves continuity using a structured rolling summary."
+                    "• <code>/compact</code> — clear rolling chat turns now\n"
+                    "• <code>/compact status</code> — show current history footprint\n\n"
+                    "This refreshes the live context window. Persistent SQLite memories are untouched."
                 ),
             )
             return
@@ -1453,40 +1439,9 @@ class TelegramPlatform(Platform):
             )
             return
 
-        await self._reply_html(
-            update,
-            (
-                "<b>Compacting context in background…</b>\n"
-                "I’ll send a follow-up when this pass completes."
-            ),
-        )
-        result = await ent.compact_context_now(aggressive=aggressive, passes=passes)
-        if not isinstance(result, dict) or not result.get("ok"):
-            reason = "unknown"
-            if isinstance(result, dict):
-                reason = str(result.get("reason") or reason)
-            await self._reply_html(update, f"Compaction skipped: <code>{html.escape(reason)}</code>")
-            return
-        if not bool(result.get("compacted")):
-            reason = str(result.get("reason") or "no_effect")
-            await self._reply_html(update, f"Compaction skipped: <code>{html.escape(reason)}</code>")
-            return
-        mb = int(result.get("messages_before", 0) or 0)
-        ma = int(result.get("messages_after", mb) or mb)
-        sb = int(result.get("summary_chars_before", 0) or 0)
-        sa = int(result.get("summary_chars_after", sb) or sb)
-        used_passes = int(result.get("passes_used", passes) or passes)
-        await self._reply_html(
-            update,
-            (
-                "<b>Compaction complete</b>\n\n"
-                f"• Messages: <code>{mb}</code> → <code>{ma}</code>\n"
-                f"• Summary chars: <code>{sb:,}</code> → <code>{sa:,}</code>\n"
-                f"• Mode: <code>{'aggressive' if aggressive else 'normal'}</code>\n"
-                f"• Passes: <code>{used_passes}</code>\n\n"
-                "Continuity is preserved via rolling structured summary."
-            ),
-        )
+        _ = aggressive, passes
+        self._entity.clear_conversation_history()
+        await self._reply_html(update, format_reset_html(self._entity.config.name))
 
     async def _on_reset_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):

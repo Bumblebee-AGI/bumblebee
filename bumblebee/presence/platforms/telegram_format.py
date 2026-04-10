@@ -149,8 +149,8 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
     ),
     TelegramCommandSpec(
         name="compact",
-        summary="Manually compact chat context while preserving continuity",
-        usage="/compact [status|now|aggressive|passes N]",
+        summary="Refresh context by clearing rolling chat turns",
+        usage="/compact [status]",
         category="Runtime",
     ),
     TelegramCommandSpec(
