@@ -49,16 +49,16 @@ tension    ██░░░░░░░░  quiet  ↓
 comfort    ██████░░░░  strong  —
 
 ## Affects
-(flat)
+(flat — body not naming a texture yet)
 
 ## Noise
 (quiet)
 
 ## Conflicts
-(no active conflicts)
+(no structural strain — no paired drives are colliding yet)
 
 ## Impulses
-(nothing pulling)
+(no pull signal — thresholds quiet, nothing crowding the edge)
 """
 
 

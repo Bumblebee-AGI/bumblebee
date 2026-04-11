@@ -220,6 +220,12 @@ _AFFECT_LINE_RE = re.compile(
     r"^\s*[-•*]?\s*([\w-]+)\s*[:=]\s*([\d.]+)\s*(?:[-—]\s*(.+))?$"
 )
 
+# Layered affect sections (Surface / Undercurrents / Edge) — optional structured output.
+_AFFECT_SECTION_HEADER_RE = re.compile(
+    r"^\s*(SURFACE|UNDERCURRENTS?|EDGE)\s*:?\s*$",
+    re.IGNORECASE,
+)
+
 # Coupling rule parsers
 _WHEN_RE = re.compile(r"^\s*(\w+)\s*([><=]+)\s*([\d.+-]+)\s*$")
 _EFFECT_MULT_RE = re.compile(r"^\s*(\w+)\.decay_rate\s*\*=\s*([\d.+/eE-]+)\s*$")
@@ -339,6 +345,8 @@ class BarEngine:
         }
         self._active_impulses: list[dict[str, Any]] = []
         self._active_conflicts: list[dict[str, Any]] = []
+        self._latent_conflicts: list[dict[str, Any]] = []
+        self._near_impulses: list[dict[str, Any]] = []
 
     @property
     def ordered_names(self) -> list[str]:
@@ -357,7 +365,9 @@ class BarEngine:
             str(imp.get("label", "")): now for imp in self._impulse_cfgs if imp.get("label")
         }
         self._active_conflicts = self._detect_conflicts()
+        self._latent_conflicts = self._detect_latent_conflicts()
         self._active_impulses = self._detect_impulses()
+        self._near_impulses = self._detect_near_impulses()
         self._clamp_all()
 
     def snapshot_pct(self) -> dict[str, int]:
@@ -450,6 +460,8 @@ class BarEngine:
                     self._values["comfort"] += float(cfg.get("comfort_per_tick", -0.15)) * c["intensity"]
 
         self._active_impulses = self._detect_impulses()
+        self._latent_conflicts = self._detect_latent_conflicts()
+        self._near_impulses = self._detect_near_impulses()
         # Apply impulse relief when an impulse fires (off cooldown).
         for imp in self._active_impulses:
             if not imp.get("on_cooldown") and imp.get("relief"):
@@ -504,8 +516,32 @@ class BarEngine:
                 tension_per_hour += float(m2.group(1))
         return eff, tension_per_hour
 
+    @staticmethod
+    def _pair_momentum_tag(deltas: list[float]) -> str:
+        if len(deltas) < 2:
+            return "steady"
+        a, b = deltas[0], deltas[1]
+        if a > 0.8 and b > 0.8:
+            return "heating"
+        if a < -0.8 and b < -0.8:
+            return "cooling"
+        if abs(a - b) > 4.0:
+            return "shearing"
+        return "mixed"
+
+    @staticmethod
+    def _pair_tilt(drives: list[str], levels: list[float]) -> str:
+        if len(drives) != len(levels) or len(drives) < 2:
+            return "balanced"
+        if levels[0] > levels[1] + 8:
+            return drives[0]
+        if levels[1] > levels[0] + 8:
+            return drives[1]
+        return "balanced"
+
     def _detect_conflicts(self) -> list[dict[str, Any]]:
         active: list[dict[str, Any]] = []
+        mom = self.momentum_delta()
         for c in self._conflict_cfgs:
             drives = c.get("drives", [])
             threshold = float(c.get("threshold", 70))
@@ -515,20 +551,65 @@ class BarEngine:
             if all(lv >= threshold for lv in levels):
                 overshoot = sum(lv - threshold for lv in levels) / len(levels)
                 intensity = min(1.0, overshoot / (100.0 - threshold)) if threshold < 100 else 0.0
+                deltas = [mom.get(d, 0.0) for d in drives]
                 active.append({
                     "drives": list(drives),
                     "label": c.get("label", "conflict"),
                     "intensity": intensity,
+                    "phase": "active",
+                    "heat": self._pair_momentum_tag(deltas),
+                    "tilt": self._pair_tilt(list(drives), levels),
+                    "levels_pct": {d: int(round(levels[i])) for i, d in enumerate(drives)},
                 })
         return active
+
+    def _detect_latent_conflicts(self) -> list[dict[str, Any]]:
+        """Drives edging toward the same conflict rule but not yet fully colliding."""
+        active_labels = {str(c.get("label", "")) for c in self._active_conflicts}
+        out: list[dict[str, Any]] = []
+        mom = self.momentum_delta()
+        for c in self._conflict_cfgs:
+            drives = c.get("drives", [])
+            threshold = float(c.get("threshold", 70))
+            label = str(c.get("label", "conflict"))
+            if len(drives) < 2:
+                continue
+            if label in active_labels:
+                continue
+            levels = [float(self._values.get(d, 0)) for d in drives]
+            min_lv = min(levels)
+            max_lv = max(levels)
+            latent_min_ratio = float(c.get("latent_min_ratio", 0.42))
+            latent_any_ratio = float(c.get("latent_any_ratio", 0.82))
+            if min_lv < threshold * latent_min_ratio:
+                continue
+            if max_lv < threshold * latent_any_ratio:
+                continue
+            shortfall = sum(max(0.0, threshold - lv) for lv in levels)
+            denom = max(2.0 * threshold, 1e-6)
+            snap = 1.0 - min(1.0, shortfall / denom)
+            intensity = min(1.0, 0.22 + 0.78 * snap)
+            deltas = [mom.get(d, 0.0) for d in drives]
+            out.append({
+                "drives": list(drives),
+                "label": label,
+                "intensity": round(intensity, 3),
+                "phase": "brewing",
+                "heat": self._pair_momentum_tag(deltas),
+                "tilt": self._pair_tilt(list(drives), levels),
+                "levels_pct": {d: int(round(levels[i])) for i, d in enumerate(drives)},
+            })
+        return out
 
     def _detect_impulses(self) -> list[dict[str, Any]]:
         now = time.monotonic()
         pct = self.snapshot_pct()
+        mom = self.momentum_delta()
         active: list[dict[str, Any]] = []
         for imp in self._impulse_cfgs:
             label = imp.get("label", "")
-            val = float(pct.get(imp.get("drive", ""), 0))
+            drive = str(imp.get("drive", ""))
+            val = float(pct.get(drive, 0))
             threshold = float(imp.get("threshold", 80))
             if val < threshold:
                 self._impulse_first_active.pop(label, None)
@@ -541,18 +622,69 @@ class BarEngine:
             overshoot = val - threshold
             intensity = min(1.0, overshoot / (100.0 - threshold)) if threshold < 100 else 0.0
             building_min = (now - self._impulse_first_active[label]) / 60.0
+            delta_drive = mom.get(drive, 0.0)
+            if delta_drive > 1.5:
+                surge = "rising"
+            elif delta_drive < -1.5:
+                surge = "ebbing"
+            else:
+                surge = "steady"
+            cool_left = max(0.0, cooldown_sec - (now - last)) if on_cooldown else 0.0
+            phase = "cooling" if on_cooldown else "live"
             active.append({
                 "type": imp.get("type", "impulse"),
-                "drive": imp.get("drive", ""),
+                "drive": drive,
                 "label": label,
                 "intensity": intensity,
                 "building_minutes": round(building_min, 1),
                 "on_cooldown": on_cooldown,
+                "cooldown_seconds_left": round(cool_left, 0),
                 "relief": dict(imp.get("relief", {})),
+                "phase": phase,
+                "surge": surge,
+                "value_pct": int(round(val)),
+                "threshold": int(round(threshold)),
             })
             if not on_cooldown:
                 self._impulse_last_fired[label] = now
         return active
+
+    def _detect_near_impulses(self) -> list[dict[str, Any]]:
+        """Drives close to an impulse threshold but not yet across — anticipatory pull."""
+        pct = self.snapshot_pct()
+        mom = self.momentum_delta()
+        out: list[dict[str, Any]] = []
+        for imp in self._impulse_cfgs:
+            drive = str(imp.get("drive", ""))
+            label = str(imp.get("label", ""))
+            val = float(pct.get(drive, 0))
+            threshold = float(imp.get("threshold", 80))
+            margin = float(imp.get("near_margin", 15))
+            if val >= threshold:
+                continue
+            floor_v = threshold - margin
+            if val < floor_v:
+                continue
+            proximity = (val - floor_v) / max(margin, 1e-6)
+            proximity = min(1.0, max(0.0, proximity))
+            delta_drive = mom.get(drive, 0.0)
+            if delta_drive > 1.5:
+                surge = "rising"
+            elif delta_drive < -1.5:
+                surge = "ebbing"
+            else:
+                surge = "steady"
+            out.append({
+                "type": imp.get("type", "impulse"),
+                "drive": drive,
+                "label": label,
+                "intensity": round(proximity, 3),
+                "phase": "near",
+                "surge": surge,
+                "value_pct": int(round(val)),
+                "threshold": int(round(threshold)),
+            })
+        return out
 
     # --- Persistence ---
 
@@ -633,6 +765,40 @@ class AffectEngine:
     def should_tick(self) -> bool:
         return (time.monotonic() - self._last_tick) >= self.cycle_seconds
 
+    @staticmethod
+    def _summarize_conflicts(
+        active: list[dict[str, Any]],
+        latent: list[dict[str, Any]],
+    ) -> str:
+        parts: list[str] = []
+        for c in active:
+            h = str(c.get("heat", "?"))
+            t = str(c.get("tilt", "?"))
+            parts.append(f"{c.get('label')} [active, heat {h}, tilt {t}]")
+        for c in latent:
+            h = str(c.get("heat", "?"))
+            t = str(c.get("tilt", "?"))
+            parts.append(f"{c.get('label')} [brewing, heat {h}, tilt {t}]")
+        return "; ".join(parts) if parts else "(none)"
+
+    @staticmethod
+    def _summarize_impulses(
+        active: list[dict[str, Any]],
+        near: list[dict[str, Any]],
+    ) -> str:
+        parts: list[str] = []
+        for i in active:
+            phase = str(i.get("phase", "live"))
+            cd = "cooldown" if i.get("on_cooldown") else "ready"
+            parts.append(
+                f"{i.get('label')} ({i.get('type')}, {phase}, {cd}, surge {i.get('surge', '?')})"
+            )
+        for i in near:
+            parts.append(
+                f"{i.get('label')} [near threshold, surge {i.get('surge', '?')}]"
+            )
+        return "; ".join(parts) if parts else "(none)"
+
     async def derive_affects(
         self,
         client: Any,
@@ -643,6 +809,8 @@ class AffectEngine:
         conflicts: list[dict[str, Any]],
         impulses: list[dict[str, Any]],
         *,
+        latent_conflicts: list[dict[str, Any]] | None = None,
+        near_impulses: list[dict[str, Any]] | None = None,
         num_ctx: int | None = None,
     ) -> list[dict[str, Any]]:
         self._last_tick = time.monotonic()
@@ -652,41 +820,66 @@ class AffectEngine:
             f"{n}: {bars_pct[n]}%" for n in names
         ) if names else "(not available)"
 
-        conflict_lines = "; ".join(c["label"] for c in conflicts) if conflicts else "(none)"
-        impulse_lines = "; ".join(
-            f"{i['label']} ({i['type']})" for i in impulses if not i.get("on_cooldown")
-        ) if impulses else "(none)"
+        mom_line = ", ".join(
+            f"{k} {float(momentum.get(k, 0)):+.1f}" for k in names
+        ) if names else "(not available)"
+
+        latent_conflicts = latent_conflicts or []
+        near_impulses = near_impulses or []
+
+        conflict_block = self._summarize_conflicts(conflicts, latent_conflicts)
+        impulse_block = self._summarize_impulses(impulses, near_impulses)
 
         events_summary = json.dumps(recent_events[-10:], indent=1, default=str) if recent_events else "(no recent events)"
 
-        prev_str = "(none yet)"
-        if self._previous_affects:
-            prev_str = "\n".join(f"- {a['name']}: {a['intensity']:.2f}" for a in self._previous_affects)
+        prev_lines: list[str] = []
+        for a in self._previous_affects:
+            if a.get("kind") == "edge":
+                ei = a.get("intensity")
+                et = (a.get("text") or "").strip()
+                prev_lines.append(f"- edge: {ei} — {et}" if ei is not None else f"- edge: {et}")
+            else:
+                prev_lines.append(
+                    f"- {a.get('name')}: {float(a.get('intensity', 0)):.2f} ({a.get('layer', 'surface')})"
+                )
+        prev_str = "\n".join(prev_lines) if prev_lines else "(none yet)"
 
         system = (
-            "You are the affect layer of a felt-state engine. Your job is to read the current "
-            "drive levels, active conflicts, impulses, and recent events, then select which "
-            "affects are currently active from the vocabulary below.\n\n"
-            "You are NOT choosing emotions for a character. You are reading a body state and "
-            "naming what the felt-texture IS right now. Like a clinician reading vitals and "
-            "naming the syndrome — except the vitals are drives and the syndromes are affects.\n\n"
-            "## Affect vocabulary\n"
+            "You are the affect layer of a felt-state engine. Read drive levels, momentum, "
+            "structural conflicts (active or brewing), impulses (live, cooling, or near "
+            "threshold), and recent events — then name the felt-texture of the body.\n\n"
+            "You are NOT performing emotion for a character. You are describing what the "
+            "state IS: foreground texture, quieter undertows, and (if present) one hybrid "
+            "edge where two pulls braid without resolving.\n\n"
+            "Let affects EMERGE: continuity matters. Honor PREVIOUS AFFECTS — evolve, deepen, "
+            "or release textures; do not reshuffle randomly unless events justify it.\n\n"
+            "## Affect vocabulary (Surface and Undercurrents must use these names only)\n"
             f"{_vocabulary_prompt_block()}\n\n"
-            "## Output format\n"
-            "Return 3-6 active affects, one per line:\n"
-            "  affect_name: intensity — one-line felt note\n\n"
-            "Intensity is 0.0 to 1.0. The felt note is a brief sensation or image, not an explanation.\n\n"
+            "## Output format (use these section headers exactly)\n"
+            "SURFACE:\n"
+            "  affect_name: intensity — one-line felt note\n"
+            "  (1–3 lines; the clearest present textures)\n\n"
+            "UNDERCURRENTS:\n"
+            "  affect_name: intensity — one-line felt note\n"
+            "  (0–3 lines; quieter biases, residues, or tensions under the surface)\n\n"
+            "EDGE:\n"
+            "  One or two sentences. Free text — NOT a vocabulary name. Name a blend, braid, "
+            "or unresolved hybrid (e.g. two drives or two affects in tension). Optional: start "
+            "with \"0.35 — \" to give a rough blend strength 0.0–1.0.\n\n"
+            "Intensity is 0.0 to 1.0. Felt notes are brief sensations or images, not explanations.\n"
             "Rules:\n"
-            "- Only use names from the vocabulary above\n"
-            "- No preamble or commentary — just the affect lines"
+            "- Surface/Undercurrents: vocabulary names only\n"
+            "- No preamble outside the three sections\n"
+            "- If the body is genuinely flat, leave UNDERCURRENTS and EDGE empty"
         )
         user = (
             f"DRIVES:\n{bars_line}\n\n"
-            f"ACTIVE CONFLICTS:\n{conflict_lines}\n\n"
-            f"ACTIVE IMPULSES:\n{impulse_lines}\n\n"
+            f"MOMENTUM (recent delta):\n{mom_line}\n\n"
+            f"STRUCTURAL STRAIN:\n{conflict_block}\n\n"
+            f"IMPULSE FIELD:\n{impulse_block}\n\n"
             f"RECENT EVENTS:\n{events_summary}\n\n"
             f"PREVIOUS AFFECTS:\n{prev_str}\n\n"
-            "What affects are active right now?"
+            "Name the body's affects now (SURFACE, UNDERCURRENTS, EDGE)."
         )
 
         try:
@@ -696,8 +889,8 @@ class AffectEngine:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                temperature=0.6,
-                max_tokens=256,
+                temperature=0.62,
+                max_tokens=420,
                 think=False,
                 num_ctx=num_ctx,
             )
@@ -712,24 +905,44 @@ class AffectEngine:
             log.info(
                 "soma_affects_derived",
                 count=len(affects),
-                names=[a["name"] for a in affects],
+                names=[
+                    str(a.get("name") or ("edge" if a.get("kind") == "edge" else "?"))
+                    for a in affects
+                ],
             )
         return self._previous_affects
 
     @staticmethod
-    def _parse_response(text: str) -> list[dict[str, Any]]:
+    def _normalize_vocab_name(raw: str) -> str | None:
+        name = raw.lower().replace("_", "-")
+        if name not in AFFECT_NAMES:
+            base = name.split("-")[0]
+            if base not in AFFECT_NAMES:
+                return None
+            name = base
+        return name
+
+    @staticmethod
+    def _has_section_headers(text: str) -> bool:
+        for line in text.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            if _AFFECT_SECTION_HEADER_RE.match(s):
+                return True
+        return False
+
+    @staticmethod
+    def _parse_flat_affects(text: str) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
         for line in text.strip().splitlines():
             m = _AFFECT_LINE_RE.match(line.strip())
             if not m:
                 continue
-            name = m.group(1).lower().replace("_", "-")
-            if name not in AFFECT_NAMES:
-                base = name.split("-")[0]
-                if base not in AFFECT_NAMES:
-                    continue
-                name = base
+            name = AffectEngine._normalize_vocab_name(m.group(1))
+            if not name:
+                continue
             try:
                 intensity = max(0.0, min(1.0, float(m.group(2))))
             except ValueError:
@@ -741,8 +954,109 @@ class AffectEngine:
                 "name": name,
                 "intensity": intensity,
                 "note": (m.group(3) or "").strip(),
+                "layer": "surface",
             })
         return results[:6]
+
+    @staticmethod
+    def _parse_sectioned_affects(text: str) -> list[dict[str, Any]]:
+        sections: dict[str, list[str]] = {"surface": [], "undercurrent": [], "edge": []}
+        bucket = "surface"
+        for line in text.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            hm = _AFFECT_SECTION_HEADER_RE.match(s)
+            if hm:
+                tag = hm.group(1).lower()
+                if tag.startswith("under"):
+                    bucket = "undercurrent"
+                elif tag == "edge":
+                    bucket = "edge"
+                else:
+                    bucket = "surface"
+                continue
+            sections[bucket].append(s)
+
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+
+        for line in sections["surface"]:
+            m = _AFFECT_LINE_RE.match(line.lstrip("·•*- ").strip())
+            if not m:
+                continue
+            name = AffectEngine._normalize_vocab_name(m.group(1))
+            if not name:
+                continue
+            try:
+                intensity = max(0.0, min(1.0, float(m.group(2))))
+            except ValueError:
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append({
+                "name": name,
+                "intensity": intensity,
+                "note": (m.group(3) or "").strip(),
+                "layer": "surface",
+            })
+            if len([x for x in out if x.get("kind") != "edge"]) >= 4:
+                break
+        for line in sections["undercurrent"]:
+            if len([x for x in out if x.get("layer") == "undercurrent"]) >= 3:
+                break
+            m = _AFFECT_LINE_RE.match(line.lstrip("·•*- ").strip())
+            if not m:
+                continue
+            name = AffectEngine._normalize_vocab_name(m.group(1))
+            if not name:
+                continue
+            try:
+                intensity = max(0.0, min(1.0, float(m.group(2))))
+            except ValueError:
+                continue
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append({
+                "name": name,
+                "intensity": intensity,
+                "note": (m.group(3) or "").strip(),
+                "layer": "undercurrent",
+            })
+
+        edge_lines = [x.strip() for x in sections["edge"] if x.strip()]
+        if edge_lines:
+            first = edge_lines[0]
+            em = re.match(r"^\s*([\d.]+)\s*[-—]\s*(.+)$", first)
+            if em:
+                try:
+                    ei = max(0.0, min(1.0, float(em.group(1))))
+                except ValueError:
+                    ei = 0.45
+                rest = [em.group(2).strip()] + edge_lines[1:]
+            else:
+                ei = None
+                rest = edge_lines
+            etext = " ".join(rest).strip()
+            if etext:
+                edge_obj: dict[str, Any] = {"kind": "edge", "text": etext}
+                if ei is not None:
+                    edge_obj["intensity"] = ei
+                out.append(edge_obj)
+        return out[:10]
+
+    @staticmethod
+    def _parse_response(text: str) -> list[dict[str, Any]]:
+        t = (text or "").strip()
+        if not t:
+            return []
+        if AffectEngine._has_section_headers(t):
+            layered = AffectEngine._parse_sectioned_affects(t)
+            if layered:
+                return layered
+        return AffectEngine._parse_flat_affects(t)
 
 
 # ---------------------------------------------------------------------------
@@ -810,6 +1124,37 @@ def _conflict_word(intensity: float) -> str:
     return "wrenching"
 
 
+def _latent_strain_word(intensity: float) -> str:
+    if intensity < 0.35:
+        return "thin"
+    if intensity < 0.55:
+        return "gathering"
+    if intensity < 0.75:
+        return "tightening"
+    return "imminent"
+
+
+def _near_press_word(intensity: float) -> str:
+    if intensity < 0.35:
+        return "hinting"
+    if intensity < 0.6:
+        return "pressing"
+    if intensity < 0.82:
+        return "crowding"
+    return "one nudge from tipping"
+
+
+def _cooldown_human(seconds: float) -> str:
+    s = max(0.0, float(seconds))
+    if s < 90:
+        return f"{int(round(s))}s"
+    m = int(s // 60)
+    rs = int(round(s - m * 60))
+    if rs <= 3 or m == 0:
+        return f"{m}m"
+    return f"{m}m {rs}s"
+
+
 def _impulse_urgency(intensity: float) -> str:
     if intensity < 0.15:
         return "stirring"
@@ -829,6 +1174,10 @@ _IMPULSE_ICONS = {
     "withdraw": "\U0001f6aa",
     "confront": "\u2694\ufe0f",
 }
+
+# Markers for ebb ``quiet`` presentation — skip empty conflict/impulse blocks.
+_CONFLICTS_EMPTY_PREFIX = "(no structural strain"
+_IMPULSES_EMPTY_PREFIX = "(no pull signal"
 
 
 class BodyRenderer:
@@ -856,37 +1205,139 @@ class BodyRenderer:
     @staticmethod
     def render_affects(affects: list[dict[str, Any]]) -> str:
         if not affects:
-            return "(flat)"
-        parts: list[str] = []
+            return "(flat — body not naming a texture yet)"
+        surface: list[dict[str, Any]] = []
+        under: list[dict[str, Any]] = []
+        edge: dict[str, Any] | None = None
         for a in affects:
-            word = _intensity_word(a["intensity"])
+            if a.get("kind") == "edge":
+                edge = a
+            elif a.get("layer") == "undercurrent":
+                under.append(a)
+            else:
+                surface.append(a)
+        blocks: list[str] = []
+
+        def _one_line(a: dict[str, Any]) -> str:
+            word = _intensity_word(float(a["intensity"]))
             note = f" \u2014 {a['note']}" if a.get("note") else ""
-            parts.append(f"{a['name']} ({word}){note}")
-        return " \u00b7 ".join(parts)
+            return f"{a['name']} ({word}){note}"
+
+        if surface:
+            blocks.append(
+                "Surface:\n"
+                + "\n".join(f"  \u00b7 {_one_line(a)}" for a in surface)
+            )
+        if under:
+            blocks.append(
+                "Undercurrents:\n"
+                + "\n".join(f"  \u00b7 {_one_line(a)}" for a in under)
+            )
+        if edge:
+            et = (edge.get("text") or edge.get("note") or "").strip()
+            if et:
+                ei = edge.get("intensity")
+                pre = ""
+                if ei is not None:
+                    try:
+                        pre = f"[{_intensity_word(float(ei))}] "
+                    except (TypeError, ValueError):
+                        pre = ""
+                blocks.append(f"Edge:\n  {pre}{et}")
+        if not blocks:
+            return "(flat — body not naming a texture yet)"
+        return "\n\n".join(blocks)
 
     @staticmethod
-    def render_conflicts(conflicts: list[dict[str, Any]]) -> str:
-        if not conflicts:
-            return "(no active conflicts)"
+    def render_conflicts(
+        active: list[dict[str, Any]],
+        latent: list[dict[str, Any]] | None = None,
+    ) -> str:
+        latent = latent or []
+        if not active and not latent:
+            return (
+                f"{_CONFLICTS_EMPTY_PREFIX} — no paired drives are colliding yet)"
+            )
         lines: list[str] = []
-        for c in conflicts:
-            word = _conflict_word(c["intensity"])
+        for c in active:
+            word = _conflict_word(float(c["intensity"]))
             drives = " vs ".join(c["drives"])
-            lines.append(f"\u26a1 {drives} \u2014 {c['label']} ({word})")
+            heat = str(c.get("heat", "steady"))
+            tilt = str(c.get("tilt", "balanced"))
+            tilt_s = f"tilt \u2192 {tilt}" if tilt != "balanced" else "tilt balanced"
+            lv = c.get("levels_pct") or {}
+            snap = " ".join(f"{k} {v}%" for k, v in lv.items()) if lv else ""
+            lines.append(f"\u26a1 {drives} \u2014 {c['label']} ({word}, active)")
+            lines.append(f"   {tilt_s} \u00b7 heat {heat}" + (f" \u00b7 {snap}" if snap else ""))
+        for c in latent:
+            word = _latent_strain_word(float(c["intensity"]))
+            drives = " vs ".join(c["drives"])
+            heat = str(c.get("heat", "steady"))
+            tilt = str(c.get("tilt", "balanced"))
+            tilt_s = f"tilt \u2192 {tilt}" if tilt != "balanced" else "tilt balanced"
+            lv = c.get("levels_pct") or {}
+            snap = " ".join(f"{k} {v}%" for k, v in lv.items()) if lv else ""
+            lines.append(f"\u25cc {drives} \u2014 {c['label']} (brewing, {word})")
+            lines.append(f"   {tilt_s} \u00b7 heat {heat}" + (f" \u00b7 {snap}" if snap else ""))
         return "\n".join(lines)
 
     @staticmethod
-    def render_impulses(impulses: list[dict[str, Any]]) -> str:
-        if not impulses:
-            return "(nothing pulling)"
-        lines: list[str] = []
-        for imp in impulses:
+    def render_impulses(
+        active: list[dict[str, Any]],
+        near: list[dict[str, Any]] | None = None,
+    ) -> str:
+        near = near or []
+        live_lines: list[str] = []
+        cool_lines: list[str] = []
+        for imp in active:
             icon = _IMPULSE_ICONS.get(imp["type"], "\u2192")
-            urgency = _impulse_urgency(imp["intensity"])
-            mins = imp.get("building_minutes")
-            time_str = f", {int(mins)} min building" if mins and mins > 1 else ""
-            lines.append(f"{icon} {imp['label']} ({urgency}{time_str})")
-        return "\n".join(lines)
+            surge = str(imp.get("surge", "steady"))
+            vp = imp.get("value_pct")
+            th = imp.get("threshold")
+            meter = f"{vp}/{th}" if vp is not None and th is not None else ""
+            meter_s = f" \u00b7 {meter}" if meter else ""
+            if imp.get("on_cooldown"):
+                left = float(imp.get("cooldown_seconds_left") or 0)
+                suf = _cooldown_human(left)
+                cool_lines.append(
+                    f"{icon} {imp['label']} (cooldown {suf}, {surge}){meter_s}"
+                )
+            else:
+                urgency = _impulse_urgency(float(imp["intensity"]))
+                mins = imp.get("building_minutes")
+                time_str = f", {int(mins)} min building" if mins and mins > 1 else ""
+                live_lines.append(
+                    f"{icon} {imp['label']} ({urgency}, {surge}{time_str}){meter_s}"
+                )
+        near_lines: list[str] = []
+        for imp in near:
+            icon = "\u21b7"
+            nw = _near_press_word(float(imp["intensity"]))
+            surge = str(imp.get("surge", "steady"))
+            vp = imp.get("value_pct")
+            th = imp.get("threshold")
+            meter = f"{vp}/{th}" if vp is not None and th is not None else ""
+            near_lines.append(
+                f"{icon} {imp['label']} ({nw}, {surge}) \u00b7 {meter}"
+            )
+        if not live_lines and not cool_lines and not near_lines:
+            return f"{_IMPULSES_EMPTY_PREFIX} — thresholds quiet, nothing crowding the edge)"
+        blocks: list[str] = []
+        if live_lines:
+            blocks.append("Live:\n" + "\n".join(f"  {ln}" for ln in live_lines))
+        if cool_lines:
+            blocks.append("Cooling:\n" + "\n".join(f"  {ln}" for ln in cool_lines))
+        if near_lines:
+            blocks.append("At the threshold:\n" + "\n".join(f"  {ln}" for ln in near_lines))
+        return "\n\n".join(blocks)
+
+    @staticmethod
+    def conflicts_section_quiet_skip(text: str) -> bool:
+        return (text or "").strip().startswith(_CONFLICTS_EMPTY_PREFIX)
+
+    @staticmethod
+    def impulses_section_quiet_skip(text: str) -> bool:
+        return (text or "").strip().startswith(_IMPULSES_EMPTY_PREFIX)
 
 
 # ---------------------------------------------------------------------------
@@ -1839,6 +2290,8 @@ class TonicBody:
             self._recent_events[-15:],
             self.bars._active_conflicts,
             self.bars._active_impulses,
+            latent_conflicts=self.bars._latent_conflicts,
+            near_impulses=self.bars._near_impulses,
             num_ctx=num_ctx,
         )
         self.flush_body_md()
@@ -1930,9 +2383,13 @@ class TonicBody:
         bars_summary = self.renderer.render_bars(self.bars.ordered_names, pct, mom)
         affects_summary = self.renderer.render_affects(self._current_affects)
         impulses_summary = self.renderer.render_impulses(
-            [i for i in self.bars._active_impulses if not i.get("on_cooldown")]
+            self.bars._active_impulses,
+            self.bars._near_impulses,
         )
-        conflicts_summary = self.renderer.render_conflicts(self.bars._active_conflicts)
+        conflicts_summary = self.renderer.render_conflicts(
+            self.bars._active_conflicts,
+            self.bars._latent_conflicts,
+        )
         noise_fragments = self.noise.current_fragments()
 
         return await self.wake_voice.compose(
@@ -2068,11 +2525,23 @@ class TonicBody:
         conf_score = 0.0
         if conflicts:
             conf_score = min(1.0, max(float(c.get("intensity", 0.0)) for c in conflicts))
+        latent_c = getattr(self.bars, "_latent_conflicts", []) or []
+        if latent_c:
+            latent_boost = (
+                min(1.0, max(float(c.get("intensity", 0.0)) for c in latent_c)) * 0.42
+            )
+            conf_score = min(1.0, max(conf_score, latent_boost))
 
         impulses = [i for i in self.bars._active_impulses if not i.get("on_cooldown")]
         imp_score = 0.0
         if impulses:
             imp_score = min(1.0, max(float(i.get("intensity", 0.0)) for i in impulses))
+        near_imp = getattr(self.bars, "_near_impulses", []) or []
+        if near_imp:
+            near_boost = (
+                min(1.0, max(float(i.get("intensity", 0.0)) for i in near_imp)) * 0.34
+            )
+            imp_score = min(1.0, max(imp_score, near_boost))
 
         affect_load = min(1.0, len(self._current_affects) / 6.0)
 
@@ -2104,11 +2573,23 @@ class TonicBody:
         conf_score = 0.0
         if conflicts:
             conf_score = min(1.0, max(float(c.get("intensity", 0.0)) for c in conflicts))
+        latent_c = getattr(self.bars, "_latent_conflicts", []) or []
+        if latent_c:
+            latent_boost = (
+                min(1.0, max(float(c.get("intensity", 0.0)) for c in latent_c)) * 0.42
+            )
+            conf_score = min(1.0, max(conf_score, latent_boost))
 
         impulses = [i for i in self.bars._active_impulses if not i.get("on_cooldown")]
         imp_score = 0.0
         if impulses:
             imp_score = min(1.0, max(float(i.get("intensity", 0.0)) for i in impulses))
+        near_imp = getattr(self.bars, "_near_impulses", []) or []
+        if near_imp:
+            near_boost = (
+                min(1.0, max(float(i.get("intensity", 0.0)) for i in near_imp)) * 0.34
+            )
+            imp_score = min(1.0, max(imp_score, near_boost))
 
         affect_load = min(1.0, len(self._current_affects) / 6.0)
 
@@ -2250,18 +2731,29 @@ class TonicBody:
             take = fragments[-cap:] if fragments else []
             noise_inner = "\n".join(take) if take else "(quiet)"
 
-        conflicts_txt = self.renderer.render_conflicts(self.bars._active_conflicts)
-        impulses_list = [i for i in self.bars._active_impulses if not i.get("on_cooldown")]
-        impulses_txt = self.renderer.render_impulses(impulses_list)
+        conflicts_txt = self.renderer.render_conflicts(
+            self.bars._active_conflicts,
+            self.bars._latent_conflicts,
+        )
+        impulses_txt = self.renderer.render_impulses(
+            self.bars._active_impulses,
+            self.bars._near_impulses,
+        )
 
         blocks: list[str] = [
             f"## Bars\n{bars}",
             f"## Affects\n{affects}",
             f"## Noise\n{noise_inner}",
         ]
-        if not (presentation == "quiet" and conflicts_txt == "(no active conflicts)"):
+        if not (
+            presentation == "quiet"
+            and self.renderer.conflicts_section_quiet_skip(conflicts_txt)
+        ):
             blocks.append(f"## Conflicts\n{conflicts_txt}")
-        if not (presentation == "quiet" and impulses_txt == "(nothing pulling)"):
+        if not (
+            presentation == "quiet"
+            and self.renderer.impulses_section_quiet_skip(impulses_txt)
+        ):
             blocks.append(f"## Impulses\n{impulses_txt}")
         return "\n\n".join(blocks)
 

@@ -13,6 +13,8 @@ from bumblebee.presence.platforms.telegram_format import (
     format_me_html,
     format_memories_html,
     format_tools_html,
+    format_version_html,
+    format_wakequiet_status_html,
     split_telegram_chunks,
 )
 
@@ -44,6 +46,23 @@ def test_start_html_includes_personalized_name():
     assert "bumblebee v0.9.1" in out
 
 
+def test_version_html_shows_commit_not_italic_blurb():
+    out = format_version_html(
+        "1.0.0",
+        commit_short="a1b2c3d",
+        commit_subject="Ship /version with git subject",
+    )
+    assert "<b>bumblebee</b>" in out and "v1.0.0" in out
+    assert "a1b2c3d" in out and "Ship /version" in out
+    assert "<i>" not in out
+
+
+def test_version_html_version_only_when_no_git():
+    out = format_version_html("0.1.0")
+    assert "v0.1.0" in out
+    assert out.count("\n") == 0
+
+
 def test_commands_page_supports_filter():
     out, page, total = format_commands_page(0, query="model")
     assert page == 0
@@ -62,6 +81,17 @@ def test_body_md_reply_chunks_pre_and_escape():
     assert len(many) >= 2
 
 
+def test_format_wakequiet_status_html_modes():
+    quiet = format_wakequiet_status_html(
+        quiet_db=True, yaml_status_mirror=True, yaml_tools_mirror=False,
+    )
+    assert "Wake quiet mode: on" in quiet and "transcript" in quiet
+    normal = format_wakequiet_status_html(
+        quiet_db=False, yaml_status_mirror=True, yaml_tools_mirror=False,
+    )
+    assert "Wake quiet mode: off" in normal and "wake_user_visible_status" in normal
+
+
 def test_command_menu_items_are_short():
     items = command_menu_items()
     assert items
@@ -73,6 +103,7 @@ def test_command_menu_items_are_short():
     assert any(name == "session_stop" for name, _ in items)
     assert any(name == "compact" for name, _ in items)
     assert any(name == "busy" for name, _ in items)
+    assert any(name == "wakequiet" for name, _ in items)
     assert any(name == "body" for name, _ in items)
     assert all(len(desc) <= 256 for _, desc in items)
 
@@ -88,6 +119,7 @@ def test_telegram_registered_slash_names_include_aliases():
     assert "session_stop" in names
     assert "compact" in names
     assert "busy" in names
+    assert "wakequiet" in names
     assert "body" in names
     assert "memeories" not in names
     for name, _ in command_menu_items():
@@ -431,7 +463,7 @@ def test_build_status_html_reports_soma_gen_snapshot():
                 "## Bars\n"
                 "social     █████░░░░░  moderate  —\n"
                 "curiosity  █████░░░░░  moderate  —\n\n"
-                "## Affects\n(flat)\n"
+                "## Affects\n(flat — body not naming a texture yet)\n"
             )
 
     class _Entity:

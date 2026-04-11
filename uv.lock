@@ -298,7 +298,6 @@ wheels = [
 
 [[package]]
 name = "bumblebee"
-version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -400,7 +399,7 @@ requires-dist = [
     { name = "youtube-transcript-api", marker = "extra == 'full'", specifier = ">=0.6" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = ">=0.6" },
 ]
-provides-extras = ["api", "gateway", "railway", "voice", "pdf", "youtube", "browser", "imagegen", "full", "dev"]
+provides-extras = ["api", "browser", "dev", "full", "gateway", "imagegen", "pdf", "railway", "voice", "youtube"]
 
 [[package]]
 name = "certifi"

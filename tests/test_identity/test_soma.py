@@ -194,6 +194,29 @@ class TestBarEngineConflicts:
         bars.tick(0.001)
         assert len(bars._active_conflicts) == 0
 
+    def test_latent_conflict_brews_when_edges_align_but_not_full_collision(self):
+        cfg = _default_bar_config()
+        for v in cfg["bars"]["variables"]:
+            if v["name"] == "curiosity":
+                v["initial"] = 62
+            if v["name"] == "comfort":
+                v["initial"] = 58
+        bars = BarEngine(cfg)
+        bars.tick(0.001)
+        assert len(bars._active_conflicts) == 0
+        assert len(bars._latent_conflicts) >= 1
+        assert bars._latent_conflicts[0].get("phase") == "brewing"
+
+    def test_active_conflict_excludes_latent_for_same_rule(self):
+        cfg = _default_bar_config()
+        for v in cfg["bars"]["variables"]:
+            if v["name"] in ("curiosity", "comfort"):
+                v["initial"] = 85
+        bars = BarEngine(cfg)
+        bars.tick(0.001)
+        assert len(bars._active_conflicts) == 1
+        assert len(bars._latent_conflicts) == 0
+
 
 class TestBarEngineImpulses:
     def test_impulse_fires_when_drive_above_threshold(self):
@@ -299,6 +322,22 @@ class TestAffectParsing:
     def test_parse_garbage_input(self):
         assert AffectEngine._parse_response("this is not affect output at all") == []
 
+    def test_parse_sectioned_includes_edge(self):
+        text = (
+            "SURFACE:\n"
+            "warmth: 0.3 — soft\n\n"
+            "UNDERCURRENTS:\n"
+            "dread: 0.2 — thin\n\n"
+            "EDGE:\n"
+            "0.4 — curiosity braided with fatigue\n"
+        )
+        affects = AffectEngine._parse_response(text)
+        assert any(a.get("name") == "warmth" for a in affects)
+        assert any(a.get("layer") == "undercurrent" for a in affects)
+        edge = next((a for a in affects if a.get("kind") == "edge"), None)
+        assert edge is not None
+        assert "braided" in (edge.get("text") or "")
+
 
 # ---------------------------------------------------------------------------
 # SomaticAppraiser parsing
@@ -362,30 +401,58 @@ class TestBodyRenderer:
             {"name": "fascination", "intensity": 0.6, "note": ""},
         ]
         output = BodyRenderer.render_affects(affects)
+        assert "Surface:" in output
         assert "warmth" in output
         assert "present" in output  # 0.3 maps to "present"
         assert "fascination" in output
 
     def test_render_affects_empty(self):
-        assert BodyRenderer.render_affects([]) == "(flat)"
+        out = BodyRenderer.render_affects([])
+        assert out.startswith("(flat")
 
     def test_render_conflicts_with_data(self):
-        conflicts = [{"drives": ["curiosity", "comfort"], "label": "restless comfort", "intensity": 0.5}]
-        output = BodyRenderer.render_conflicts(conflicts)
+        conflicts = [
+            {
+                "drives": ["curiosity", "comfort"],
+                "label": "restless comfort",
+                "intensity": 0.5,
+                "phase": "active",
+                "heat": "heating",
+                "tilt": "curiosity",
+                "levels_pct": {"curiosity": 82, "comfort": 74},
+            },
+        ]
+        output = BodyRenderer.render_conflicts(conflicts, [])
         assert "restless comfort" in output
         assert "pulling" in output
+        assert "heating" in output
 
     def test_render_conflicts_empty(self):
-        assert BodyRenderer.render_conflicts([]) == "(no active conflicts)"
+        out = BodyRenderer.render_conflicts([], [])
+        assert out.startswith("(no structural strain")
 
     def test_render_impulses_with_data(self):
-        impulses = [{"type": "reach_out", "label": "reach_out", "intensity": 0.4, "building_minutes": 5.0}]
-        output = BodyRenderer.render_impulses(impulses)
+        impulses = [
+            {
+                "type": "reach_out",
+                "label": "reach_out",
+                "intensity": 0.4,
+                "building_minutes": 5.0,
+                "on_cooldown": False,
+                "phase": "live",
+                "surge": "steady",
+                "value_pct": 92,
+                "threshold": 80,
+            },
+        ]
+        output = BodyRenderer.render_impulses(impulses, [])
+        assert "Live:" in output
         assert "reach_out" in output
         assert "insistent" in output
 
     def test_render_impulses_empty(self):
-        assert BodyRenderer.render_impulses([]) == "(nothing pulling)"
+        out = BodyRenderer.render_impulses([], [])
+        assert out.startswith("(no pull signal")
 
 
 class TestRenderingHelpers:
