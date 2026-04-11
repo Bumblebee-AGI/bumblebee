@@ -27,6 +27,7 @@ from bumblebee.presence.tools.execution_rpc import (
     self_update_host_permitted,
     self_update_tool_block_message,
 )
+from bumblebee.utils.git_info import git_head_info
 from bumblebee.utils.self_update import perform_self_update
 from bumblebee.presence.tools.execution_rpc import (
     get_execution_client_for_entity,
@@ -39,6 +40,7 @@ from bumblebee.presence.platforms.telegram_format import (
     format_access_denied,
     format_body_md_reply_html_chunks,
     format_busy_status_html,
+    format_wakequiet_status_html,
     format_commands_page,
     format_feelings_html,
     format_help_html,
@@ -72,6 +74,10 @@ from bumblebee.presence.platforms.telegram_format import (
     split_telegram_chunks,
 )
 from bumblebee.presence.platforms.telegram_privacy import (
+    KEY_WAKE_QUIET,
+    entity_state_delete,
+    entity_state_set,
+    is_wake_quiet,
     load_telegram_busy_disabled_chat_ids,
     load_telegram_privacy_from_db,
     save_telegram_busy_disabled_chat_ids,
@@ -165,7 +171,10 @@ _BUSY_ING_WORDS: tuple[str, ...] = (
 def _busy_indicator_html(frame: int, ing_word: str) -> str:
     """HTML for the busy line: monospace via <code> (Telegram HTML parse mode)."""
     spin = _BUSY_BRAILLE[frame % len(_BUSY_BRAILLE)]
-    inner = f"{spin}  {ing_word}"
+    w = (ing_word or "").strip()
+    if w:
+        w = w.capitalize()
+    inner = f"{spin}  {w}" if w else str(spin)
     return f"<code>{html.escape(inner)}</code>"
 
 
@@ -317,6 +326,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("ping", self._on_ping_command), group=_g)
         self.app.add_handler(CommandHandler("version", self._on_version_command), group=_g)
         self.app.add_handler(CommandHandler("busy", self._on_busy_command), group=_g)
+        self.app.add_handler(CommandHandler("wakequiet", self._on_wakequiet_command), group=_g)
         self.app.add_handler(CommandHandler("update", self._on_update_command), group=_g)
         self.app.add_handler(CommandHandler("context", self._on_context_command), group=_g)
         self.app.add_handler(CommandHandler("compact", self._on_compact_command), group=_g)
@@ -1310,7 +1320,15 @@ class TelegramPlatform(Platform):
         if not await self._check_allowed(update, notify=True):
             return
         _ = context
-        await self._reply_html(update, format_version_html(self._app_version))
+        short, subj = git_head_info()
+        await self._reply_html(
+            update,
+            format_version_html(
+                self._app_version,
+                commit_short=short,
+                commit_subject=subj,
+            ),
+        )
 
     async def _on_busy_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):
@@ -1357,6 +1375,90 @@ class TelegramPlatform(Platform):
         await self._reply_html(
             update,
             format_busy_status_html(enabled=self.busy_indicator_enabled_for(chat_id)),
+        )
+
+    async def _on_wakequiet_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        if not await self._check_allowed(update, notify=True):
+            return
+        msg = update.effective_message
+        if not msg:
+            return
+        args = [str(a).strip().lower() for a in (context.args or []) if str(a).strip()]
+        sub = args[0] if args else "status"
+        auto = self._entity.config.harness.autonomy
+        yaml_s = bool(getattr(auto, "wake_user_visible_status", True))
+        yaml_t = bool(getattr(auto, "wake_chat_tool_activity", False))
+
+        if sub in ("help", "h"):
+            await self._reply_html(
+                update,
+                "<b>/wakequiet</b> — whether autonomous <i>wake</i> status lines and per-tool lines "
+                "are mirrored to Telegram or only written to the autonomy transcript.\n\n"
+                "• <code>/wakequiet on</code> — hide those lines from chat (transcript only)\n"
+                "• <code>/wakequiet off</code> — follow your entity YAML again\n"
+                "• <code>/wakequiet status</code> — current mode\n\n"
+                "Normal replies during a wake still post as usual; this only affects italic "
+                "status / tool-activity lines.",
+            )
+            return
+
+        if sub in ("status", "st", "?"):
+            try:
+                async with self._entity.store.session() as conn:
+                    q = await is_wake_quiet(conn)
+            except Exception as e:
+                log.warning("wakequiet_status_failed", error=str(e))
+                await self._reply_html(update, "<b>Could not read preference.</b> Try again shortly.")
+                return
+            await self._reply_html(
+                update,
+                format_wakequiet_status_html(
+                    quiet_db=q, yaml_status_mirror=yaml_s, yaml_tools_mirror=yaml_t,
+                ),
+            )
+            return
+
+        if sub in ("on", "enable", "yes", "true", "1", "quiet"):
+            try:
+                async with self._entity.store.session() as conn:
+                    await entity_state_set(conn, KEY_WAKE_QUIET, "1")
+            except Exception as e:
+                log.warning("wakequiet_save_failed", error=str(e))
+                await self._reply_html(
+                    update,
+                    "<b>Could not save preference.</b> Try again in a moment.",
+                )
+                return
+        elif sub in ("off", "disable", "no", "false", "0"):
+            try:
+                async with self._entity.store.session() as conn:
+                    await entity_state_delete(conn, KEY_WAKE_QUIET)
+            except Exception as e:
+                log.warning("wakequiet_save_failed", error=str(e))
+                await self._reply_html(
+                    update,
+                    "<b>Could not save preference.</b> Try again in a moment.",
+                )
+                return
+        else:
+            await self._reply_html(
+                update,
+                format_unknown_command(f"/wakequiet {' '.join(args)}"),
+            )
+            return
+
+        try:
+            async with self._entity.store.session() as conn:
+                q = await is_wake_quiet(conn)
+        except Exception as e:
+            log.warning("wakequiet_status_failed", error=str(e))
+            await self._reply_html(update, "<b>Saved, but could not re-read status.</b>")
+            return
+        await self._reply_html(
+            update,
+            format_wakequiet_status_html(quiet_db=q, yaml_status_mirror=yaml_s, yaml_tools_mirror=yaml_t),
         )
 
     async def _on_update_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

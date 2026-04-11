@@ -9,6 +9,13 @@ docs/
 bumbleweb/
 bumbleAR/
 bee-model/
+# Python entity bridge for Bumble AR (keep local until you want it on a feature branch)
+bumblebee/bumble_ar/
+scripts/bumble-ar-setup.ps1
+scripts/bumble-ar-setup.sh
+
+# Local wheel cache / offline test installs (never ship)
+dist_test_wheel/
 
 # Python
 __pycache__/

@@ -11,6 +11,9 @@ KEY_USER_IDS = "telegram.privacy.user_ids"
 KEY_CHAT_IDS = "telegram.privacy.chat_ids"
 # Chats where the pinned busy/working line is disabled (/busy off).
 KEY_BUSY_DISABLED_CHAT_IDS = "telegram.busy.disabled_chat_ids"
+# When set to a truthy token (/wakequiet on), autonomous wake mirrors no status/tool lines to Telegram
+# (transcript only). Overrides YAML wake_user_visible_status and wake_chat_tool_activity until cleared.
+KEY_WAKE_QUIET = "telegram.autonomy.wake_quiet"
 
 
 async def entity_state_get(conn: Any, key: str) -> str | None:
@@ -26,6 +29,11 @@ async def entity_state_set(conn: Any, key: str, value: str) -> None:
         "INSERT OR REPLACE INTO entity_state (key, value) VALUES (?, ?)",
         (key, value),
     )
+    await conn.commit()
+
+
+async def entity_state_delete(conn: Any, key: str) -> None:
+    await conn.execute("DELETE FROM entity_state WHERE key = ?", (key,))
     await conn.commit()
 
 
@@ -83,3 +91,35 @@ async def save_telegram_privacy_enforced(
     await entity_state_set(conn, KEY_ENFORCED, "1")
     await entity_state_set(conn, KEY_USER_IDS, json.dumps(u))
     await entity_state_set(conn, KEY_CHAT_IDS, json.dumps(c))
+
+
+def _truthy_wake_quiet(raw: str | None) -> bool:
+    return (raw or "").strip().lower() in ("1", "true", "yes", "on", "quiet")
+
+
+async def is_wake_quiet(conn: Any) -> bool:
+    """If True, do not mirror autonomous wake status/tool lines to Telegram (transcript only)."""
+    return _truthy_wake_quiet(await entity_state_get(conn, KEY_WAKE_QUIET))
+
+
+async def effective_wake_status_in_chat(entity: Any, autonomy_cfg: Any) -> bool:
+    """Effective mirror for wake status lines: YAML unless /wakequiet forced transcript-only."""
+    base = bool(getattr(autonomy_cfg, "wake_user_visible_status", True))
+    try:
+        async with entity.store.session() as conn:
+            if await is_wake_quiet(conn):
+                return False
+    except Exception:
+        return base
+    return base
+
+
+async def effective_wake_tools_in_chat(entity: Any, autonomy_cfg: Any) -> bool:
+    """Effective mirror for per-tool lines during autonomous wake."""
+    base = bool(getattr(autonomy_cfg, "wake_chat_tool_activity", False))
+    try:
+        async with entity.store.session() as conn:
+            if await is_wake_quiet(conn):
+                return False
+    except Exception:
+        return base

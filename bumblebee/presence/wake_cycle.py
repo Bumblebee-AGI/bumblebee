@@ -32,6 +32,7 @@ from bumblebee.identity.desire import infer_desires
 from bumblebee.identity.drives import Drive
 from bumblebee.models import Input
 from bumblebee.presence.autonomy_transcript import append_wake_lines_if_enabled
+from bumblebee.presence.platforms.telegram_privacy import effective_wake_status_in_chat
 
 log = structlog.get_logger("bumblebee.presence.wake_cycle")
 
@@ -616,6 +617,7 @@ class WakeCycleEngine:
             wake_enhanced = wide_mode or max_rounds > 1
 
             channel, reply_platform = self._resolve_wake_delivery(entity)
+            mirror_wake_status = await effective_wake_status_in_chat(entity, self._auto)
             delivery_name = _platform_label(reply_platform)
             soma_line = _soma_bar_line(tonic)
             gen_frags = _gen_fragments_tail(tonic)
@@ -747,7 +749,7 @@ class WakeCycleEngine:
                 entity,
                 reply_platform,
                 user_lines,
-                to_chat=bool(self._auto.wake_user_visible_status),
+                to_chat=mirror_wake_status,
                 heading="wake start",
             )
 
@@ -796,7 +798,7 @@ class WakeCycleEngine:
                             [
                                 f"🌅 round {round_idx + 1}/{max_rounds} (optional — end_wake_session when finished)",
                             ],
-                            to_chat=bool(self._auto.wake_user_visible_status),
+                            to_chat=mirror_wake_status,
                             heading="wake round",
                         )
 
@@ -908,7 +910,7 @@ class WakeCycleEngine:
                     tools_all=accumulated_tools,
                     carryover=carryover,
                 ),
-                to_chat=bool(self._auto.wake_user_visible_status),
+                to_chat=mirror_wake_status,
                 heading="wake end",
             )
             log.info(

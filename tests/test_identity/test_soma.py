@@ -478,27 +478,27 @@ class TestRenderingHelpers:
 
 
 class TestTonicBody:
-    def test_init_and_render(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_init_and_render(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         output = body.render_body()
         assert "## Bars" in output
         assert "## Affects" in output
         assert "## Conflicts" in output
         assert "## Impulses" in output
 
-    def test_emit_records_events(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_emit_records_events(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         body.emit({"type": "message_received", "from": "alice"})
         assert len(body._recent_events) == 1
 
-    def test_emit_ignores_events_without_type(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_emit_ignores_events_without_type(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         body.emit({"no_type": "here"})
         assert len(body._recent_events) == 0
 
     @pytest.mark.asyncio
-    async def test_tick_bars_applies_events_and_decays(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    async def test_tick_bars_applies_events_and_decays(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         before = body.bars.snapshot_pct()["social"]
         body.emit({"type": "message_received"})
         await body.tick_bars(0.01)
@@ -506,9 +506,9 @@ class TestTonicBody:
         assert after > before
 
     @pytest.mark.asyncio
-    async def test_tick_bars_does_not_reapply_message_events(self):
+    async def test_tick_bars_does_not_reapply_message_events(self, tmp_path: Path):
         """Regression: message_received was re-applied every heartbeat (no _applied flag)."""
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+        body = TonicBody(_default_bar_config(), tmp_path)
         body.emit({"type": "message_received"})
         await body.tick_bars(0.01)
         raw_after_first = body.bars._values["social"]
@@ -517,27 +517,27 @@ class TestTonicBody:
         # Second tick should decay only, not stack another +3 from the same event.
         assert raw_after_second < raw_after_first
 
-    def test_snapshot_for_emotion_returns_valid_category(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_snapshot_for_emotion_returns_valid_category(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         cat, intensity = body.snapshot_for_emotion()
         assert isinstance(cat, str)
         assert 0.0 <= intensity <= 1.0
 
-    def test_snapshot_for_emotion_returns_curious_when_curiosity_high(self):
+    def test_snapshot_for_emotion_returns_curious_when_curiosity_high(self, tmp_path: Path):
         cfg = _default_bar_config()
         for v in cfg["bars"]["variables"]:
             if v["name"] == "curiosity":
                 v["initial"] = 90
-        body = TonicBody(cfg, Path("/tmp/soma-test"))
+        body = TonicBody(cfg, tmp_path)
         cat, intensity = body.snapshot_for_emotion()
         assert cat == "curious"
         assert intensity > 0.4
 
-    def test_snapshot_returns_neutral_when_all_bars_low(self):
+    def test_snapshot_returns_neutral_when_all_bars_low(self, tmp_path: Path):
         cfg = _default_bar_config()
         for v in cfg["bars"]["variables"]:
             v["initial"] = 20
-        body = TonicBody(cfg, Path("/tmp/soma-test"))
+        body = TonicBody(cfg, tmp_path)
         cat, _ = body.snapshot_for_emotion()
         assert cat == "neutral"
 
@@ -552,8 +552,8 @@ class TestTonicBody:
         assert body2.restore_state()
         assert body2.bars.snapshot_pct() == body.bars.snapshot_pct()
 
-    def test_render_body_changes_after_events_and_tick(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_render_body_changes_after_events_and_tick(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         render_before = body.render_body()
         for _ in range(5):
             body.emit({"type": "message_received"})
@@ -564,8 +564,8 @@ class TestTonicBody:
         render_after = body.render_body()
         assert render_before != render_after
 
-    def test_event_cap_is_enforced(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_event_cap_is_enforced(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         for i in range(300):
             body.emit({"type": "message_received", "i": i})
         assert len(body._recent_events) <= 200
@@ -763,14 +763,14 @@ class TestNoiseEngineGenerate:
 
 
 class TestTonicBodyNoise:
-    def test_render_body_includes_noise_section(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_render_body_includes_noise_section(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         output = body.render_body()
         assert "## Noise" in output
         assert "(quiet)" in output
 
-    def test_render_body_shows_fragments_when_present(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_render_body_shows_fragments_when_present(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         body.noise._fragments.append("a thought about something")
         body.noise._fragments.append("another half-formed idea")
         output = body.render_body()
@@ -780,10 +780,10 @@ class TestTonicBodyNoise:
         assert "(quiet)" not in output
 
     @pytest.mark.asyncio
-    async def test_maybe_tick_noise_disabled(self):
+    async def test_maybe_tick_noise_disabled(self, tmp_path: Path):
         cfg = _default_bar_config()
         cfg["noise"] = {"enabled": False}
-        body = TonicBody(cfg, Path("/tmp/soma-test"))
+        body = TonicBody(cfg, tmp_path)
         await body.maybe_tick_noise(
             _MockNoiseClient("should not appear"),
             "model",
@@ -792,10 +792,10 @@ class TestTonicBodyNoise:
         assert body.noise.current_fragments() == []
 
     @pytest.mark.asyncio
-    async def test_maybe_tick_noise_produces_fragments(self):
+    async def test_maybe_tick_noise_produces_fragments(self, tmp_path: Path):
         cfg = _default_bar_config()
         cfg["noise"] = {"enabled": True, "cycle_seconds": 0, "temperature": 1.0, "max_tokens": 100, "max_fragments": 8, "model": ""}
-        body = TonicBody(cfg, Path("/tmp/soma-test"))
+        body = TonicBody(cfg, tmp_path)
         client = _MockNoiseClient("the silence has a texture to it\n\ncuriosity pulling sideways")
         await body.maybe_tick_noise(client, "small-model", entity_name="canary")
         assert len(body.noise.current_fragments()) == 2
@@ -807,17 +807,17 @@ class TestTonicBodyNoise:
 
 
 class TestSomaEbb:
-    def test_compute_salience_bounded(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_compute_salience_bounded(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         assert 0.0 <= body.compute_salience() <= 1.0
 
-    def test_resolve_presentation_autonomous_floors_quiet(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_resolve_presentation_autonomous_floors_quiet(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         tier = body.resolve_presentation(salience=0.05, route="deliberate", platform="autonomous")
         assert _EBB_TIER_ORDER[tier] >= _EBB_TIER_ORDER["normal"]
 
-    def test_resolve_presentation_reflex_softens_vs_deliberate(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_resolve_presentation_reflex_softens_vs_deliberate(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         for name in body.bars.ordered_names:
             body.bars._values[name] = 95.0
         body.bars._clamp_all()
@@ -826,8 +826,8 @@ class TestSomaEbb:
         r = body.resolve_presentation(salience=sal, route="reflex", platform="cli")
         assert _EBB_TIER_ORDER[d] >= _EBB_TIER_ORDER[r]
 
-    def test_render_quiet_compact_bars_and_noise_cap(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_render_quiet_compact_bars_and_noise_cap(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         body.noise._fragments.clear()
         for i in range(5):
             body.noise._fragments.append(f"fragment {i}")
@@ -837,27 +837,27 @@ class TestSomaEbb:
         assert noise_block.count("\n") == 0
         assert "fragment 4" in noise_block
 
-    def test_ebb_disabled_always_full_layout(self):
+    def test_ebb_disabled_always_full_layout(self, tmp_path: Path):
         cfg = _default_bar_config()
         cfg["ebb"] = {"enabled": False}
-        body = TonicBody(cfg, Path("/tmp/soma-test"))
+        body = TonicBody(cfg, tmp_path)
         full = body.render_body(presentation="quiet")
         bars_block = full.split("## Bars\n")[1].split("\n\n##")[0]
         assert bars_block.count("\n") >= 4
 
-    def test_should_skip_post_turn_noise_returns_bool(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_should_skip_post_turn_noise_returns_bool(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         assert isinstance(
             body.should_skip_post_turn_noise(route="deliberate", platform="cli"),
             bool,
         )
 
-    def test_noise_generation_mode_quiet_defaults_entropic(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_noise_generation_mode_quiet_defaults_entropic(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         assert body._noise_generation_mode(journal_tail="", conversation_tail="") == "entropic"
 
-    def test_noise_generation_mode_high_signal_becomes_coherent(self):
-        body = TonicBody(_default_bar_config(), Path("/tmp/soma-test"))
+    def test_noise_generation_mode_high_signal_becomes_coherent(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
         body.emit({"type": "message_received", "from": "alice"})
         body.emit({"type": "action", "name": "search_web"})
         assert body._noise_generation_mode(journal_tail="", conversation_tail="ok") == "coherent"

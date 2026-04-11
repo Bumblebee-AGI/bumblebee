@@ -65,6 +65,7 @@ from bumblebee.models import Episode, EmotionCategory, EmotionalState, ImprintRe
 from bumblebee.presence.embodiment import Embodiment
 from bumblebee.presence.initiative import InitiativeEngine
 from bumblebee.presence.platforms.base import Platform
+from bumblebee.presence.platforms.telegram_privacy import effective_wake_tools_in_chat
 from bumblebee.presence.tools.filesystem import (
     append_file,
     list_directory,
@@ -2327,8 +2328,9 @@ class Entity:
                         )
                     except Exception as e:
                         log.debug("autonomy_transcript_append_failed", module="entity", error=str(e))
+                mirror_tools = await effective_wake_tools_in_chat(self, auto)
                 if (
-                    getattr(auto, "wake_chat_tool_activity", False)
+                    mirror_tools
                     and self.config.presence.tool_activity
                     and self.current_platform is not None
                 ):

@@ -142,6 +142,12 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         category="Runtime",
     ),
     TelegramCommandSpec(
+        name="wakequiet",
+        summary="Hide autonomous wake status/tool lines from chat (transcript only)",
+        usage="/wakequiet on  or  /wakequiet off  or  /wakequiet status",
+        category="Runtime",
+    ),
+    TelegramCommandSpec(
         name="update",
         summary="Pull latest Bumblebee from GitHub (operators only; restarts recommended)",
         usage="/update  or  /update no-pip",
@@ -973,11 +979,44 @@ def format_ping_html(app_version: str) -> str:
     )
 
 
-def format_version_html(app_version: str) -> str:
-    """Harness runtime version (from ``bumblebee/__version__.py``)."""
+def format_version_html(
+    app_version: str,
+    *,
+    commit_short: str | None = None,
+    commit_subject: str | None = None,
+) -> str:
+    """Harness version plus optional git HEAD (when this install is a git checkout)."""
+    lines = [f"<b>bumblebee</b> <code>v{html.escape(app_version)}</code>"]
+    if commit_subject:
+        subj = html.escape(commit_subject.strip())
+        if len(subj) > 280:
+            subj = subj[:279].rstrip() + "…"
+        if commit_short:
+            lines.append(f"<code>{html.escape(commit_short)} · {subj}</code>")
+        else:
+            lines.append(f"<code>{subj}</code>")
+    return "\n".join(lines)
+
+
+def format_wakequiet_status_html(
+    *,
+    quiet_db: bool,
+    yaml_status_mirror: bool,
+    yaml_tools_mirror: bool,
+) -> str:
+    """After /wakequiet: whether transcript-only mode is forcing wake lines off Telegram."""
+    ys = "true" if yaml_status_mirror else "false"
+    yt = "true" if yaml_tools_mirror else "false"
+    if quiet_db:
+        return (
+            "<b>Wake quiet mode: on</b> — autonomous wake status lines and per-tool activity lines "
+            "are <i>not</i> sent to Telegram; they still append to the autonomy transcript.\n"
+            "<code>/wakequiet off</code> to follow your entity YAML again."
+        )
     return (
-        f"<b>bumblebee</b> <code>v{html.escape(app_version)}</code>\n"
-        "<i>Harness version on this worker — bump in-repo when you ship.</i>"
+        "<b>Wake quiet mode: off</b> — mirroring follows entity YAML "
+        f"(<code>wake_user_visible_status</code>={ys}, <code>wake_chat_tool_activity</code>={yt}).\n"
+        "<code>/wakequiet on</code> to keep those lines out of chat (transcript only)."
     )
 
 

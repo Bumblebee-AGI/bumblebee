@@ -2,6 +2,7 @@
 # Never bake a developer's laptop-only canary.yaml; Dockerfile copies canary.example.yaml instead.
 configs/entities/canary.yaml
 bumbleweb/
+# Bumble AR: keep out of slim Docker build context (spatial UI is developed/built locally or in CI).
 bumbleAR/
 bee-model/
 onboarding/

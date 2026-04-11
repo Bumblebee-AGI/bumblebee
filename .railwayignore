@@ -2,5 +2,6 @@
 # Reproducible deploys: image uses committed canary.example.yaml, not a personal canary.yaml.
 configs/entities/canary.yaml
 bumbleweb/
+# Bumble AR is in git but excluded from `railway up` archives — Python worker/API images do not need the Node monorepo.
 bumbleAR/
 bee-model/

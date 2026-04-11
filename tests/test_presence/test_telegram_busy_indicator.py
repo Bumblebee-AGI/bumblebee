@@ -31,7 +31,7 @@ def test_busy_indicator_is_html_code_monospace():
     assert t.endswith("</code>")
     inner = html_lib.unescape(t[len("<code>") : -len("</code>")])
     assert _BUSY_BRAILLE[0] in inner
-    assert "thinking" in inner
+    assert "Thinking" in inner
 
 
 def test_busy_indicator_only_spinner_changes_when_word_fixed():
@@ -39,7 +39,7 @@ def test_busy_indicator_only_spinner_changes_when_word_fixed():
     assert len(texts) == len(_BUSY_BRAILLE)
     for t in texts:
         assert "<code>" in t and "</code>" in t
-        assert "reading" in html_lib.unescape(
+        assert "Reading" in html_lib.unescape(
             t[len("<code>") : -len("</code>")]
         )
         assert "\n" not in t

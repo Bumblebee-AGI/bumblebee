@@ -23,6 +23,7 @@ Full **autonomous** session detail: wake status lines, per-tool activity, and op
 Reactive chat (normal user messages) is unchanged — this file is for wake / ``platform=autonomous`` work only.
 
 Configure in ``autonomy:`` (``transcript_enabled``, ``wake_chat_tool_activity``, ``wake_user_visible_status``).
+Telegram: ``/wakequiet on`` persists transcript-only for wake status/tool lines (overrides YAML until ``/wakequiet off``).
 
 ---
 
