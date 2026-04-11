@@ -28,6 +28,7 @@ from bumblebee.config import AutonomySettings, EntityConfig
 from bumblebee.identity.desire import infer_desires
 from bumblebee.identity.drives import Drive
 from bumblebee.models import Input
+from bumblebee.presence.autonomy_transcript import append_wake_lines_if_enabled
 
 log = structlog.get_logger("bumblebee.presence.wake_cycle")
 
@@ -207,17 +208,25 @@ def _format_wake_worker_banner(
         lines.append("GEN: (no fragments in buffer)")
     lines.append(f"wake_voice_stirring: {_clip(stirring, 400)}")
     lines.append(
-        f"session: max_rounds={max_rounds} wall_seconds={wall_s} wide_mode={wide_mode}",
+        f"session: max_rounds_ceiling={max_rounds} wall_seconds={wall_s} wide_mode={wide_mode}",
     )
     lines.append("====================================")
     return "\n".join(lines)
 
 
 async def _emit_user_wake_lines(
+    entity: Any,
     reply_platform: Any | None,
     lines: list[str],
+    *,
+    to_chat: bool = True,
+    heading: str = "wake status",
 ) -> None:
-    if not lines or reply_platform is None:
+    """Append wake lines to autonomy_transcript.md; optionally mirror to Telegram status."""
+    if not lines:
+        return
+    await append_wake_lines_if_enabled(entity, lines, heading=heading)
+    if not to_chat or reply_platform is None:
         return
     send = getattr(reply_platform, "send_tool_activity", None)
     if not callable(send):
@@ -535,8 +544,13 @@ class WakeCycleEngine:
                 wide_mode=wide_mode,
             )
 
-            if bool(self._auto.wake_user_visible_status):
-                await _emit_user_wake_lines(reply_platform, user_lines)
+            await _emit_user_wake_lines(
+                entity,
+                reply_platform,
+                user_lines,
+                to_chat=bool(self._auto.wake_user_visible_status),
+                heading="wake start",
+            )
 
             async with _wake_typing_pulse(reply_platform, channel):
                 for round_idx in range(max_rounds):
@@ -577,13 +591,15 @@ class WakeCycleEngine:
                             session_memory=self._render_session_memory_block(session_memory),
                             wake_want=wake_want,
                         )
-                        if bool(self._auto.wake_user_visible_status):
-                            await _emit_user_wake_lines(
-                                reply_platform,
-                                [
-                                    f"🌅 wake round {round_idx + 1}/{max_rounds} — still going",
-                                ],
-                            )
+                        await _emit_user_wake_lines(
+                            entity,
+                            reply_platform,
+                            [
+                                f"🌅 round {round_idx + 1}/{max_rounds} (optional — end_wake_session when finished)",
+                            ],
+                            to_chat=bool(self._auto.wake_user_visible_status),
+                            heading="wake round",
+                        )
 
                     meta: dict[str, Any] = {
                         "sustained_session": {
@@ -683,17 +699,19 @@ class WakeCycleEngine:
             episode["carryover_threads"] = carryover
             self._recent_threads = [{"text": x, "at": episode["ended_at"]} for x in carryover]
             self._persist_wake_episode(entity, episode)
-            if bool(self._auto.wake_user_visible_status):
-                await _emit_user_wake_lines(
-                    reply_platform,
-                    self._build_user_end_card(
-                        reason=reason,
-                        wake_intent=wake_intent,
-                        rounds_completed=completed_rounds,
-                        tools_all=accumulated_tools,
-                        carryover=carryover,
-                    ),
-                )
+            await _emit_user_wake_lines(
+                entity,
+                reply_platform,
+                self._build_user_end_card(
+                    reason=reason,
+                    wake_intent=wake_intent,
+                    rounds_completed=completed_rounds,
+                    tools_all=accumulated_tools,
+                    carryover=carryover,
+                ),
+                to_chat=bool(self._auto.wake_user_visible_status),
+                heading="wake end",
+            )
             log.info(
                 "autonomous_wake_session_end",
                 module="presence",
@@ -864,10 +882,11 @@ class WakeCycleEngine:
         if sustained_max_rounds > 1:
             parts.extend(
                 [
-                    f"[Sustained session — up to {sustained_max_rounds} full rounds this wake]",
-                    "Each round is a complete think→act cycle until you end_turn(). If time and rounds remain, "
-                    "you may get another continuation prompt — same wake, same bodily reason: follow curiosity, "
-                    "desire, or drift. Use end_wake_session() when you want no further rounds this wake.",
+                    f"[Sustained session — at most {sustained_max_rounds} rounds; not a quota]",
+                    "That number is only a ceiling so you are not cut off mid-thread. One round is always enough.",
+                    "Do not pad rounds or grind to use the budget. When this autonomous spell feels complete, "
+                    "call end_turn() and end_wake_session() in the same round — no further continuations will run.",
+                    "Only continue to another round if you genuinely want more time in the same wake.",
                     "",
                 ]
             )
@@ -944,7 +963,8 @@ class WakeCycleEngine:
 
         if self._auto.allow_tool_calls_on_wake:
             end_extra = (
-                " Use end_wake_session() only if this sustained wake should stop entirely (no more rounds)."
+                " After end_turn(), if you are done with this entire autonomous session, call end_wake_session() "
+                "so no extra rounds run — optional continuations are not mandatory."
                 if sustained_max_rounds > 1
                 else ""
             )
@@ -1026,8 +1046,10 @@ class WakeCycleEngine:
             tail = tail[:700].rstrip() + "…"
 
         parts = [
-            f"[SESSION CONTINUATION — round {round_idx}/{max_rounds} — {now_str}]",
+            f"[SESSION CONTINUATION — optional round {round_idx} of at most {max_rounds} — {now_str}]",
             f"Same autonomous wake; original reason: {reason}",
+            "You do not have to continue. If you are finished with this spell, call end_wake_session() "
+            "(typically in this round after end_turn()).",
             "",
             "[What you've touched so far this session]",
             tools_line,
@@ -1068,7 +1090,7 @@ class WakeCycleEngine:
                 "",
                 "You are still in the world — go where you want. Use tools to see, fetch, write, reach out. "
                 "Use think() freely. Use end_turn() when this round feels complete. "
-                "Use end_wake_session() if you want no further rounds this wake."
+                "Use end_wake_session() to stop the whole wake early; further rounds are optional, not owed."
                 + wide_note,
                 "",
                 "[Top desire pressures]",

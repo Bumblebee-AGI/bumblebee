@@ -28,8 +28,9 @@ async def think(thought: str) -> str:
 
 @tool(
     "end_wake_session",
-    "End the sustained autonomous wake early — you are done exploring for this whole wake, "
-    "not just the current round. Only meaningful during multi-round autonomous sessions. "
+    "End the sustained autonomous wake — you are done for this whole spell, not just the current round. "
+    "Multi-round wakes use a max-round ceiling, not a quota: one round is fine; call this when finished "
+    "so no optional continuations run. Only meaningful during multi-round autonomous sessions. "
     "After this round completes, no further wake continuations will run.",
 )
 async def end_wake_session(reason: str = "") -> str:

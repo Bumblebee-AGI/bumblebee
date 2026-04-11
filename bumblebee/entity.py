@@ -101,6 +101,7 @@ from bumblebee.presence.tools import procedural as procedural_tools
 from bumblebee.presence.tools import projects as project_tools
 from bumblebee.presence.tools.knowledge import register_knowledge_tool
 from bumblebee.presence.tools.mcp import MCPHub
+from bumblebee.presence.autonomy_transcript import append_autonomy_transcript
 from bumblebee.presence.tools.registry import ToolRegistry, format_tool_activity
 from bumblebee.presence.tools.runtime import (
     ToolRuntimeContext,
@@ -2237,8 +2238,29 @@ class Entity:
         async def _tool_with_activity(spec: ToolCallSpec) -> str:
             if tc.tool_names_log is not None:
                 tc.tool_names_log.append(spec.name)
-            if self.config.presence.tool_activity and self.current_platform is not None:
-                desc = format_tool_activity(spec.name, dict(spec.arguments))
+            desc = format_tool_activity(spec.name, dict(spec.arguments))
+            if desc and tc.inp.platform == "autonomous":
+                auto = self.config.harness.autonomy
+                if getattr(auto, "transcript_enabled", True):
+                    try:
+                        path = self.config.autonomy_transcript_path()
+                        await append_autonomy_transcript(
+                            path,
+                            [desc],
+                            heading=f"tool {spec.name}",
+                        )
+                    except Exception as e:
+                        log.debug("autonomy_transcript_append_failed", module="entity", error=str(e))
+                if (
+                    getattr(auto, "wake_chat_tool_activity", False)
+                    and self.config.presence.tool_activity
+                    and self.current_platform is not None
+                ):
+                    try:
+                        await self.current_platform.send_tool_activity(desc)
+                    except Exception as e:
+                        log.debug("send_tool_activity_failed", module="entity", error=str(e))
+            elif self.config.presence.tool_activity and self.current_platform is not None:
                 if desc:
                     try:
                         await self.current_platform.send_tool_activity(desc)

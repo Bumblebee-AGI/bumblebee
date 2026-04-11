@@ -227,15 +227,20 @@ autonomy:
   max_desires_considered: 3        # how many top desire pressures to surface in wake context
   allow_tool_calls_on_wake: true   # if true, wake cycles may use tools to explore/act
   # Sustained wake: chain multiple full perceive() rounds per trigger (keep working).
-  wake_session_max_rounds: 1        # 1 = legacy single round; try 4–8 for longer unattended sessions
+  wake_session_max_rounds: 1        # ceiling only — agent may end_wake_session() anytime; 1 = single round
   wake_session_wall_seconds: 1200  # hard cap on wall time per wake trigger (~20 min)
   wake_session_say_budget_per_round: 6   # say() cap per round when max_rounds > 1
   wake_session_pause_seconds: 2.0 # pause between rounds (lets I/O settle)
   wake_session_extra_tool_steps: 10 # extra agent-loop steps per round when max_rounds > 1
   wake_wide_mode: false              # broader tool budget + freedom prompt during wakes
   wake_wide_bonus_steps: 16          # added to agent loop when wake_wide_mode
-  wake_user_visible_status: true    # italic status lines + typing (Telegram, CLI whisper, …)
+  wake_user_visible_status: true    # mirror wake status lines to Telegram; false = file only (see transcript)
   wake_verbose_worker_log: true     # multi-line banner in worker logs (soma, GEN, poker)
+  # Full autonomous detail on disk (beside journal / workspace) — keeps Telegram quiet when chat flags are false
+  transcript_enabled: true
+  transcript_filename: autonomy_transcript.md
+  transcript_path: ""                 # optional override path (absolute or relative to workspace / entity dir)
+  wake_chat_tool_activity: false      # mirror per-tool lines to Telegram during autonomous wake
   # Optional internal disposition prompts — large bundled deck in configs/poker_prompts/default.yaml
   poker_prompts:
     enabled: false

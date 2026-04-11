@@ -297,6 +297,14 @@ class AutonomySettings:
     wake_user_visible_status: bool = True
     # Multi-line human banner in worker logs (reason, soma, GEN, poker, delivery).
     wake_verbose_worker_log: bool = True
+    # On-disk markdown transcript for autonomous sessions (see EntityConfig.autonomy_transcript_path).
+    transcript_enabled: bool = True
+    # Relative to workspace / journal dir when transcript_path is empty; see autonomy_transcript_path().
+    transcript_filename: str = "autonomy_transcript.md"
+    # Optional override: absolute path, or relative to workspace / ~/.bumblebee/entities/<name>/.
+    transcript_path: str = ""
+    # When False, tool activity during autonomous perceive goes to the transcript file only (not Telegram).
+    wake_chat_tool_activity: bool = False
     summon: SummonSettings = field(default_factory=SummonSettings)
     poker_prompts: PokerPromptSettings = field(default_factory=PokerPromptSettings)
 
@@ -530,6 +538,26 @@ class EntityConfig:
         if ws:
             return str(Path(ws) / "journal.md")
         return _expand("~/.bumblebee/entities/{entity_name}/journal.md", self.name)
+
+    def autonomy_transcript_path(self) -> str:
+        """Markdown file for full autonomous wake/tool detail (keeps Telegram quiet when configured)."""
+        auto = self.harness.autonomy
+        custom = (getattr(auto, "transcript_path", None) or "").strip()
+        fn = (getattr(auto, "transcript_filename", None) or "autonomy_transcript.md").strip()
+        if not fn:
+            fn = "autonomy_transcript.md"
+        if custom:
+            p = Path(custom)
+            if p.is_absolute():
+                return str(p.expanduser())
+            ws = self.execution_workspace_dir().strip()
+            if ws:
+                return str(Path(ws) / custom)
+            return _expand(f"~/.bumblebee/entities/{{entity_name}}/{custom}", self.name)
+        ws = self.execution_workspace_dir().strip()
+        if ws:
+            return str(Path(ws) / fn)
+        return str(Path(self.journal_path()).expanduser().parent / fn)
 
     def skills_dir(self) -> str:
         return _expand("~/.bumblebee/entities/{entity_name}/skills", self.name)

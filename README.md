@@ -64,102 +64,61 @@ If startup appears idle on local installs, verify both models are present with `
 
 ## Architecture
 
-Five interconnected pillars run as a single process per entity:
+Bumblebee runs **five pillars** in one process per entity: **cognition** (perceive loop), **soma** (tonic body), **identity** (persona and evolution), **memory** (layers below), and **presence** (daemon, platforms, wake). Deeper write-ups and diagrams are on the **[documentation site](https://docs.bumbleagi.com/)** — for example **[GEN / noise pipeline](https://docs.bumbleagi.com/architecture/gen-noise-pipeline)** if you are tracing subconscious noise.
 
 ### Cognition
 
-The perceive pipeline runs on every inbound message:
+Each inbound message walks the **perceive** pipeline:
 
-1. **Turn setup** — route memory, fire tonic body events, bootstrap tools, check model availability.
-2. **Input processing** — handle attachments, expand `@` paths, transcribe audio via senses.
-3. **Memory retrieval** — episodic recall (mood-biased, imprint-weighted), relationship context, belief snapshot, narrative summary.
-4. **Prompt construction** — stable identity and tool schemas in the system prompt; volatile turn context (faculty, procedural memory, project ledger, self-model) injected per-message.
-5. **Context budget** — proactive compaction before inference: structured summaries, optional knowledge extraction, old tool-output pruning.
-6. **Agent loop** — bounded multi-step tool execution with configurable continuation rounds, post-tool nudges, and escalation from reflex to deliberate when complexity warrants it.
-7. **Finalize and deliver** — embodied chunking with typing delays, platform-native formatting, memory commit (Telegram also tears down any harness **busy indicator** before the visible reply ships).
+1. **Turn setup** — memory routing, tonic body hooks, tools, model checks.
+2. **Input processing** — attachments, `@` paths, audio via senses.
+3. **Memory retrieval** — episodic (mood- and imprint-biased), relationships, beliefs, narrative.
+4. **Prompt construction** — stable identity and tools in system context; volatile bits (faculty, procedural memory, projects, self-model) per turn.
+5. **Context budget** — compaction, optional knowledge extraction, pruning old tool output.
+6. **Agent loop** — bounded tool rounds, escalation from lighter to heavier reasoning when needed.
+7. **Finalize and deliver** — chunking, typing delays, platform formatting, memory commit (on Telegram, the ephemeral **busy** status is removed before the real reply).
 
-Reflex and deliberate share the same `DeliberateCognition` execution path — reflex is not a stripped-down caller, it uses the same agent loop with tighter token budgets and thinking disabled. Routing (`CognitionRouter`) classifies turns as CHAT, GROUNDED, EXACT, or DEEP via heuristic scoring and optional reflex-model classification, with an `always_deliberate` override.
+**Reflex** and **deliberate** use the same agent path; reflex uses tighter budgets and skips extended thinking. A router scores each turn (e.g. chat vs grounded vs deep); YAML can force always-deliberate. Optional **thinking mode** feeds parsed “inner voice” back into memory (beliefs, relationships).
 
-When `thinking_mode` is enabled, the deliberate profile requests extended thinking from the model. Thinking output is parsed by `InnerVoiceProcessor` for cues, belief updates, and relationship hints that feed back into memory.
+### Soma (tonic body)
 
-### Soma (tonic body state)
+Soma runs **whether or not anyone is talking**: drive **bars** (decay, coupling, impulses, conflicts), periodic **affects** from bar state, and **GEN** — short subconscious fragments from a separate high-temperature pass (not the main model’s chain-of-thought). **Wake voice** stirs text for autonomous cycles when drives and silence allow. **Ebb** scales how much body + noise appears in the prompt (quiet vs full) so calm chat does not dump the whole inner monologue every turn.
 
-A continuous internal-experience engine independent of conversation, implemented as `TonicBody`:
-
-- **Bar engine** — quantitative drive bars with natural decay, momentum, inter-bar coupling (`when`/`effect` DSL), impulses, and conflicts. Bars tick on a configurable cadence whether or not the entity is in conversation.
-- **Affect engine** — periodically derives felt affects from a vocabulary of ~50 textures via an LLM pass against current bar state and recent context.
-- **Generative Entropic Noise (GEN)** — a second model (or the reflex model at high temperature) produces **short, uneven subconscious scraps** (not a single polished monologue): each tick asks for **2–7** new fragments, rotates a random **shape hint** from a large catalog (mundane pings, sensory beats, schedule thoughts, anti-metaphor nudges, etc.), and uses a higher default **`max_tokens`** so batches can complete. Configurable cycle time, temperature, fragment cap, and dedicated `soma.noise.model`. Those fragments are also the raw material for **optional poker grounding** on autonomous wake: when `autonomy.poker_prompts.ground_with_gen` is enabled, a short reflex pass weaves a deck seed together with GEN, soma events, and recent memory context so the wake disposition is anchored in what the entity is actually living (see **Presence → Autonomous wake**).
-- **Wake voice** — subconscious stirring that generates prompts for autonomous wake cycles; the entity can initiate conversation on its own when internal state warrants it.
-- **Ebb** (`soma.ebb`) — salience-based scaling of how much **body + GEN** is injected into each **perceive** prompt. Bars, affects, conflicts, impulses, and GEN keep updating in the background; a 0–1 **salience** score (weighted blend of deviation from resting bar values, active conflict/impulse intensity, affect load, and GEN buffer fill) maps to **quiet**, **normal**, or **high** presentation. Quiet tiers use compact drive lines and fewer noise fragments; high matches the full markdown layout. **Reflex** turns multiply salience by `reflex_salience_scale` so routine replies stay lighter. **Autonomous** and **automation** platforms apply `autonomous_minimum` (default **normal**) so internal wake cycles are not stuck in whisper mode. The on-disk `body.md` flush and operator-facing renders still use the full layout. With `skip_post_turn_noise_when_quiet: true`, GEN is not regenerated after a turn when the tier is quiet, so the subconscious does not constantly shout during calm chat. Set `ebb.enabled: false` to always inject the full body block (legacy behavior). Defaults live in `configs/default.yaml`.
-
-#### GEN / noise: what feeds the subconscious stream
-
-GEN is implemented as **`NoiseEngine`** inside **`TonicBody`** (`bumblebee/identity/soma.py`). It is **not** the main model’s thinking trace; it does **not** see full tool transcripts or the whole prompt stack. Each `generate` call is one small completion built from:
-
-| Input | Source |
-|-------|--------|
-| Bars + affects | Current bar percents (one line) + rendered **affects** (from the separate affect pass). |
-| Recent events | Last **5** soma events: e.g. `message_received` / `message_sent` / **`action` (tool name + ok/error)** / `idle` / optional `world_poke`. Not full tool output. |
-| Journal tail | Last **~800 chars** of `journal.md`. |
-| Conversation tail | Last **8** non-system messages from **`_history`**, each truncated (~500 chars). |
-| Anti-repeat + shape | Prior noise fragments + one random **shape hint** (large rotating set in code) so register and length vary between ticks. |
-
-**When it runs:** (1) the **presence daemon** calls `maybe_tick_noise` on the heartbeat when `noise.cycle_seconds` has elapsed; (2) **`_tick_noise_post_turn`** after a committed reply resets the noise clock so GEN can refresh while chat is active. If ebb is **quiet** and `skip_post_turn_noise_when_quiet` is on, that post-turn refresh may be skipped.
-
-**Output shape:** each completion outputs **2–7** lines parsed into fragments (short ones preserved). Prompting explicitly discourages stacked “tech poetry” and asks for **spottier, more mind-like** texture; defaults live in `configs/default.yaml` under `soma.noise`.
-
-**Intuition:** noise riffs on *how the body feels + a thin event strip + diary + chat tail*—so recent **themes** (lots of web/tools) leak via **event names** and **history**, while raw API docs usually appear only if they’re already in chat or journal.
-
-A longer trace (diagram, event types, code pointers) lives in the **docs** repo: **Architecture → GEN / noise pipeline** (`architecture/gen-noise-pipeline.mdx` on [Bumblebee-AGI/docs](https://github.com/Bumblebee-AGI/docs)).
-
-```mermaid
-flowchart LR
-  HB[Daemon heartbeat]
-  PT[Post-turn noise tick]
-  MTN[maybe_tick_noise]
-  G[NoiseEngine.generate]
-  HB --> MTN
-  PT --> MTN
-  MTN --> G
-```
-
-The entity reads a rendered body-state summary each turn (tier chosen as above when ebb is enabled). It sees its own drives, affects, and noise — but cannot set bar values directly. That separation is deliberate: the body provides signal the mind interprets, not commands it executes.
+The entity **reads** body state each turn but **cannot** set bars directly: body is signal, not remote control. Tuning lives in `configs/default.yaml` under `soma` (including `noise` and `ebb`).
 
 ### Identity
 
-- **Personality engine** — builds the system prompt from YAML-defined core traits, behavioral patterns, voice configuration, backstory, and anti-assistant voice blocks. Prompt segments are cached and invalidated on trait evolution.
-- **Drive system** — curiosity, connection, expression, autonomy, and comfort drives with natural decay. Drives gate initiative and influence routing.
-- **Emotion engine** — FSM-style emotional state with decay toward baseline and imprint-based recall weighting.
-- **Evolution engine** — shallow stats cycles plus deep cycles that use the deliberate model to produce micro trait, behavior, and curiosity updates persisted as YAML diffs. Traits drift naturally through experience over time.
-- **Voice controller** — expression metadata, stage-direction stripping, substitution rules. Works with `Embodiment` for typing delays and natural chunk pacing.
+- **Personality** — YAML traits, patterns, voice, backstory; cached segments invalidate when traits evolve.
+- **Drives** — curiosity, connection, expression, autonomy, comfort; decay and gate initiative.
+- **Emotion** — state machine with decay toward baseline; imprints bias recall.
+- **Evolution** — shallow cycles plus deeper deliberate passes that write small YAML diffs over time.
+- **Voice** — stage directions, substitutions; pairs with embodiment for pacing.
 
 ### Memory
 
-| Layer | What it stores | How it works |
-|-------|---------------|--------------|
-| **Episodic** | Narrative summaries of conversations | Significance scoring, mood-biased embedding search, imprint-weighted recall with configurable half-life |
-| **Relational** | Per-person relationship state | Warmth, trust, familiarity scores; upserted after each conversation |
-| **Beliefs** | Categorized world beliefs | Confidence-scored, embedding-indexed, decayable |
-| **Imprints** | Emotional imprints from significant moments | Affinity multipliers that bias future episodic recall toward emotionally resonant memories |
-| **Narrative** | First-person self-story | Synthesized periodically from episodes, relationships, and beliefs into a coherent identity narrative |
-| **Knowledge** | Structured `knowledge.md` file | Section-based, with `[locked]` host-only sections and unlocked sections the entity can update |
-| **Journal** | `journal.md` maintained by the entity | Written to autonomously during wake cycles and noise processing |
-| **Procedural** | Skill and procedure recall | Task-oriented memory for learned workflows |
-| **Projects** | Project ledger | Tracks ongoing work items across sessions |
-| **Self-model** | Introspective tool-usage stats | JSON record of tool successes, failures, and patterns |
+| Layer | Role |
+|-------|------|
+| **Episodic** | Conversation summaries — embedding search, mood/imprint bias, half-life |
+| **Relational** | Per-person warmth, trust, familiarity |
+| **Beliefs** | Scored, searchable world model |
+| **Imprints** | Strong moments that steer future episodic recall |
+| **Narrative** | Periodic first-person self-story |
+| **Knowledge** | `knowledge.md` — host-locked vs entity-editable sections |
+| **Journal** | `journal.md` — autonomous and noise-adjacent writes |
+| **Procedural** | Learned workflows |
+| **Projects** | Cross-session task ledger |
+| **Self-model** | Tool usage stats |
 
-Consolidation runs on a daemon interval. Episode significance decays over time. The narrative synthesizer runs every N consolidation cycles, producing a first-person story the entity uses as part of its identity context.
-
-Storage backends: **SQLite** by default (local file per entity), **Postgres** when `DATABASE_URL` is set (typical for hybrid/Railway deployment).
+Consolidation and narrative synthesis run on the daemon schedule. **SQLite** by default; **Postgres** when `DATABASE_URL` is set (e.g. Railway).
 
 ### Presence
 
-- **Daemon** — APScheduler-based heartbeat that ticks soma bars, refreshes affects and noise, runs memory consolidation, checks wake-cycle triggers, and refreshes MCP server connections.
-- **Autonomous wake** — when `autonomy.enabled` is true and silence/rate limits allow, the daemon runs a full `perceive` cycle without an external user message. Triggers include soma impulses, drives over threshold, active conflicts, synthesized desire pressure, optional noise salience, and a randomized timer between `base_wake_interval_min` and `base_wake_interval_max`. Context includes the wake reason, platform channels, top desire pressures, and **wake voice** (`soma.wake_voice`): an LLM-composed first-person stirring from body state + memory tails.
-- **Poker prompts** (optional, `autonomy.poker_prompts`) — a YAML **deck of loose seeds** in `configs/poker_prompts/` (bundled `default.yaml`, or your own via `prompts_path`). Seeds bias the cycle toward real-world agency: explore, research, build, message, learn, try something new — always as **taste**, not scripted homework. One line is selected per wake (**time-of-day weighted** across `low` / `medium` / `high` energy). With **`ground_with_gen: true`** (default when poker is enabled in config), `bumblebee/cognition/poker_grounding.py` runs a short reflex call that **braids that seed with GEN fragments, recent soma events, journal tail, last conversation, and relationship blurbs**, so the internal disposition emerges from perception instead of the static file alone. **`mode: blend`** keeps wake voice and the disposition block; **`replace_wake_voice`** skips the wake-voice LLM and uses only the (optionally grounded) disposition. Set `poker_prompts.enabled: true` in harness YAML to turn this on.
-- **Initiative engine** — proactive messaging when drives cross thresholds (non-autonomy path).
-- **Embodiment** — message chunking, typing simulation, and platform-native delivery pacing. **Telegram** additionally shows an ephemeral **busy line** while `perceive` runs: a pinned, braille-animated status message (reply-threaded when possible) that **unpins and deletes** before the real reply is sent; it is **harness-only** (not conversation history, not the `observe` tool ring).
-- **Automations** — cron-style routines with emergence (the entity can create its own scheduled routines). Automations fire as synthetic `Input` with `platform="automation"`.
+- **Daemon** — heartbeat: soma ticks, affects, noise, consolidation, wake checks, MCP refresh.
+- **Autonomous wake** — full perceive without a user message when autonomy and rate limits allow; triggers include impulses, drives, conflicts, desire, optional noise salience, and jittered timers. Wake context can include LLM-composed **wake voice** from body + memory tails.
+- **Poker prompts** (optional) — YAML seed deck under `configs/poker_prompts/` to bias wakes toward agency; can **ground** seeds with GEN and recent context so disposition matches lived state (see `autonomy.poker_prompts` in entity YAML and defaults).
+- **Initiative** — proactive messages when drives cross thresholds (outside full autonomy).
+- **Embodiment** — chunking and typing; Telegram shows a temporary **busy** line during perceive (harness-only, not history).
+- **Automations** — cron-style jobs; may surface as synthetic automation-platform inputs.
 
 ---
 
@@ -480,8 +439,6 @@ configs/
 ├── poker_prompts/     # optional autonomous wake seed decks (YAML)
 └── entities/          # per-entity YAML overrides
 ```
-
-The **Mintlify** site source lives in **[Bumblebee-AGI/docs](https://github.com/Bumblebee-AGI/docs)** (often cloned beside this repo as `docs-main/`). Deep-dive pages include **GEN / noise pipeline** and the **Telegram** guide (busy line, `/busy`, `/body`). The **Architecture → Soma** section above matches that site at a high level.
 
 ---
 
