@@ -99,6 +99,12 @@ from bumblebee.presence.tools import discovery as discovery_tools
 from bumblebee.presence.tools import journal_tools
 from bumblebee.presence.tools import procedural as procedural_tools
 from bumblebee.presence.tools import projects as project_tools
+from bumblebee.presence.tools import clarify as clarify_tools
+from bumblebee.presence.tools import code_task as code_task_tools
+from bumblebee.presence.tools import delegation as delegation_tools
+from bumblebee.presence.tools import memory_search as memory_search_tools
+from bumblebee.presence.tools import patch_file as patch_file_tools
+from bumblebee.presence.tools import session_todos as session_todos_tools
 from bumblebee.presence.tools.knowledge import register_knowledge_tool
 from bumblebee.presence.tools.mcp import MCPHub
 from bumblebee.presence.autonomy_transcript import append_autonomy_transcript
@@ -318,6 +324,8 @@ class Entity:
         self.current_platform: Platform | None = None
         self._platforms: dict[str, Platform] = {}
         self._person_routes: dict[str, dict[str, str | float]] = {}
+        self._pending_clarification: dict[str, Any] | None = None
+        self._delegate_depth = 0
 
     def register_proactive_sink(self, fn: Callable[[str], Awaitable[None]]) -> None:
         self._proactive_sends.append(fn)
@@ -655,6 +663,21 @@ class Entity:
         self.tools.register_decorated(agency_tools.wait)
         self.tools.register_decorated(agency_tools.observe)
         self.tools.register_decorated(agency_tools.compact_context)
+        if self._tool_enabled("memory_search", True):
+            self.tools.register_decorated(memory_search_tools.search_past_conversations)
+        if self._tool_enabled("patch", True):
+            self.tools.register_decorated(patch_file_tools.apply_patch)
+        if self._tool_enabled("session_todos", True):
+            self.tools.register_decorated(session_todos_tools.todo_add)
+            self.tools.register_decorated(session_todos_tools.todo_list)
+            self.tools.register_decorated(session_todos_tools.todo_complete)
+            self.tools.register_decorated(session_todos_tools.todo_remove)
+        if self._tool_enabled("clarify", True):
+            self.tools.register_decorated(clarify_tools.ask_user)
+        if self._tool_enabled("delegation", True):
+            self.tools.register_decorated(delegation_tools.delegate_task)
+        if self._tool_enabled("code_task", True):
+            self.tools.register_decorated(code_task_tools.code_task_session)
         self.tools.register_decorated(web_tools.search_web)
         self.tools.register_decorated(web_tools.fetch_url)
         self.tools.register_decorated(read_file)
@@ -1128,6 +1151,8 @@ class Entity:
             return label + body[: max(1, room - 1)] + "…"
 
         t = (inp.text or "").strip()
+        if isinstance(inp.metadata, dict) and inp.metadata.get("clarification_id"):
+            t = f"[Clarification reply]\n{t}" if t else "[Clarification reply]"
         if inp.images:
             extra = "[User attached an image]"
             core = f"{t}\n{extra}".strip() if t else extra
@@ -1728,11 +1753,12 @@ class Entity:
             return early
 
         await self._process_input(tc)
-        await self._somatic_appraise_input(tc)
 
         async with self.store.session() as db:
             tc.db = db
             await self._retrieve_memory(tc)
+            # After relationship load so somatic appraisal can use warmth/trust weighting.
+            await self._somatic_appraise_input(tc)
             await self._build_prompt(tc)
             await self._ensure_context_budget(tc)
             await self._run_agent_loop(tc)
@@ -1762,6 +1788,24 @@ class Entity:
             text_len=len(tc.inp.text or ""),
         )
         self.current_platform = tc.reply_platform
+        pc = getattr(self, "_pending_clarification", None)
+        if isinstance(pc, dict) and pc.get("id"):
+            ch = str(tc.inp.channel or "")
+            plat = str(tc.inp.platform or "")
+            if (
+                pc.get("channel") == ch
+                and pc.get("platform") == plat
+                and plat not in ("autonomous", "delegation", "automation", "code_task")
+            ):
+                now = time.time()
+                age = now - float(pc.get("created_at") or 0.0)
+                to_min = float(pc.get("timeout_minutes", 60) or 60.0)
+                if age <= to_min * 60.0:
+                    md = dict(tc.inp.metadata or {})
+                    md["clarification_id"] = str(pc["id"])
+                    md["clarification_answer"] = (tc.inp.text or "").strip()
+                    tc.inp.metadata = md
+                self._pending_clarification = None
         tc.prev_turn_at = self._last_turn_completed_at
         tc.prev_interlocutor = str(self._last_conversation.get("person_name") or "").strip()
         if not tc.preserve_conversation_route:
@@ -1850,11 +1894,20 @@ class Entity:
                 self.config.cognition.reflex_model
                 or self.config.cognition.deliberate_model
             )
+            rel_m: dict[str, float] | None = None
+            if tc.rel_existing is not None:
+                rel_m = {
+                    "warmth": float(tc.rel_existing.warmth),
+                    "trust": float(tc.rel_existing.trust),
+                    "familiarity": float(tc.rel_existing.familiarity),
+                }
             await self.tonic.appraise_and_apply(
                 self.client,
                 reflex_model,
                 text=text,
                 person_name=tc.inp.person_name or "someone",
+                relationship_blurb=tc.rel_blurb or "",
+                relationship_metrics=rel_m,
                 num_ctx=self.config.effective_ollama_num_ctx(),
             )
         except Exception as e:
@@ -1874,12 +1927,21 @@ class Entity:
                 self.config.cognition.reflex_model
                 or self.config.cognition.deliberate_model
             )
+            rel_m: dict[str, float] | None = None
+            if tc.rel_existing is not None:
+                rel_m = {
+                    "warmth": float(tc.rel_existing.warmth),
+                    "trust": float(tc.rel_existing.trust),
+                    "familiarity": float(tc.rel_existing.familiarity),
+                }
             await self.tonic.appraise_interaction_and_apply(
                 self.client,
                 reflex_model,
                 input_text=input_text,
                 reply_text=reply_text,
                 person_name=tc.inp.person_name or "someone",
+                relationship_blurb=tc.rel_blurb or "",
+                relationship_metrics=rel_m,
                 num_ctx=self.config.effective_ollama_num_ctx(),
             )
         except Exception as e:
@@ -2146,6 +2208,20 @@ class Entity:
                 platform=tc.inp.platform,
             )
             soma_body = self.tonic.render_body(presentation=presentation)
+            self.tonic.maybe_log_salience_debug(
+                route=tc.route,
+                platform=tc.inp.platform,
+                presentation=presentation,
+            )
+            obs = soma_cfg.get("observability") or {}
+            if obs.get("metrics_log", False):
+                m = self.tonic.compute_salience_breakdown()
+                log.info(
+                    "soma_metrics",
+                    presentation=presentation,
+                    route=tc.route,
+                    **m,
+                )
             log.info(
                 "soma_body_injected",
                 body_len=len(soma_body),
@@ -2293,7 +2369,12 @@ class Entity:
                 if raw_seg and not intermediate_text_looks_like_tool_channel(raw_seg):
                     seg = self.voice_ctl.sanitize_reply(raw_seg)
                     msg_count = tc.tool_state.get("_messages_sent", 0)
-                    if seg and not reply_too_thin(seg) and msg_count < 6:
+                    if (
+                        seg
+                        and not reply_too_thin(seg)
+                        and msg_count < 6
+                        and tc.inp.platform not in ("delegation", "code_task")
+                    ):
                         await _deliver_embodied_deliberate_segment(
                             self, tc.inp, seg,
                             stream=tc.stream, cli_stream_final=False,
@@ -2365,7 +2446,9 @@ class Entity:
             ",".join(slice_.emotional_cues),
         )
         if tc.reply_text:
-            if tc.inp.platform == "cli" and tc.stream:
+            if tc.inp.platform in ("delegation", "code_task"):
+                pass
+            elif tc.inp.platform == "cli" and tc.stream:
                 await _deliver_embodied_deliberate_segment(
                     self, tc.inp, tc.reply_text,
                     stream=tc.stream, cli_stream_final=True,
@@ -2390,7 +2473,7 @@ class Entity:
             if isinstance(sent_msgs, list) and sent_msgs:
                 combined = "\n".join(str(m)[:2000] for m in sent_msgs[:4])
                 self._history.append(
-                    {"role": "assistant", "content": f"[you sent this unprompted] {combined[:4000]}"}
+                    {"role": "assistant", "content": f"[bb:proactive_outbound] {combined[:4000]}"}
                 )
 
         if tc.meaningful_override is not None:
@@ -2411,6 +2494,13 @@ class Entity:
                 _note = attachment_refs_episode_note(_refs)
                 _base_budget = max(0, 4000 - len(_note))
                 _raw = (tc.inp.text[:_base_budget] + _note)[:4000]
+                _tags = ["conversation", tc.inp.platform]
+                try:
+                    pct = self.tonic.bars.snapshot_pct()
+                    soma_bits = ",".join(f"{k}:{pct[k]}" for k in list(pct.keys())[:6])
+                    _tags.append(f"soma:{soma_bits}"[:220])
+                except Exception:
+                    pass
                 ep = await self.episodic.create_from_interaction(
                     tc.db,
                     self.client,
@@ -2421,7 +2511,7 @@ class Entity:
                     significance=sig,
                     raw_context=_raw,
                     self_reflection=(tc.thinking or "")[:1500],
-                    tags=["conversation", tc.inp.platform],
+                    tags=_tags,
                 )
                 _ep_emo = self._derive_emotional_state()
                 await self.imprints.add(
@@ -2474,6 +2564,13 @@ class Entity:
             await self.tonic.save_state_db(tc.db)
         except Exception as e:
             log.debug("soma_db_save_in_commit_failed", error=str(e))
+        try:
+            self.tonic.append_timeline_line(
+                f"turn platform={tc.inp.platform} sal={self.tonic.compute_salience():.3f} "
+                f"route={tc.route}"
+            )
+        except Exception:
+            pass
         await self._tick_noise_post_turn(tc)
         try:
             await self.maybe_distill(conn=tc.db)

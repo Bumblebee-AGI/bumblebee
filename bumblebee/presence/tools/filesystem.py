@@ -31,7 +31,7 @@ async def read_file(path: str, max_bytes: int = 48000, start_line: int = 0, end_
     client = get_execution_client()
     payload: dict[str, int | str] = {
         "path": path or ".",
-        "max_bytes": max(1024, min(max_bytes, 256_000)),
+        "max_bytes": max(1024, min(max_bytes, 1_048_576)),
     }
     if start_line > 0:
         payload["start_line"] = int(start_line)

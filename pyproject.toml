@@ -1,6 +1,6 @@
 [project]
 name = "bumblebee"
-version = "0.1.0"
+dynamic = ["version"]
 description = "The first entitative harness — Gemma 4-native persistent digital entities"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -72,6 +72,9 @@ bumblebee = "bumblebee.main:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "bumblebee/__version__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["bumblebee"]

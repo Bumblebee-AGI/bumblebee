@@ -60,7 +60,7 @@ class EvolutionEngine:
             for r in rels[:12]
         ]
 
-        stats_blob = {
+        stats_blob: dict[str, Any] = {
             "episode_count": len(episodes),
             "emotional_imprint_histogram": dict(emo_counts),
             "top_tags": tag_counts.most_common(18),
@@ -69,6 +69,25 @@ class EvolutionEngine:
             "current_behavior": dict(self.entity.personality.behavioral_patterns),
             "curiosity_topics": list(self.entity.drives.curiosity_topics),
         }
+        tonic = getattr(entity_facade, "tonic", None)
+        if tonic is not None:
+            try:
+                pct = tonic.bars.snapshot_pct()
+                stats_blob["soma_snapshot"] = {
+                    "bars_pct": pct,
+                    "salience": round(float(tonic.compute_salience()), 4),
+                    "active_conflicts": [
+                        str(c.get("label") or "")
+                        for c in getattr(tonic.bars, "_active_conflicts", []) or []
+                    ],
+                    "active_impulses": [
+                        str(i.get("label") or "")
+                        for i in getattr(tonic.bars, "_active_impulses", []) or []
+                        if not i.get("on_cooldown")
+                    ],
+                }
+            except Exception:
+                pass
         user = (
             "You are analyzing a long-running digital entity's experience. "
             "Return ONLY compact JSON (no markdown) with this shape:\n"

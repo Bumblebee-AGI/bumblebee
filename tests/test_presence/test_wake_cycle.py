@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from bumblebee.config import AutonomySettings
 from bumblebee.presence.wake_cycle import WakeCycleEngine, _meta_leak_detected
@@ -15,6 +17,62 @@ def _engine(*, allow_tools: bool) -> WakeCycleEngine:
 
 def _entity() -> SimpleNamespace:
     return SimpleNamespace(_platforms={"telegram": object(), "discord": object()})
+
+
+def test_schedule_next_timer_spacing_extra_when_wakes_clustered() -> None:
+    auto = AutonomySettings(
+        base_wake_interval_min=20,
+        base_wake_interval_max=45,
+        wake_spacing_extra_minutes_max=60.0,
+        wake_spacing_gap_hours_tau=3.0,
+    )
+    cfg = SimpleNamespace(harness=SimpleNamespace(autonomy=auto))
+    eng = WakeCycleEngine(cfg)  # type: ignore[arg-type]
+    gap_sec = 600.0
+    gh = gap_sec / 3600.0
+    tau = 3.0
+    expected_extra = 60.0 * 60.0 * math.exp(-gh / tau)
+    with patch("bumblebee.presence.wake_cycle.time.time", return_value=1_000_000.0), patch(
+        "bumblebee.presence.wake_cycle.random.uniform",
+        return_value=100.0,
+    ):
+        t = eng._schedule_next_timer(gap_seconds_since_previous_wake=gap_sec)
+    assert t == 1_000_000.0 + 100.0 + expected_extra
+
+
+def test_schedule_next_timer_spacing_extra_negligible_when_gap_large() -> None:
+    auto = AutonomySettings(
+        base_wake_interval_min=20,
+        base_wake_interval_max=45,
+        wake_spacing_extra_minutes_max=60.0,
+        wake_spacing_gap_hours_tau=3.0,
+    )
+    cfg = SimpleNamespace(harness=SimpleNamespace(autonomy=auto))
+    eng = WakeCycleEngine(cfg)  # type: ignore[arg-type]
+    gap_sec = 86400.0 * 7
+    with patch("bumblebee.presence.wake_cycle.time.time", return_value=1_000_000.0), patch(
+        "bumblebee.presence.wake_cycle.random.uniform",
+        return_value=100.0,
+    ):
+        t = eng._schedule_next_timer(gap_seconds_since_previous_wake=gap_sec)
+    assert abs(t - (1_000_000.0 + 100.0)) < 1e-6
+
+
+def test_schedule_next_timer_no_spacing_when_disabled() -> None:
+    auto = AutonomySettings(
+        base_wake_interval_min=20,
+        base_wake_interval_max=45,
+        wake_spacing_extra_minutes_max=0.0,
+        wake_spacing_gap_hours_tau=3.0,
+    )
+    cfg = SimpleNamespace(harness=SimpleNamespace(autonomy=auto))
+    eng = WakeCycleEngine(cfg)  # type: ignore[arg-type]
+    with patch("bumblebee.presence.wake_cycle.time.time", return_value=1_000_000.0), patch(
+        "bumblebee.presence.wake_cycle.random.uniform",
+        return_value=100.0,
+    ):
+        t = eng._schedule_next_timer(gap_seconds_since_previous_wake=60.0)
+    assert t == 1_000_000.0 + 100.0
 
 
 def test_build_context_mentions_tool_venture_when_enabled() -> None:
@@ -74,6 +132,11 @@ def test_resolve_wake_delivery_falls_back_to_platform_last_channel() -> None:
 def test_meta_leak_detector_flags_control_flow_speech() -> None:
     assert _meta_leak_detected("The user has seen my summary. I'll just end the turn.")
     assert not _meta_leak_detected("i found two interesting posts and saved notes")
+
+
+def test_meta_leak_detector_flags_history_tag_echo() -> None:
+    assert _meta_leak_detected("[you sent this unprompted] hello")
+    assert _meta_leak_detected("echo bb:proactive_outbound from context")
 
 
 def test_load_recent_threads_reads_episode_tail(tmp_path) -> None:
@@ -157,7 +220,14 @@ def test_compose_wake_want_mentions_intent_and_sources() -> None:
         project_lines=["feed relay [active] — unfinished"],
         skill_lines=["http retries: backoff + jitter"],
     )
-    assert "I want to learn" in want
+    assert any(
+        p in want
+        for p in (
+            "I want to learn a useful technique",
+            "I want to understand something I only gesture at",
+            "I want to compress confusion into a skill",
+        )
+    )
     assert "spark:" in want
 
 

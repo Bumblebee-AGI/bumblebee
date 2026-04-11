@@ -463,7 +463,8 @@ class ExecutionRPCClient:
 
             if action == "read_file":
                 max_bytes = int(payload.get("max_bytes") or 48000)
-                max_bytes = max(1024, min(max_bytes, 256_000))
+                # 1 MiB cap — send_file and large logs (e.g. autonomy_transcript.md); default reads stay small.
+                max_bytes = max(1024, min(max_bytes, 1_048_576))
                 raw_path = str(payload.get("path") or ".").strip() or "."
                 target = self._resolve_workspace_path(raw_path)
                 if not target.exists():

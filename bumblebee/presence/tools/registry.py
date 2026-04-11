@@ -212,6 +212,26 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return "🧵 checking ongoing projects..."
     if tool_name == "update_project":
         return "🧵 updating a project..."
+    if tool_name == "search_past_conversations":
+        q = str(args.get("query", "") or "").strip()
+        return f'🧠 recalling "{q[:80]}..."' if q else "🧠 searching memory..."
+    if tool_name == "apply_patch":
+        name = Path(str(args.get("path", "file") or "file")).name
+        return f"🩹 patching {name}..."
+    if tool_name == "todo_add":
+        return "☑️ adding session todo..."
+    if tool_name == "todo_list":
+        return None
+    if tool_name == "todo_complete":
+        return "✅ completing todo..."
+    if tool_name == "todo_remove":
+        return "🗑️ removing todo..."
+    if tool_name == "ask_user":
+        return "❓ asking you something..."
+    if tool_name == "delegate_task":
+        return "🪄 delegating a sub-task..."
+    if tool_name == "code_task_session":
+        return "🧩 multi-phase code task..."
     if tool_name.startswith("mcp_"):
         parts = tool_name.split("_", 2)
         server = (parts[1] if len(parts) >= 2 else "mcp").lower()
@@ -306,6 +326,16 @@ class ToolRegistry:
 
     def unregister(self, name: str) -> None:
         self._tools.pop(name, None)
+
+    def subset(self, names: set[str] | list[str]) -> ToolRegistry:
+        """New registry containing only the named tools (references same ToolFn objects)."""
+        want = {str(n).strip() for n in names if str(n).strip()}
+        out = ToolRegistry()
+        for n in sorted(want):
+            t = self._tools.get(n)
+            if t is not None:
+                out._tools[n] = t
+        return out
 
     def register_decorated(self, fn: Callable[..., Awaitable[str]]) -> None:
         n = getattr(fn, "_bumblebee_tool_name", None)

@@ -1,4 +1,4 @@
-"""CLI entry: setup, create, run, stop, talk, worker, api, status, evolve, knowledge, journal, recall, wipe, soma-reset, export, import, update, gateway (on/off/status/restart/setup)."""
+"""CLI entry: setup, create, run, stop, talk, worker, api, status, version, evolve, knowledge, journal, recall, wipe, soma-reset, export, import, update, gateway (on/off/status/restart/setup)."""
 
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ import shlex
 import shutil
 import signal
 import subprocess
-from importlib import metadata
 from pathlib import Path
 
 import click
 
+from bumblebee.__version__ import __version__ as BUMBLEBEE_VERSION
 from bumblebee.config import (
     load_entity_config,
     load_harness_config,
@@ -57,10 +57,8 @@ topics, opinions, facts — whatever matters.
 
 
 def _app_version() -> str:
-    try:
-        return metadata.version("bumblebee")
-    except metadata.PackageNotFoundError:
-        return "0.1.0"
+    """Harness version (see ``bumblebee/__version__.py``)."""
+    return BUMBLEBEE_VERSION
 
 
 def _load_repo_dotenv() -> None:
@@ -187,6 +185,7 @@ def _run_gateway_script(action: str, extra_args: list[str] | None = None) -> Non
 
 
 @click.group()
+@click.version_option(version=BUMBLEBEE_VERSION, prog_name="bumblebee")
 def cli() -> None:
     # Runs before every subcommand; keep in sync with ``main()`` for entry points that call ``cli`` only.
     _load_repo_dotenv()
@@ -1140,6 +1139,12 @@ def cmd_update(skip_pip: bool, dry_run: bool) -> None:
 
     err = str(res.get("error") or "update failed")
     raise click.ClickException(err)
+
+
+@cli.command("version")
+def cmd_version() -> None:
+    """Print the bumblebee harness version (same as ``bumblebee --version``)."""
+    click.echo(BUMBLEBEE_VERSION)
 
 
 @cli.command("import")

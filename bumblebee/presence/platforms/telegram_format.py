@@ -130,6 +130,12 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         category="Runtime",
     ),
     TelegramCommandSpec(
+        name="version",
+        summary="Bumblebee harness version running on this worker",
+        usage="/version",
+        category="Runtime",
+    ),
+    TelegramCommandSpec(
         name="busy",
         summary="Toggle the pinned busy/working line while I reply (per chat)",
         usage="/busy  or  /busy on  or  /busy off  or  /busy status",
@@ -213,8 +219,9 @@ def telegram_registered_slash_command_names() -> frozenset[str]:
 def format_start_html(entity_name: str, app_version: str, *, first_name: str | None = None) -> str:
     en = html.escape(entity_name)
     who = html.escape((first_name or "there").strip() or "there")
+    ver = html.escape(app_version)
     return (
-        f"🐝 <b>{en}</b> · bumblebee v{html.escape(app_version)}\n\n"
+        f"🐝 <b>{en}</b>\n\n"
         f"Hey, {who}. I'm not a task bot; I'm a persistent presence that keeps context and memory over time.\n\n"
         "<b>Best ways to use me</b>\n"
         "• Talk naturally, like a real ongoing conversation.\n"
@@ -224,7 +231,8 @@ def format_start_html(entity_name: str, app_version: str, *, first_name: str | N
         "• <code>/status</code> for a live internal snapshot\n"
         "• <code>/memories 3</code> for recent memory traces\n"
         "• <code>/me</code> for how I currently know you\n\n"
-        "Tap the <b>/</b> menu anytime, or use <code>/commands</code> to browse everything."
+        "Tap the <b>/</b> menu anytime, or use <code>/commands</code> to browse everything.\n\n"
+        f"<code>bumblebee v{ver}</code>"
     )
 
 
@@ -239,7 +247,7 @@ def format_help_html(entity_name: str) -> str:
         "<b>Useful commands</b>\n"
         "• <code>/status</code>, <code>/feelings</code>, <code>/memories [count]</code>\n"
         "• <code>/me</code> to inspect relationship state\n"
-        "• <code>/models</code>, <code>/tools</code>, <code>/routines</code>, and <code>/ping</code> for runtime checks\n"
+        "• <code>/models</code>, <code>/tools</code>, <code>/routines</code>, <code>/version</code>, and <code>/ping</code> for runtime checks\n"
         "• <code>/context</code> and <code>/compact</code> when the context window gets tight\n"
         "• <code>/reset</code> to clear rolling chat turns only\n\n"
         "<b>Important</b>\n"
@@ -962,6 +970,14 @@ def format_ping_html(app_version: str) -> str:
     return (
         f"pong · bumblebee v{html.escape(app_version)}\n"
         f"server_time_unix · <code>{int(time.time())}</code>"
+    )
+
+
+def format_version_html(app_version: str) -> str:
+    """Harness runtime version (from ``bumblebee/__version__.py``)."""
+    return (
+        f"<b>bumblebee</b> <code>v{html.escape(app_version)}</code>\n"
+        "<i>Harness version on this worker — bump in-repo when you ship.</i>"
     )
 
 

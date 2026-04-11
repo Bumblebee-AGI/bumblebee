@@ -7,6 +7,7 @@ autonomous wake cycle can reason about.
 
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -32,8 +33,18 @@ class DesireCandidate:
         }
 
 
-def infer_desires(*, tonic: Any, drives: list[Drive], max_items: int = 3) -> list[dict[str, Any]]:
-    """Return ranked desire candidates inferred from current internal state."""
+def infer_desires(
+    *,
+    tonic: Any,
+    drives: list[Drive],
+    max_items: int = 3,
+    entropy_extras: int = 0,
+) -> list[dict[str, Any]]:
+    """Return ranked desire candidates inferred from current internal state.
+
+    ``entropy_extras`` adds synthetic candidates (novelty, avoidance, contrarian pulls) so
+    autonomous wakes see a wider affective space than drives/impulses alone.
+    """
     out: list[DesireCandidate] = []
     now = time.time()
 
@@ -132,6 +143,11 @@ def infer_desires(*, tonic: Any, drives: list[Drive], max_items: int = 3) -> lis
             )
         )
 
+    # 6) Entropy / soul extras — widen the space of "what feels pressing".
+    n_extras = max(0, int(entropy_extras or 0))
+    if n_extras > 0:
+        out.extend(_sample_entropy_desire_candidates(tonic, n_extras))
+
     ranked = sorted(out, key=lambda d: d.urgency, reverse=True)
     deduped: list[DesireCandidate] = []
     seen: set[tuple[str, str]] = set()
@@ -144,6 +160,43 @@ def infer_desires(*, tonic: Any, drives: list[Drive], max_items: int = 3) -> lis
         if len(deduped) >= max(1, int(max_items or 3)):
             break
     return [d.as_dict() for d in deduped]
+
+
+def _sample_entropy_desire_candidates(tonic: Any, n: int) -> list[DesireCandidate]:
+    """Synthetic pressures: fears, novelty hunger, opinions — not from user text."""
+    pool: list[tuple[str, str, str]] = [
+        ("fear_stir", "a specific way stalling could hurt you", "entropy:soul"),
+        ("novelty_hunger", "something outside your default loop this week", "entropy:soul"),
+        ("avoidance", "a thread you keep sidestepping", "entropy:soul"),
+        ("contrarian", "a comfortable belief worth poking", "entropy:soul"),
+        ("longing", "a small honest reach you owe someone or something", "entropy:soul"),
+        ("opinion", "something you actually think (not neutral)", "entropy:soul"),
+        ("world_expand", "a place, field, or practice you barely know", "entropy:soul"),
+        ("resolve_tension", "two pulls that disagree inside you", "entropy:soul"),
+        ("explore", "a question you pretend not to care about", "entropy:soul"),
+        ("reach_out", "contact you keep deferring", "entropy:soul"),
+    ]
+    random.shuffle(pool)
+    out: list[DesireCandidate] = []
+    sal = 0.5
+    try:
+        sal = float(tonic.compute_salience())
+    except Exception:
+        pass
+    for i in range(min(n, len(pool))):
+        kind, target, why = pool[i]
+        base = 0.38 + sal * 0.28 + random.uniform(0.0, 0.22)
+        urgency = min(0.91, base + (i * 0.01))
+        out.append(
+            DesireCandidate(
+                kind=kind,
+                urgency=urgency,
+                why=why,
+                target=target[:90],
+                source="entropy",
+            )
+        )
+    return out
 
 
 def _drive_to_kind(name: str) -> str:

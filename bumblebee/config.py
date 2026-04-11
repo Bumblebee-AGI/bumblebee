@@ -203,7 +203,10 @@ def default_soma_config() -> dict[str, Any]:
         "appraisal": {
             "enabled": True,
             "temperature": 0.3,
-            "max_tokens": 120,
+            "max_tokens": 160,
+            # json: single JSON object (preferred); lines: legacy line format.
+            "output_format": "json",
+            "calibration_log": False,
         },
         "affect_cycle_seconds": 240,
         "noise": {
@@ -213,6 +216,8 @@ def default_soma_config() -> dict[str, Any]:
             "temperature": 1.05,
             "max_tokens": 240,
             "max_fragments": 8,
+            # coherent GEN ticks in a row that keep thematic continuity (0 = off).
+            "thematic_streak_max": 3,
         },
         "wake_voice": {
             "enabled": True,
@@ -237,6 +242,15 @@ def default_soma_config() -> dict[str, Any]:
             "normal_max_noise_lines": 3,
             "high_max_noise_lines": 4,
             "skip_post_turn_noise_when_quiet": True,
+            # Optional: calm | reactive | expressive — preset ebb weights/thresholds (overridable).
+            "personality": "",
+            "debug_salience": False,
+        },
+        "observability": {
+            "metrics_log": False,
+            "timeline_enabled": False,
+            "timeline_filename": "soma_timeline.md",
+            "timeline_max_bytes": 65536,
         },
     }
 
@@ -273,11 +287,36 @@ class AutonomySettings:
     messages_per_cycle: int = 2
     base_wake_interval_min: int = 20
     base_wake_interval_max: int = 45
+    # Timer wakes only: after any wake, add up to this many extra minutes before the next timer
+    # fire, scaled by how recently the previous wake started (small gap → more extra). Decays with
+    # gap; see wake_spacing_gap_hours_tau. 0 disables.
+    wake_spacing_extra_minutes_max: float = 45.0
+    # E-folding time in hours for that extra spacing (larger = extra stays high longer as gaps grow).
+    wake_spacing_gap_hours_tau: float = 3.0
+    # Intent selection: Gaussian noise on per-bucket scores (0 = deterministic argmax).
+    wake_entropy_score_noise: float = 0.28
+    # Among top intents, softmax-sample with this temperature (0 = pick top only).
+    wake_intent_softmax_temperature: float = 0.52
+    # Rut avoidance: scan last N wake episodes for over-repeated words; demote sparks & boost novelty.
+    wake_rut_episode_window: int = 14
+    wake_rut_word_repeat_threshold: int = 3
+    # Extra infer_desires() candidates (fears, novelty, contrarian pulls) for richer pressures.
+    wake_entropy_desire_extras: int = 2
+    # Random WakeVoice system-prompt style + pass variant into stirring generation.
+    wake_voice_variant_roll: bool = True
+    wake_voice_temperature_jitter: float = 0.12
+    # Log/display only: append |flavor to reason for variety (semantic prefix unchanged before |).
+    wake_reason_flavor: bool = True
+    # Prompt blocks that discourage repeating last wake as new and narrating browsing without tools.
+    wake_anti_groundhog_prompt: bool = True
     silence_threshold_seconds: int = 120
     impulse_wake: bool = True
     drive_wake: bool = True
     conflict_wake: bool = True
     noise_wake: bool = False
+    # When noise_wake is on: require body salience and mature GEN (not fresh noise).
+    noise_wake_min_salience: float = 0.44
+    noise_wake_min_age_seconds: float = 90.0
     desire_wake: bool = True
     desire_wake_threshold: float = 0.72
     max_desires_considered: int = 3
@@ -335,6 +374,12 @@ def default_tools_config() -> dict[str, Any]:
         "wikipedia": {"enabled": True},
         "weather": {"enabled": True},
         "news": {"enabled": True},
+        "memory_search": {"enabled": True},
+        "patch": {"enabled": True},
+        "session_todos": {"enabled": True},
+        "clarify": {"enabled": True},
+        "delegation": {"enabled": True},
+        "code_task": {"enabled": True},
         "system": {"enabled": True},
         # Shared dangerous-tool execution settings (RPC or container-local fallback when safe).
         "execution": {
@@ -564,6 +609,13 @@ class EntityConfig:
 
     def projects_path(self) -> str:
         return _expand("~/.bumblebee/entities/{entity_name}/projects.json", self.name)
+
+    def session_todos_path(self) -> str:
+        """Short-horizon session checklist JSON (distinct from projects.json)."""
+        ws = self.execution_workspace_dir().strip()
+        if ws:
+            return str(Path(ws) / "session_todos.json")
+        return _expand("~/.bumblebee/entities/{entity_name}/session_todos.json", self.name)
 
     def self_model_path(self) -> str:
         return _expand("~/.bumblebee/entities/{entity_name}/self_model.json", self.name)

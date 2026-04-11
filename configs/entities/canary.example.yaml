@@ -106,7 +106,7 @@ autonomy:
   base_wake_interval_max: 35
   noise_wake: true
   desire_wake_threshold: 0.64
-  wake_session_max_rounds: 18
+  wake_session_max_rounds: 4
   wake_session_wall_seconds: 4400
   wake_session_say_budget_per_round: 16
   wake_session_pause_seconds: 1.5

@@ -1,4 +1,8 @@
-from bumblebee.identity.voice import apply_voice_outgoing_substitutions, strip_stage_directions
+from bumblebee.identity.voice import (
+    apply_voice_outgoing_substitutions,
+    strip_internal_history_echo,
+    strip_stage_directions,
+)
 
 
 def test_strip_leading_parenthetical():
@@ -32,3 +36,16 @@ def test_outgoing_substitutions_word_boundary():
 def test_outgoing_substitutions_literal_key():
     voice = {"outgoing_text_substitutions": {"bad phrase": "nope"}}
     assert apply_voice_outgoing_substitutions("x bad phrase y", voice) == "x nope y"
+
+
+def test_strip_internal_history_echo_legacy_tag():
+    raw = "[you sent this unprompted] hi there"
+    assert strip_internal_history_echo(raw) == "hi there"
+
+
+def test_strip_internal_history_echo_bb_tag():
+    assert strip_internal_history_echo("[bb:proactive_outbound] ok") == "ok"
+
+
+def test_strip_internal_history_echo_case_insensitive():
+    assert strip_internal_history_echo("[YOU sent This Unprompted] x") == "x"

@@ -172,7 +172,10 @@ soma:
   appraisal:
     enabled: true
     temperature: 0.3
-    max_tokens: 120
+    max_tokens: 160
+    # json (default) or lines — JSON is easier to parse reliably.
+    output_format: json
+    calibration_log: false   # if true, logs hashed message keys + effects for tuning
   affect_cycle_seconds: 240
   # Generative entropic noise — a small model producing continuous inner voice.
   # The entity reads this as its own stream of consciousness.
@@ -183,6 +186,8 @@ soma:
     temperature: 1.05
     max_tokens: 240
     max_fragments: 8
+    # coherent GEN ticks in a row that ask for thematic continuity (0 = off).
+    thematic_streak_max: 3
   # Subconscious wake voice — generates the prompt for autonomous wake cycles.
   # Fires only when a wake condition is met. Reads the full body state + memory
   # and composes a first-person stirring that the conscious agent receives on wake.
@@ -208,6 +213,14 @@ soma:
     normal_max_noise_lines: 3
     high_max_noise_lines: 4       # 0 = default to 4
     skip_post_turn_noise_when_quiet: true   # skip GEN tick after turn when tier is quiet
+    # Optional preset: calm | reactive | expressive — sets ebb weights/thresholds (YAML overrides win).
+    personality: ""
+    debug_salience: false   # log weighted salience components per turn
+  observability:
+    metrics_log: false      # structured soma_metrics log line (salience breakdown)
+    timeline_enabled: false # append one line per turn to soma_timeline.md under soma dir
+    timeline_filename: soma_timeline.md
+    timeline_max_bytes: 65536
 
 # Autonomous wake cycles — the entity wakes on its own, driven by body state.
 autonomy:
@@ -217,11 +230,27 @@ autonomy:
   messages_per_cycle: 2            # hard cap on outgoing messages per autonomous cycle
   base_wake_interval_min: 20       # randomized fallback timer range (minutes)
   base_wake_interval_max: 45
+  # Extra delay before the next timer wake when the previous wake started recently (clustered wakes).
+  # Scales down as the gap between wake starts grows; 0 disables.
+  wake_spacing_extra_minutes_max: 45
+  wake_spacing_gap_hours_tau: 3.0   # hours — e-folding time for that extra delay
   silence_threshold_seconds: 120   # don't wake during active conversation
+  # Variety: stochastic intents, flavored reasons, richer desires, wake-voice variants, anti-rut / anti–groundhog prompts
+  wake_entropy_score_noise: 0.28
+  wake_intent_softmax_temperature: 0.52
+  wake_rut_episode_window: 14
+  wake_rut_word_repeat_threshold: 3
+  wake_entropy_desire_extras: 2
+  wake_voice_variant_roll: true
+  wake_voice_temperature_jitter: 0.12
+  wake_reason_flavor: true
+  wake_anti_groundhog_prompt: true
   impulse_wake: true               # wake when soma impulses fire
   drive_wake: true                 # wake when drives cross threshold
   conflict_wake: true              # wake on active soma conflicts
   noise_wake: false                # wake on unresolved noise fragments (experimental)
+  noise_wake_min_salience: 0.44    # body must be this “loud” before noise can wake
+  noise_wake_min_age_seconds: 90   # GEN must be idle this long (mature inner voice, not fresh tick)
   desire_wake: true                # wake when synthesized desire pressure is strong
   desire_wake_threshold: 0.72      # 0..1 urgency threshold for desire-triggered wake
   max_desires_considered: 3        # how many top desire pressures to surface in wake context
@@ -295,6 +324,16 @@ tools:
   weather:
     enabled: true
   news:
+    enabled: true
+  memory_search:
+    enabled: true
+  patch:
+    enabled: true
+  session_todos:
+    enabled: true
+  clarify:
+    enabled: true
+  delegation:
     enabled: true
   system:
     enabled: true

@@ -15,6 +15,7 @@ from bumblebee.identity.soma import (
     BarEngine,
     BodyRenderer,
     NoiseEngine,
+    SomaticAppraiser,
     TonicBody,
     _EBB_TIER_ORDER,
     _bar_glyphs,
@@ -297,6 +298,43 @@ class TestAffectParsing:
 
     def test_parse_garbage_input(self):
         assert AffectEngine._parse_response("this is not affect output at all") == []
+
+
+# ---------------------------------------------------------------------------
+# SomaticAppraiser parsing
+# ---------------------------------------------------------------------------
+
+
+class TestSomaticAppraiserParse:
+    def test_json_format_parses_bar_effects(self):
+        a = SomaticAppraiser(output_format="json")
+        raw = '{"bar_effects":{"social":3,"tension":-1.5},"tags":["warm","probe"],"felt":"uneasy"}'
+        out = a._parse_response(raw, {"social", "tension", "curiosity"})
+        assert out["bar_effects"]["social"] == 3.0
+        assert out["bar_effects"]["tension"] == -1.5
+        assert "warm" in out["tags"]
+        assert "uneasy" in out["felt"]
+
+    def test_json_fallback_to_lines_when_invalid(self):
+        a = SomaticAppraiser(output_format="json")
+        raw = "social: 2 — ping\ntags: x\nfelt: ok\n"
+        out = a._parse_response(raw, {"social", "tension"})
+        assert out["bar_effects"].get("social") == 2.0
+        assert "ok" in out["felt"]
+
+
+class TestBarEngineDecayTimeScale:
+    def test_decay_time_scale_slows_return_to_baseline(self):
+        cfg = _default_bar_config()
+        name = cfg["bars"]["variables"][0]["name"]
+        cfg["bars"]["variables"][0]["decay_time_scale"] = 0.2
+        slow = BarEngine(cfg)
+        fast = BarEngine(_default_bar_config())
+        slow._values[name] = 90.0
+        fast._values[name] = 90.0
+        slow.tick(1.0)
+        fast.tick(1.0)
+        assert slow._values[name] > fast._values[name]
 
 
 # ---------------------------------------------------------------------------

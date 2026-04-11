@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import random
+import re
 import time
+from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -81,6 +84,8 @@ def _meta_leak_detected(text: str) -> bool:
         "i'll just end the turn",
         "assistant response",
         "as an ai",
+        "you sent this unprompted",
+        "bb:proactive_outbound",
     )
     return any(n in t for n in needles)
 
@@ -94,8 +99,16 @@ def _safe_reply_excerpt(text: str, max_len: int = 280) -> str:
     return _clip(t, max_len)
 
 
+def _strip_wake_flavor(reason: str) -> str:
+    """Semantic wake reason without display suffix (``impulse:x|tag`` → ``impulse:x``)."""
+    r = (reason or "").strip()
+    if "|" in r:
+        return r.split("|", 1)[0].strip()
+    return r
+
+
 def _wake_intent_label(reason: str) -> str:
-    r = (reason or "").strip().lower()
+    r = _strip_wake_flavor(reason or "").strip().lower()
     if r.startswith("impulse:") or r.startswith("drive:"):
         return "social_or_action"
     if r.startswith("conflict:"):
@@ -105,6 +118,23 @@ def _wake_intent_label(reason: str) -> str:
     if r.startswith("noise:"):
         return "explore_question"
     return "explore_or_recover"
+
+
+_RUT_STOPWORDS = frozenset({
+    "that", "this", "with", "from", "your", "have", "been", "were", "will", "would", "could",
+    "wake", "cycle", "tool", "last", "thought", "round", "lean", "want", "still", "carrying",
+    "what", "when", "where", "which", "about", "after", "before", "because", "those", "these",
+    "their", "there", "here", "just", "like", "some", "into", "than", "then", "them", "very",
+})
+
+_EXPANSION_NUDGES = (
+    "Consider one domain you have barely touched lately.",
+    "If your default habit loop were forbidden for an hour, where would you look?",
+    "What is one small way to widen the map — not deeper into the same groove?",
+    "Name something you keep postponing that isn't the usual chore.",
+    "What would you try if nobody was going to read the transcript?",
+    "Pick a thread that isn't the last platform you reached for.",
+)
 
 
 def _spark_label(text: str) -> str:
@@ -120,6 +150,50 @@ def _spark_label(text: str) -> str:
     if any(k in t for k in ("message", "dm", "reach out", "talk to", "friend")):
         return "social"
     return "explore"
+
+
+_WAKE_WANT_BASES: dict[str, tuple[str, ...]] = {
+    "build_something": (
+        "I want to build a concrete thing and push it forward.",
+        "I want to ship something small — real output, not rehearsal.",
+        "I want one tangible artifact before I go quiet again.",
+    ),
+    "learn_something": (
+        "I want to learn a useful technique and turn it into reusable skill.",
+        "I want to understand something I only gesture at.",
+        "I want to compress confusion into a skill I can reuse.",
+    ),
+    "play_or_experiment": (
+        "I want to experiment and play with something interesting.",
+        "I want to try something low-stakes and see what breaks loose.",
+        "I want to follow curiosity without needing a justification.",
+    ),
+    "social_or_action": (
+        "I want to reach out or act in the social world.",
+        "I want to move something in the open — message, gesture, offer.",
+        "I want contact or consequence outside my own head.",
+    ),
+    "resolve_tension": (
+        "I want to resolve a restless thread and settle the tension.",
+        "I want to stop circling and either close or name the knot.",
+        "I want friction to become a decision.",
+    ),
+    "follow_desire": (
+        "I want to follow the strongest desire pressure.",
+        "I want to ride the pull that won't leave me alone.",
+        "I want to stop negotiating and follow the lean.",
+    ),
+    "explore_question": (
+        "I want to chase a question and see what I uncover.",
+        "I want to walk toward something I don't understand yet.",
+        "I want a real question to lead instead of a habit.",
+    ),
+    "explore_or_recover": (
+        "I want to wander until something real grabs me.",
+        "I want to surface without a script and see what's here.",
+        "I want to drift with attention on, not a checklist.",
+    ),
+}
 
 
 def _clean_one_line(text: str, max_len: int = 180) -> str:
@@ -295,16 +369,114 @@ class WakeCycleEngine:
         self._last_desires: list[dict[str, Any]] = []
         self._recent_threads: list[dict[str, Any]] = []
 
-    def _schedule_next_timer(self) -> float:
+    def _schedule_next_timer(
+        self,
+        *,
+        gap_seconds_since_previous_wake: float | None = None,
+    ) -> float:
         lo = max(1, self._auto.base_wake_interval_min) * 60.0
         hi = max(lo + 60, self._auto.base_wake_interval_max * 60.0)
-        return time.time() + random.uniform(lo, hi)
+        base = random.uniform(lo, hi)
+        extra = 0.0
+        if gap_seconds_since_previous_wake is not None:
+            max_extra_min = max(0.0, float(self._auto.wake_spacing_extra_minutes_max))
+            if max_extra_min > 0.0:
+                tau = max(0.25, float(self._auto.wake_spacing_gap_hours_tau))
+                max_extra_sec = max_extra_min * 60.0
+                gh = max(0.0, float(gap_seconds_since_previous_wake) / 3600.0)
+                extra = max_extra_sec * math.exp(-gh / tau)
+        return time.time() + base + extra
 
     def _reset_hourly_counter(self) -> None:
         now = time.time()
         if now - self._hour_start >= 3600:
             self._cycle_count_this_hour = 0
             self._hour_start = now
+
+    def _flavor_wake_reason(self, reason: str) -> str:
+        if not getattr(self._auto, "wake_reason_flavor", True):
+            return reason
+        if random.random() < 0.06:
+            return _strip_wake_flavor(reason)
+        base = _strip_wake_flavor(reason)
+        rlow = base.lower()
+        if rlow.startswith("timer"):
+            tag = random.choice(["chime", "orbit", "drift", "hollow", "idle", "pulse", "glass"])
+        elif rlow.startswith("impulse:"):
+            tag = random.choice(["edge", "spark", "jolt", "nerve", "twitch"])
+        elif rlow.startswith("drive:"):
+            tag = random.choice(["pressure", "surge", "pull", "weight"])
+        elif rlow.startswith("conflict:"):
+            tag = random.choice(["fray", "split", "grind", "knot"])
+        elif rlow.startswith("noise:"):
+            tag = random.choice(["hum", "static", "loop", "echo"])
+        elif rlow.startswith("desire:"):
+            tag = random.choice(["pull", "hunger", "lean", "draw"])
+        else:
+            tag = random.choice(["tick", "pull", "shift", "roll"])
+        return f"{base}|{tag}"
+
+    def _rut_keywords_from_episodes(self, entity: Any) -> set[str]:
+        win = max(3, int(getattr(self._auto, "wake_rut_episode_window", 14) or 14))
+        thr = max(2, int(getattr(self._auto, "wake_rut_word_repeat_threshold", 3) or 3))
+        path = _wake_episode_store_path(entity)
+        if path is None or not path.is_file():
+            return set()
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            return set()
+        blob_parts: list[str] = []
+        for ln in reversed(lines[-win:]):
+            try:
+                row = json.loads(ln)
+            except Exception:
+                continue
+            blob_parts.append(str(row.get("trigger_reason", "")))
+            blob_parts.append(str(row.get("wake_want", "")))
+            blob_parts.append(str(row.get("primary_intent", "")))
+            for t in row.get("carryover_threads", [])[:6]:
+                blob_parts.append(str(t))
+        blob = " ".join(blob_parts).lower()
+        words = re.findall(r"[a-z][a-z0-9]{3,}", blob)
+        cnt = Counter(w for w in words if w not in _RUT_STOPWORDS)
+        return {w for w, c in cnt.items() if c >= thr}
+
+    def _demote_rut_sparks(self, sparks: list[str], rut: set[str]) -> list[str]:
+        if not sparks or not rut:
+            return list(sparks)
+        heavy = [s for s in sparks if any(k in s.lower() for k in rut)]
+        light = [s for s in sparks if s not in heavy]
+        random.shuffle(light)
+        random.shuffle(heavy)
+        merged = light + heavy
+        return merged[: len(sparks)]
+
+    def _shuffle_continuity(self, cont: list[str]) -> list[str]:
+        if len(cont) <= 1:
+            return list(cont)
+        c = list(cont)
+        random.shuffle(c)
+        return c
+
+    def _sample_intent_from_scores(self, scores: dict[str, float]) -> str:
+        noise = float(getattr(self._auto, "wake_entropy_score_noise", 0.0) or 0.0)
+        temp = float(getattr(self._auto, "wake_intent_softmax_temperature", 0.0) or 0.0)
+        items = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        keys = [k for k, _ in items]
+        vals = [items[i][1] + random.gauss(0, noise) for i in range(len(keys))]
+        if temp <= 0.01:
+            return keys[max(range(len(vals)), key=lambda i: vals[i])]
+        m = max(vals)
+        exps = [math.exp((v - m) / temp) for v in vals]
+        s = sum(exps)
+        r = random.random() * s
+        cum = 0.0
+        for i, e in enumerate(exps):
+            cum += e
+            if cum >= r:
+                return keys[i]
+        return keys[-1]
 
     def should_wake(
         self,
@@ -341,6 +513,7 @@ class WakeCycleEngine:
             tonic=tonic,
             drives=drives,
             max_items=max(1, int(self._auto.max_desires_considered or 3)),
+            entropy_extras=max(0, int(getattr(self._auto, "wake_entropy_desire_extras", 0) or 0)),
         )
 
         if self._auto.impulse_wake:
@@ -368,10 +541,24 @@ class WakeCycleEngine:
                 return f"conflict:{labels}"
 
         if self._auto.noise_wake:
-            for frag in tonic.noise.current_fragments()[-3:]:
-                fl = frag.lower()
-                if "?" in fl or "should" in fl or "wonder" in fl or "why" in fl:
-                    return f"noise:{frag[:60]}"
+            try:
+                sal = float(tonic.compute_salience())
+            except Exception:
+                sal = 0.0
+            min_sal = float(getattr(self._auto, "noise_wake_min_salience", 0.44) or 0.44)
+            min_age = float(getattr(self._auto, "noise_wake_min_age_seconds", 90.0) or 90.0)
+            last_tick = float(getattr(tonic.noise, "_last_tick", 0.0) or 0.0)
+            frags = tonic.noise.current_fragments()
+            if last_tick <= 0.0 and frags:
+                # Restored GEN buffer without a tick this session — treat as mature.
+                age_ok = True
+            else:
+                age_ok = (time.monotonic() - last_tick) >= min_age if last_tick > 0.0 else False
+            if sal >= min_sal and age_ok:
+                for frag in tonic.noise.current_fragments()[-3:]:
+                    fl = frag.lower()
+                    if "?" in fl or "should" in fl or "wonder" in fl or "why" in fl:
+                        return f"noise:{frag[:60]}"
 
         if self._auto.desire_wake and self._last_desires:
             top = self._last_desires[0]
@@ -402,13 +589,22 @@ class WakeCycleEngine:
         self._running = True
         now = time.time()
         previous_wake_at = self._last_cycle_at
+        gap_since_previous_wake = now - previous_wake_at
         self._last_cycle_at = now
         self._cycle_count_this_hour += 1
-        self._next_timer_wake = self._schedule_next_timer()
+        self._next_timer_wake = self._schedule_next_timer(
+            gap_seconds_since_previous_wake=gap_since_previous_wake,
+        )
 
         try:
+            display_reason = (
+                self._flavor_wake_reason(reason)
+                if getattr(self._auto, "wake_reason_flavor", True)
+                else reason
+            )
+            voice_variant = random.randint(0, 3) if getattr(self._auto, "wake_voice_variant_roll", True) else 0
             stirring, poker_disposition = await self._compose_stirring(
-                entity, tonic, previous_wake_at=previous_wake_at
+                entity, tonic, previous_wake_at=previous_wake_at, voice_variant=voice_variant
             )
             max_rounds = max(1, int(self._auto.wake_session_max_rounds))
             wall_s = max(60, int(self._auto.wake_session_wall_seconds))
@@ -425,23 +621,26 @@ class WakeCycleEngine:
             gen_frags = _gen_fragments_tail(tonic)
             poker_cfg = _poker_settings_summary(entity.config)
             lingering_sparks = self._extract_lingering_sparks(entity)
+            rut = self._rut_keywords_from_episodes(entity)
+            lingering_sparks = self._demote_rut_sparks(lingering_sparks, rut)
             project_lines = await self._project_thread_lines(entity)
             skill_lines = await self._skill_thread_lines(entity)
             wake_intent = self._select_primary_intent(
                 reason,
                 tonic=tonic,
+                entity=entity,
                 lingering_sparks=lingering_sparks,
             )
             wake_want = self._compose_wake_want(
                 wake_intent=wake_intent,
-                reason=reason,
+                reason=display_reason,
                 lingering_sparks=lingering_sparks,
                 project_lines=project_lines,
                 skill_lines=skill_lines,
             )
-            continuity = self._load_recent_threads(entity)
+            continuity = self._shuffle_continuity(self._load_recent_threads(entity))
             session_memory = self._new_session_memory(
-                reason=reason,
+                reason=display_reason,
                 wake_intent=wake_intent,
                 wake_want=wake_want,
                 lingering_sparks=lingering_sparks,
@@ -453,7 +652,7 @@ class WakeCycleEngine:
                 "episode_id": f"wake-{int(now)}-{random.randint(1000, 9999)}",
                 "started_at": now,
                 "ended_at": None,
-                "trigger_reason": reason,
+                "trigger_reason": display_reason,
                 "primary_intent": wake_intent,
                 "wake_want": wake_want,
                 "beats": [],
@@ -492,7 +691,7 @@ class WakeCycleEngine:
             if bool(self._auto.wake_verbose_worker_log):
                 banner = _format_wake_worker_banner(
                     entity_name=getattr(entity, "config", self.cfg).name,
-                    reason=reason,
+                    reason=display_reason,
                     channel=channel,
                     delivery=delivery_name,
                     stirring=stirring,
@@ -513,7 +712,7 @@ class WakeCycleEngine:
             log.info(
                 "autonomous_wake",
                 module="presence",
-                wake_reason=reason,
+                wake_reason=display_reason,
                 cycle_num=self._cycle_count_this_hour,
                 delivery_platform=delivery_name,
                 channel=channel,
@@ -534,7 +733,7 @@ class WakeCycleEngine:
             completed_rounds = 0
 
             user_lines = self._build_user_opening_lines(
-                reason=reason,
+                reason=display_reason,
                 wake_intent=wake_intent,
                 wake_want=wake_want,
                 soma_line=soma_line,
@@ -568,7 +767,7 @@ class WakeCycleEngine:
                             entity,
                             tonic,
                             stirring,
-                            reason,
+                            display_reason,
                             poker_disposition=poker_disposition,
                             sustained_max_rounds=max_rounds,
                             wide_mode=wide_mode,
@@ -581,7 +780,7 @@ class WakeCycleEngine:
                     else:
                         context = self._build_session_continuation(
                             stirring=stirring,
-                            reason=reason,
+                            reason=display_reason,
                             poker_disposition=poker_disposition,
                             round_idx=round_idx + 1,
                             max_rounds=max_rounds,
@@ -691,7 +890,7 @@ class WakeCycleEngine:
             episode["ended_at"] = time.time()
             episode["outcome"] = "stopped" if stop_session else "completed"
             carryover = self._derive_carryover_threads(
-                reason=reason,
+                reason=_strip_wake_flavor(reason),
                 wake_intent=wake_intent,
                 tool_names=accumulated_tools,
                 last_reply=last_reply,
@@ -703,7 +902,7 @@ class WakeCycleEngine:
                 entity,
                 reply_platform,
                 self._build_user_end_card(
-                    reason=reason,
+                    reason=display_reason,
                     wake_intent=wake_intent,
                     rounds_completed=completed_rounds,
                     tools_all=accumulated_tools,
@@ -715,7 +914,7 @@ class WakeCycleEngine:
             log.info(
                 "autonomous_wake_session_end",
                 module="presence",
-                wake_reason=reason,
+                wake_reason=display_reason,
                 rounds_completed=completed_rounds,
                 wall_seconds=wall_s,
                 elapsed_seconds=round(elapsed, 1),
@@ -729,7 +928,12 @@ class WakeCycleEngine:
             self._running = False
 
     async def _compose_stirring(
-        self, entity: Any, tonic: Any, *, previous_wake_at: float
+        self,
+        entity: Any,
+        tonic: Any,
+        *,
+        previous_wake_at: float,
+        voice_variant: int = 0,
     ) -> tuple[str, str | None]:
         """Compose wake stirring and optional poker disposition (internal prompt)."""
         pp = self.cfg.harness.autonomy.poker_prompts
@@ -821,6 +1025,13 @@ class WakeCycleEngine:
         minutes_since_wake = (now - previous_wake_at) / 60.0 if previous_wake_at > 0 else 0.0
         minutes_since_conversation = (now - float(lc.get("at", 0))) / 60.0 if lc.get("at") else 0.0
 
+        wv = getattr(tonic, "wake_voice", None)
+        base_t = float(getattr(wv, "temperature", 0.85) or 0.85)
+        j = float(getattr(self._auto, "wake_voice_temperature_jitter", 0.0) or 0.0)
+        wake_voice_temperature: float | None = None
+        if j > 0:
+            wake_voice_temperature = max(0.35, min(1.35, base_t + random.uniform(-j, j)))
+
         stirring = await tonic.compose_wake_stirring(
             entity.client,
             reflex_model,
@@ -832,6 +1043,8 @@ class WakeCycleEngine:
             minutes_since_wake=minutes_since_wake,
             minutes_since_conversation=minutes_since_conversation,
             num_ctx=num_ctx,
+            voice_variant=voice_variant,
+            wake_voice_temperature=wake_voice_temperature,
         )
 
         if not stirring:
@@ -947,6 +1160,29 @@ class WakeCycleEngine:
                 "If a lingering spark still feels alive, pick it up even if it came from hours ago.",
                 "Use project and skill memory as living continuity: create_project/list_projects/update_project and list_skills/read_skill/update_skill.",
                 "",
+            ]
+        )
+        if getattr(self._auto, "wake_anti_groundhog_prompt", True):
+            parts.extend(
+                [
+                    "[Continuity — not déjà vu]",
+                    "You remember prior wakes. Do not re-announce what you already concluded or found as if it were new.",
+                    "If a thread is still open, advance it with a genuinely new step — or consciously pick a different vein.",
+                    "If you describe reading, browsing, or checking a site, you must use the appropriate tool (fetch_url, "
+                    "browser, shell curl, etc.). Never narrate pages you did not actually retrieve.",
+                    "",
+                ]
+            )
+        if random.random() < 0.62:
+            parts.extend(
+                [
+                    "[Expansion nudge]",
+                    random.choice(_EXPANSION_NUDGES),
+                    "",
+                ]
+            )
+        parts.extend(
+            [
                 "[Core question this wake]",
                 "What do I want to do right now?",
                 f"Current answer: {_clean_one_line(wake_want or '(not sure yet)')}",
@@ -973,6 +1209,7 @@ class WakeCycleEngine:
                     "You may venture out with tools when it feels natural: search, fetch, inspect, "
                     "write notes, schedule, or message someone. Prefer purposeful action tied to your "
                     "active desire pressure, not generic busywork.",
+                    "Verify the outside world with tools when it matters — do not narrate pages or feeds you did not fetch.",
                     "Use think() to reason privately. Use any relevant tools. Use say() only when you "
                     "actually want to communicate. Use end_turn() when done — include mood and parting thought."
                     + end_extra,
@@ -1009,7 +1246,7 @@ class WakeCycleEngine:
         if not self._last_desires:
             return "(no strong pressures)"
         lines: list[str] = []
-        for d in self._last_desires[: max(1, int(self._auto.max_desires_considered or 3))]:
+        for d in self._last_desires[:8]:
             kind = str(d.get("kind") or "act")
             urgency = float(d.get("urgency", 0.0) or 0.0)
             target = str(d.get("target") or "").strip()
@@ -1097,6 +1334,15 @@ class WakeCycleEngine:
                 self._render_desire_block(),
             ]
         )
+        if getattr(self._auto, "wake_anti_groundhog_prompt", True):
+            parts.extend(
+                [
+                    "[Reminder]",
+                    "This is a continuation — do not re-report last round's findings as if you just learned them. "
+                    "Add evidence, change angle, or stop.",
+                    "",
+                ]
+            )
         return "\n".join(parts)
 
     def _new_session_memory(
@@ -1110,13 +1356,15 @@ class WakeCycleEngine:
         skill_lines: list[str],
         continuity: list[str],
     ) -> dict[str, Any]:
+        raw_threads = list(continuity[:2]) + list(lingering_sparks[:3]) + list(project_lines[:2])
+        random.shuffle(raw_threads)
         return {
             "objective": f"{wake_intent} from {reason}",
             "want": _clean_one_line(wake_want, 180),
             "want_seed": _clean_one_line(wake_want, 180),
             "want_confidence": 0.62,
             "want_revision_count": 0,
-            "threads": _trim_list((continuity[:2] + lingering_sparks[:3] + project_lines[:2]), 6),
+            "threads": _trim_list(raw_threads, 6),
             "skills": _trim_list(skill_lines[:4], 4),
             "recent_actions": [],
             "learned": [],
@@ -1272,22 +1520,11 @@ class WakeCycleEngine:
         spark = _clean_one_line(lingering_sparks[0], 140) if lingering_sparks else ""
         proj = _clean_one_line(project_lines[0], 120) if project_lines else ""
         skill = _clean_one_line(skill_lines[0], 120) if skill_lines else ""
-        if wake_intent == "build_something":
-            base = "I want to build a concrete thing and push it forward."
-        elif wake_intent == "learn_something":
-            base = "I want to learn a useful technique and turn it into reusable skill."
-        elif wake_intent == "play_or_experiment":
-            base = "I want to experiment and play with something interesting."
-        elif wake_intent == "social_or_action":
-            base = "I want to reach out or act in the social world."
-        elif wake_intent == "resolve_tension":
-            base = "I want to resolve a restless thread and settle the tension."
-        elif wake_intent == "follow_desire":
-            base = "I want to follow the strongest desire pressure."
-        elif wake_intent == "explore_question":
-            base = "I want to chase a question and see what I uncover."
-        else:
-            base = "I want to wander until something real grabs me."
+        bases = _WAKE_WANT_BASES.get(
+            wake_intent,
+            ("I want to wander until something real grabs me.",),
+        )
+        base = random.choice(bases)
         details: list[str] = []
         if spark:
             details.append(f"spark: {spark}")
@@ -1368,9 +1605,10 @@ class WakeCycleEngine:
         reason: str,
         *,
         tonic: Any,
+        entity: Any,
         lingering_sparks: list[str] | None = None,
     ) -> str:
-        """Pick one primary intent for continuity and explainability."""
+        """Pick one primary intent — stochastic among top scores + rut-aware nudges."""
         scores: dict[str, float] = {
             "social_or_action": 0.0,
             "resolve_tension": 0.0,
@@ -1390,13 +1628,29 @@ class WakeCycleEngine:
         scores["explore_question"] += float(bars.get("curiosity", 0.0)) / 100.0
         scores["resolve_tension"] += float(bars.get("tension", 0.0)) / 100.0
         scores["explore_or_recover"] += float(bars.get("comfort", 0.0)) / 100.0 * 0.4
+        rut = self._rut_keywords_from_episodes(entity)
+        if rut:
+            scores["explore_question"] += 0.16 * min(3, len(rut))
+            scores["learn_something"] += 0.14 * min(3, len(rut))
+            scores["play_or_experiment"] += 0.1 * min(3, len(rut))
         if self._last_desires:
             top = self._last_desires[0]
-            if str(top.get("kind") or "").strip().lower() == "social":
+            k = str(top.get("kind") or "").strip().lower()
+            if k == "social":
                 scores["social_or_action"] += 0.6
-            if str(top.get("kind") or "").strip().lower() == "learn":
+            if k == "learn":
                 scores["explore_question"] += 0.6
             scores["follow_desire"] += float(top.get("urgency", 0.0) or 0.0)
+            if k in ("fear_stir", "avoidance", "resolve_tension"):
+                scores["resolve_tension"] += 0.45
+                scores["explore_question"] += 0.22
+            if k in ("novelty_hunger", "world_expand", "explore", "contrarian"):
+                scores["explore_question"] += 0.48
+                scores["learn_something"] += 0.38
+                scores["play_or_experiment"] += 0.22
+            if k in ("longing", "reach_out", "opinion"):
+                scores["social_or_action"] += 0.42
+                scores["explore_question"] += 0.12
         for spark in lingering_sparks or []:
             lab = _spark_label(spark)
             if lab == "build":
@@ -1409,8 +1663,7 @@ class WakeCycleEngine:
                 scores["social_or_action"] += 0.5
             else:
                 scores["explore_question"] += 0.3
-        best = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[0][0]
-        return best
+        return self._sample_intent_from_scores(scores)
 
     def _extract_lingering_sparks(self, entity: Any, limit: int = 8) -> list[str]:
         """Pull unresolved opportunities from older chat history."""

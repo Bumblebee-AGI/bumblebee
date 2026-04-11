@@ -32,6 +32,26 @@ _TRAILING_TOOL_META_DONE = re.compile(
     r"(?:\n\n|\n)\s*i['\u2019]?m\s+done\.?\s*$",
     re.IGNORECASE,
 )
+# History bookkeeping for proactive `say()` turns (routine_history=False); models sometimes echo this aloud.
+_INTERNAL_PROACTIVE_MARKERS = (
+    re.compile(r"\[\s*you\s+sent\s+this\s+unprompted\s*\]", re.IGNORECASE),
+    re.compile(r"\[\s*bb:proactive_outbound\s*\]", re.IGNORECASE),
+)
+
+
+def strip_internal_history_echo(text: str) -> str:
+    """Remove echoes of internal proactive-outbound history tags (wake cycles, delegation)."""
+    t = text or ""
+    if not t.strip():
+        return (text or "").strip()
+    for rx in _INTERNAL_PROACTIVE_MARKERS:
+        t = rx.sub("", t)
+    out_lines: list[str] = []
+    for line in t.splitlines():
+        s = re.sub(r"[ \t]+", " ", line.strip())
+        if s:
+            out_lines.append(s)
+    return "\n".join(out_lines).strip()
 
 
 @dataclass
@@ -147,6 +167,7 @@ class VoiceController:
 
     def sanitize_reply(self, text: str) -> str:
         t = strip_stage_directions(text)
+        t = strip_internal_history_echo(t)
         t = _strip_degenerate_repetition(t)
         vis, cot = gemma.separate_plaintext_chain_of_thought(t)
         if cot and vis:

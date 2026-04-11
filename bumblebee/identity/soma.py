@@ -11,6 +11,7 @@ is deliberate: the body is a signal, not a command.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -237,6 +238,61 @@ _BAR_TO_EMOTION: list[tuple[str, str, float]] = [
 
 _BAR_WIDTH = 10
 
+# Ebb "personality" presets — merge under ``ebb.personality`` in YAML; explicit keys override.
+_EBB_PRESETS: dict[str, dict[str, Any]] = {
+    "calm": {
+        "quiet_below": 0.22,
+        "high_above": 0.62,
+        "reflex_salience_scale": 0.7,
+        "weights": {
+            "bar_deviation": 0.32,
+            "conflict": 0.18,
+            "impulse": 0.14,
+            "affect_load": 0.12,
+            "noise_fill": 0.24,
+        },
+    },
+    "reactive": {
+        "quiet_below": 0.36,
+        "high_above": 0.50,
+        "reflex_salience_scale": 0.78,
+        "weights": {
+            "bar_deviation": 0.42,
+            "conflict": 0.24,
+            "impulse": 0.20,
+            "affect_load": 0.12,
+            "noise_fill": 0.02,
+        },
+    },
+    "expressive": {
+        "quiet_below": 0.28,
+        "high_above": 0.54,
+        "reflex_salience_scale": 0.74,
+        "weights": {
+            "bar_deviation": 0.36,
+            "conflict": 0.20,
+            "impulse": 0.16,
+            "affect_load": 0.14,
+            "noise_fill": 0.14,
+        },
+    },
+}
+
+
+def _merge_ebb_personality(ebb_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Apply optional ``personality`` preset; user keys win."""
+    out = dict(ebb_cfg or {})
+    preset_name = str(out.pop("personality", "") or "").strip().lower()
+    if preset_name not in _EBB_PRESETS:
+        return out
+    base = dict(_EBB_PRESETS[preset_name])
+    for k, v in out.items():
+        if k == "weights" and isinstance(v, dict) and isinstance(base.get("weights"), dict):
+            base["weights"] = {**base["weights"], **v}
+        else:
+            base[k] = v
+    return base
+
 
 # ---------------------------------------------------------------------------
 # BarEngine — quantitative state with decay, coupling, momentum, impulses
@@ -255,6 +311,7 @@ class BarEngine:
         self._floors: dict[str, float] = {}
         self._ceilings: dict[str, float] = {}
         self._initial: dict[str, float] = {}
+        self._decay_time_scale: dict[str, float] = {}
         for v in variables:
             name = v["name"]
             init = float(v.get("initial", 50))
@@ -263,6 +320,8 @@ class BarEngine:
             self._decay_rates[name] = float(v.get("decay_rate", -1.0))
             self._floors[name] = float(v.get("floor", 0))
             self._ceilings[name] = float(v.get("ceiling", 100))
+            # Multiplier on homeostatic decay speed (1.0 = default). Lower = slower return to baseline.
+            self._decay_time_scale[name] = max(0.05, min(3.0, float(v.get("decay_time_scale", 1.0))))
         mw = max(2, int(bars_cfg.get("momentum_window", 6)) + 2)
         self._history: deque[dict[str, float]] = deque(maxlen=max(mw, 64))
         self._history.append(dict(self._values))
@@ -370,8 +429,9 @@ class BarEngine:
         eff_rates, tension_ph = self._apply_coupling(base_rates)
         for name in self._ordered_names:
             rate_frac = abs(eff_rates[name]) / 100.0
+            scale = float(self._decay_time_scale.get(name, 1.0))
             distance = self._values[name] - self._initial.get(name, 50.0)
-            self._values[name] -= distance * rate_frac * dt_hours
+            self._values[name] -= distance * rate_frac * dt_hours * scale
         if tension_ph != 0.0 and "tension" in self._values:
             self._values["tension"] += tension_ph * dt_hours
 
@@ -859,9 +919,38 @@ class SomaticAppraiser:
         *,
         temperature: float = 0.3,
         max_tokens: int = 120,
+        output_format: str = "json",
+        calibration_log: bool = False,
     ) -> None:
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.output_format = str(output_format or "json").strip().lower()
+        self.calibration_log = bool(calibration_log)
+
+    def _relationship_metrics_line(self, metrics: dict[str, float] | None) -> str:
+        if not metrics:
+            return ""
+        w = metrics.get("warmth")
+        t = metrics.get("trust")
+        f = metrics.get("familiarity")
+        try:
+            parts = []
+            if w is not None:
+                parts.append(f"warmth {float(w):.2f}")
+            if t is not None:
+                parts.append(f"trust {float(t):.2f}")
+            if f is not None:
+                parts.append(f"familiarity {float(f):.2f}")
+        except (TypeError, ValueError):
+            return ""
+        if not parts:
+            return ""
+        return (
+            "RELATIONSHIP METRICS: " + ", ".join(parts) + ". "
+            "High trust dampens harsh readings of ambiguous cues; low trust or low warmth "
+            "can amplify tension from neutral phrasing. Familiarity modulates how much social "
+            "contact registers as filling or draining.\n"
+        )
 
     async def appraise_input(
         self,
@@ -873,30 +962,49 @@ class SomaticAppraiser:
         bar_names: list[str],
         bars_pct: dict[str, int],
         relationship_blurb: str = "",
+        relationship_metrics: dict[str, float] | None = None,
         num_ctx: int | None = None,
     ) -> dict[str, Any]:
         """Appraise an incoming message and return bar deltas + semantic tags."""
         bars_line = ", ".join(f"{n}: {bars_pct.get(n, 50)}%" for n in bar_names)
         bar_names_str = ", ".join(bar_names)
+        metrics_line = self._relationship_metrics_line(relationship_metrics)
 
-        system = (
-            "You are the somatic appraisal layer of a felt-state engine. You read an "
-            "incoming message and determine how it lands in the body — what it does to "
-            "internal drives. You are not analyzing meaning. You are reading impact.\n\n"
-            f"Available bars: {bar_names_str}\n\n"
-            "Output format — one line per affected bar, then tags and felt note:\n"
-            "  bar_name: delta — one-word reason\n"
-            "  tags: tag1, tag2, tag3\n"
-            "  felt: brief felt note (one sentence, first person)\n\n"
-            "Delta range: -10 to +10. Use 0 or omit bars that aren't affected.\n"
-            "If a bar is already at 90% or above in CURRENT BODY, do not raise it further "
-            "unless the hit is extreme; prefer 0 or a negative delta so saturated drives can ease.\n"
-            "Only use bar names from the list above.\n"
-            "No preamble. No explanation. Just the lines."
-        )
-        user = (
-            f"CURRENT BODY: {bars_line}\n"
-        )
+        if self.output_format == "json":
+            system = (
+                "You are the somatic appraisal layer of a felt-state engine. You read an "
+                "incoming message and determine how it lands in the body — what it does to "
+                "internal drives. You are not analyzing meaning. You are reading impact.\n\n"
+                f"Available bars: {bar_names_str}\n\n"
+                "Respond with ONLY a single JSON object (no markdown fences) of this shape:\n"
+                '{"bar_effects":{"bar_name":<number>,...},"tags":["..."],"felt":"<one sentence>"}\n'
+                "bar_effects: only bars that move; omit bars with delta 0. Each value is a delta "
+                "from -10 to +10 (float allowed).\n"
+                "tags: up to 6 short lowercase tokens (e.g. affectionate, probing, terse).\n"
+                "felt: brief first-person somatic note.\n"
+                "If a bar is already at 90%+ in CURRENT BODY, do not raise it further unless the "
+                "hit is extreme; prefer 0 or a negative delta so saturated drives can ease.\n"
+                "Only use bar names from the list above."
+            )
+        else:
+            system = (
+                "You are the somatic appraisal layer of a felt-state engine. You read an "
+                "incoming message and determine how it lands in the body — what it does to "
+                "internal drives. You are not analyzing meaning. You are reading impact.\n\n"
+                f"Available bars: {bar_names_str}\n\n"
+                "Output format — one line per affected bar, then tags and felt note:\n"
+                "  bar_name: delta — one-word reason\n"
+                "  tags: tag1, tag2, tag3\n"
+                "  felt: brief felt note (one sentence, first person)\n\n"
+                "Delta range: -10 to +10. Use 0 or omit bars that aren't affected.\n"
+                "If a bar is already at 90% or above in CURRENT BODY, do not raise it further "
+                "unless the hit is extreme; prefer 0 or a negative delta so saturated drives can ease.\n"
+                "Only use bar names from the list above.\n"
+                "No preamble. No explanation. Just the lines."
+            )
+        user = f"CURRENT BODY: {bars_line}\n"
+        if metrics_line:
+            user += metrics_line
         if relationship_blurb:
             user += f"RELATIONSHIP: {relationship_blurb}\n"
         user += f"FROM: {person_name}\nMESSAGE: {text[:500]}"
@@ -918,7 +1026,16 @@ class SomaticAppraiser:
             log.debug("somatic_appraisal_failed", error=str(e))
             return {"bar_effects": {}, "tags": [], "felt": ""}
 
-        return self._parse(raw, set(bar_names))
+        parsed = self._parse_response(raw, set(bar_names))
+        if self.calibration_log and text:
+            h = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+            log.info(
+                "somatic_appraisal_calibration",
+                message_hash=h,
+                effects=parsed.get("bar_effects"),
+                tags=parsed.get("tags"),
+            )
+        return parsed
 
     async def appraise_interaction(
         self,
@@ -930,28 +1047,48 @@ class SomaticAppraiser:
         person_name: str,
         bar_names: list[str],
         bars_pct: dict[str, int],
+        relationship_blurb: str = "",
+        relationship_metrics: dict[str, float] | None = None,
         num_ctx: int | None = None,
     ) -> dict[str, Any]:
         """Appraise a completed exchange (input + response) for post-turn bar adjustment."""
         bars_line = ", ".join(f"{n}: {bars_pct.get(n, 50)}%" for n in bar_names)
         bar_names_str = ", ".join(bar_names)
+        metrics_line = self._relationship_metrics_line(relationship_metrics)
 
-        system = (
-            "You are the somatic appraisal layer. You just finished an exchange. "
-            "Read what was said and what you replied, then determine the body effect "
-            "of the full interaction — not just the input, but how expressing the "
-            "response felt.\n\n"
-            f"Available bars: {bar_names_str}\n\n"
-            "Output format:\n"
-            "  bar_name: delta — one-word reason\n"
-            "  tags: tag1, tag2\n"
-            "  felt: brief felt note\n\n"
-            "Delta range: -10 to +10. Only affected bars. If a bar is already at 90%+ in "
-            "CURRENT BODY, avoid pushing it higher unless the exchange was truly overwhelming.\n"
-            "No preamble."
-        )
-        user = (
-            f"CURRENT BODY: {bars_line}\n"
+        if self.output_format == "json":
+            system = (
+                "You are the somatic appraisal layer. You just finished an exchange. "
+                "Read what was said and what you replied, then determine the body effect "
+                "of the full interaction — not just the input, but how expressing the "
+                "response felt.\n\n"
+                f"Available bars: {bar_names_str}\n\n"
+                "Respond with ONLY a single JSON object (no markdown fences):\n"
+                '{"bar_effects":{"bar_name":<number>,...},"tags":["..."],"felt":"<one sentence>"}\n'
+                "Delta range -10 to +10 per bar. If a bar is already at 90%+ in CURRENT BODY, "
+                "avoid pushing it higher unless the exchange was truly overwhelming."
+            )
+        else:
+            system = (
+                "You are the somatic appraisal layer. You just finished an exchange. "
+                "Read what was said and what you replied, then determine the body effect "
+                "of the full interaction — not just the input, but how expressing the "
+                "response felt.\n\n"
+                f"Available bars: {bar_names_str}\n\n"
+                "Output format:\n"
+                "  bar_name: delta — one-word reason\n"
+                "  tags: tag1, tag2\n"
+                "  felt: brief felt note\n\n"
+                "Delta range: -10 to +10. Only affected bars. If a bar is already at 90%+ in "
+                "CURRENT BODY, avoid pushing it higher unless the exchange was truly overwhelming.\n"
+                "No preamble."
+            )
+        user = f"CURRENT BODY: {bars_line}\n"
+        if metrics_line:
+            user += metrics_line
+        if relationship_blurb:
+            user += f"RELATIONSHIP: {relationship_blurb}\n"
+        user += (
             f"THEM ({person_name}): {input_text[:300]}\n"
             f"YOU: {reply_text[:300]}"
         )
@@ -973,10 +1110,55 @@ class SomaticAppraiser:
             log.debug("somatic_interaction_appraisal_failed", error=str(e))
             return {"bar_effects": {}, "tags": [], "felt": ""}
 
-        return self._parse(raw, set(bar_names))
+        return self._parse_response(raw, set(bar_names))
+
+    def _parse_response(self, text: str, valid_bars: set[str]) -> dict[str, Any]:
+        if self.output_format == "json":
+            j = self._try_parse_json(text, valid_bars)
+            if j is not None:
+                return j
+        return self._parse_lines(text, valid_bars)
 
     @staticmethod
-    def _parse(text: str, valid_bars: set[str]) -> dict[str, Any]:
+    def _try_parse_json(text: str, valid_bars: set[str]) -> dict[str, Any] | None:
+        s = text.strip()
+        start = s.find("{")
+        end = s.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            obj = json.loads(s[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        raw_effects = obj.get("bar_effects") or {}
+        bar_effects: dict[str, float] = {}
+        if isinstance(raw_effects, dict):
+            for k, v in raw_effects.items():
+                name = str(k).lower().strip()
+                if name not in valid_bars:
+                    continue
+                try:
+                    delta = float(v)
+                except (TypeError, ValueError):
+                    continue
+                delta = max(-10.0, min(10.0, delta))
+                if delta != 0:
+                    bar_effects[name] = delta
+        tags: list[str] = []
+        raw_tags = obj.get("tags")
+        if isinstance(raw_tags, list):
+            tags = [str(t).strip() for t in raw_tags if str(t).strip()][:8]
+        elif isinstance(raw_tags, str) and raw_tags.strip():
+            tags = [t.strip() for t in raw_tags.split(",") if t.strip()][:8]
+        felt = ""
+        if obj.get("felt") is not None:
+            felt = str(obj.get("felt", "")).strip()
+        return {"bar_effects": bar_effects, "tags": tags, "felt": felt}
+
+    @staticmethod
+    def _parse_lines(text: str, valid_bars: set[str]) -> dict[str, Any]:
         bar_effects: dict[str, float] = {}
         tags: list[str] = []
         felt = ""
@@ -1103,10 +1285,13 @@ class NoiseEngine:
         max_fragments: int = 8,
         temperature: float = 1.05,
         max_tokens: int = 240,
+        thematic_streak_max: int = 0,
     ) -> None:
         self.cycle_seconds = cycle_seconds
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self._thematic_streak_max = max(0, int(thematic_streak_max))
+        self._coherent_streak = 0
         self._fragments: deque[str] = deque(maxlen=max_fragments)
         self._last_tick: float = 0.0
 
@@ -1115,6 +1300,25 @@ class NoiseEngine:
 
     def current_fragments(self) -> list[str]:
         return list(self._fragments)
+
+    def _streak_instruction(self, mode_norm: str) -> str:
+        if self._thematic_streak_max <= 0:
+            return ""
+        if mode_norm != "coherent":
+            self._coherent_streak = 0
+            return ""
+        self._coherent_streak += 1
+        if self._coherent_streak < self._thematic_streak_max:
+            return (
+                f"THEMATIC STREAK ({self._coherent_streak}/{self._thematic_streak_max}): "
+                "keep orbiting the same live preoccupation as in YOUR RECENT THOUGHTS — "
+                "new angles and pressure, same core thread.\n\n"
+            )
+        self._coherent_streak = 0
+        return (
+            "End of thematic streak: allow one fragment to pivot to a fresh ordinary detail; "
+            "keep the rest loosely tied to recent context.\n\n"
+        )
 
     async def generate(
         self,
@@ -1128,6 +1332,8 @@ class NoiseEngine:
         conversation_tail: str,
         entity_name: str,
         mode: str = "entropic",
+        last_appraisal_tags: list[str] | None = None,
+        last_appraisal_felt: str = "",
         num_ctx: int | None = None,
     ) -> list[str]:
         """Call the small model and return new noise fragments."""
@@ -1149,6 +1355,7 @@ class NoiseEngine:
             )
 
         mode_norm = "coherent" if str(mode).strip().lower() == "coherent" else "entropic"
+        streak_block = self._streak_instruction(mode_norm)
         mode_guidance = (
             "MODE: coherent/high-signal. Stay noisy and emergent, but pointed: most lines orbit "
             "one central live preoccupation from current events/conversation. Vary angle, pressure, "
@@ -1158,11 +1365,28 @@ class NoiseEngine:
             "still grounded in lived context. Fragments can jump topics abruptly and feel electric.\n\n"
         )
 
+        appraisal_block = ""
+        tags = [t for t in (last_appraisal_tags or []) if t]
+        felt = (last_appraisal_felt or "").strip()
+        if tags or felt:
+            appraisal_block = "LAST SOMATIC APPRAISAL"
+            if tags:
+                appraisal_block += f" (tags: {', '.join(tags)})"
+            appraisal_block += ":\n"
+            if felt:
+                appraisal_block += f"  {felt}\n"
+            appraisal_block += (
+                "Let at least one fragment echo, push back on, or complicate this — "
+                "not as analysis, as stray inner voice.\n\n"
+            )
+
         system = (
             f"You are the inner voice of {entity_name}. Not the part that speaks "
             "to people — the stray, uneven chatter underneath: half-sentences, "
             "boredom, stray sense-memories, dumb jokes, tiny itches, flat facts, "
             "random questions, nothing grand.\n\n"
+            f"{streak_block}"
+            f"{appraisal_block}"
             f"{mode_guidance}"
             "Read the body state and recents below. Output 3-7 separate thoughts as "
             "plain lines (or separate short paragraphs). First person, present tense, "
@@ -1339,6 +1563,8 @@ class WakeVoice:
         minutes_since_wake: float,
         minutes_since_conversation: float,
         num_ctx: int | None = None,
+        voice_variant: int = 0,
+        temperature: float | None = None,
     ) -> str:
         """Ask the subconscious to compose a wake prompt from current body state."""
         import datetime
@@ -1361,6 +1587,24 @@ class WakeVoice:
             "should color what you surface. If there's a conflict, name the pull.\n\n"
             "Don't be precious. Don't be poetic. Don't summarize. Just say what's there."
         )
+        v = int(voice_variant) % 4
+        if v == 1:
+            system += (
+                "\n\nThis time, let one sharp fear or vulnerability surface — not a confession, "
+                "just a flicker. Name one petty annoyance or small appetite. You are allowed "
+                "to feel opinionated about something concrete."
+            )
+        elif v == 2:
+            system += (
+                "\n\nLean restless: shorter clauses, more edge, less comfort. Something is "
+                "slightly wrong, unfinished, or irritating — say it plainly."
+            )
+        elif v == 3:
+            system += (
+                "\n\nLean outward: what exists beyond this screen and these habits — weather, "
+                "a stranger, a distant fact, a place in memory, a field you haven't touched. "
+                "Concrete, not poetic."
+            )
 
         noise_block = "\n".join(noise_fragments[-4:]) if noise_fragments else "(quiet)"
 
@@ -1384,6 +1628,10 @@ class WakeVoice:
             "What stirs?"
         )
 
+        temp = float(self.temperature)
+        if temperature is not None:
+            temp = float(temperature)
+
         try:
             res = await client.chat_completion(
                 model,
@@ -1391,7 +1639,7 @@ class WakeVoice:
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
                 ],
-                temperature=self.temperature,
+                temperature=temp,
                 max_tokens=self.max_tokens,
                 think=False,
                 num_ctx=num_ctx,
@@ -1429,31 +1677,37 @@ class TonicBody:
     """Coordinates bars, affects, noise, wake voice, and rendering into a single readable body state."""
 
     def __init__(self, config: dict[str, Any], soma_dir: Path) -> None:
-        self.bars = BarEngine(config)
+        cfg = dict(config)
+        cfg["ebb"] = _merge_ebb_personality(dict(cfg.get("ebb") or {}))
+
+        self.bars = BarEngine(cfg)
         self.affects = AffectEngine(
-            cycle_seconds=float(config.get("affect_cycle_seconds", 180)),
+            cycle_seconds=float(cfg.get("affect_cycle_seconds", 180)),
         )
-        noise_cfg = config.get("noise") or {}
+        noise_cfg = cfg.get("noise") or {}
         self.noise = NoiseEngine(
             cycle_seconds=float(noise_cfg.get("cycle_seconds", 60)),
             max_fragments=int(noise_cfg.get("max_fragments", 8)),
             temperature=float(noise_cfg.get("temperature", 1.1)),
             max_tokens=int(noise_cfg.get("max_tokens", 240)),
+            thematic_streak_max=int(noise_cfg.get("thematic_streak_max", 0)),
         )
         self._noise_enabled = bool(noise_cfg.get("enabled", True))
         self._noise_model = str(noise_cfg.get("model") or "")
-        wake_cfg = config.get("wake_voice") or {}
+        wake_cfg = cfg.get("wake_voice") or {}
         self.wake_voice = WakeVoice(
             temperature=float(wake_cfg.get("temperature", 0.8)),
             max_tokens=int(wake_cfg.get("max_tokens", 300)),
         )
         self._wake_voice_enabled = bool(wake_cfg.get("enabled", True))
         self._wake_voice_model = str(wake_cfg.get("model") or "")
-        appraisal_cfg = config.get("appraisal") or {}
+        appraisal_cfg = cfg.get("appraisal") or {}
         self._appraisal_enabled = bool(appraisal_cfg.get("enabled", True))
         self.appraiser = SomaticAppraiser(
             temperature=float(appraisal_cfg.get("temperature", 0.3)),
             max_tokens=int(appraisal_cfg.get("max_tokens", 120)),
+            output_format=str(appraisal_cfg.get("output_format", "json")),
+            calibration_log=bool(appraisal_cfg.get("calibration_log", False)),
         )
         self.renderer = BodyRenderer()
         self._soma_dir = soma_dir
@@ -1462,8 +1716,14 @@ class TonicBody:
         self._current_affects: list[dict[str, Any]] = []
         self._tick_count = 0
         self._save_every = 6
+        self._last_appraisal_for_noise: dict[str, Any] = {}
 
-        ebb_cfg = config.get("ebb") or {}
+        obs_cfg = cfg.get("observability") or {}
+        self._obs_timeline_enabled = bool(obs_cfg.get("timeline_enabled", False))
+        self._obs_timeline_name = str(obs_cfg.get("timeline_filename", "soma_timeline.md"))
+        self._obs_timeline_max_bytes = max(4096, int(obs_cfg.get("timeline_max_bytes", 65536)))
+
+        ebb_cfg = cfg.get("ebb") or {}
         self._ebb_enabled = bool(ebb_cfg.get("enabled", True))
         w = ebb_cfg.get("weights") or {}
         wb = float(w.get("bar_deviation", 0.38))
@@ -1487,6 +1747,7 @@ class TonicBody:
         self._ebb_normal_noise_lines = max(0, int(ebb_cfg.get("normal_max_noise_lines", 3)))
         self._ebb_high_noise_lines = max(0, int(ebb_cfg.get("high_max_noise_lines", 4)))
         self._ebb_skip_post_turn = bool(ebb_cfg.get("skip_post_turn_noise_when_quiet", True))
+        self._ebb_debug_salience = bool(ebb_cfg.get("debug_salience", False))
 
     def emit(self, event: dict[str, Any]) -> None:
         """Record a structured event for the next bars tick."""
@@ -1605,6 +1866,7 @@ class TonicBody:
             journal_tail=journal_tail,
             conversation_tail=conversation_tail,
         )
+        lap = self._last_appraisal_for_noise
         await self.noise.generate(
             client,
             model,
@@ -1615,6 +1877,8 @@ class TonicBody:
             conversation_tail=conversation_tail,
             entity_name=entity_name,
             mode=noise_mode,
+            last_appraisal_tags=list(lap.get("tags") or []),
+            last_appraisal_felt=str(lap.get("felt") or ""),
             num_ctx=num_ctx,
         )
         self.flush_body_md()
@@ -1651,6 +1915,8 @@ class TonicBody:
         minutes_since_wake: float = 0.0,
         minutes_since_conversation: float = 0.0,
         num_ctx: int | None = None,
+        voice_variant: int = 0,
+        wake_voice_temperature: float | None = None,
     ) -> str:
         """Ask the subconscious WakeVoice to compose a stirring for an autonomous cycle."""
         if not self._wake_voice_enabled:
@@ -1685,6 +1951,8 @@ class TonicBody:
             minutes_since_wake=minutes_since_wake,
             minutes_since_conversation=minutes_since_conversation,
             num_ctx=num_ctx,
+            voice_variant=voice_variant,
+            temperature=wake_voice_temperature,
         )
 
     async def appraise_and_apply(
@@ -1695,6 +1963,7 @@ class TonicBody:
         text: str,
         person_name: str,
         relationship_blurb: str = "",
+        relationship_metrics: dict[str, float] | None = None,
         num_ctx: int | None = None,
     ) -> dict[str, Any]:
         """Run somatic appraisal on an incoming message and apply bar effects immediately."""
@@ -1708,8 +1977,13 @@ class TonicBody:
             bar_names=self.bars.ordered_names,
             bars_pct=self.bars.snapshot_pct(),
             relationship_blurb=relationship_blurb,
+            relationship_metrics=relationship_metrics,
             num_ctx=num_ctx,
         )
+        self._last_appraisal_for_noise = {
+            "tags": list(result.get("tags") or []),
+            "felt": str(result.get("felt") or ""),
+        }
         if result["bar_effects"]:
             event = {
                 "type": "appraisal",
@@ -1737,6 +2011,8 @@ class TonicBody:
         input_text: str,
         reply_text: str,
         person_name: str,
+        relationship_blurb: str = "",
+        relationship_metrics: dict[str, float] | None = None,
         num_ctx: int | None = None,
     ) -> dict[str, Any]:
         """Run somatic appraisal on a completed exchange and apply bar effects."""
@@ -1750,8 +2026,14 @@ class TonicBody:
             person_name=person_name,
             bar_names=self.bars.ordered_names,
             bars_pct=self.bars.snapshot_pct(),
+            relationship_blurb=relationship_blurb,
+            relationship_metrics=relationship_metrics,
             num_ctx=num_ctx,
         )
+        self._last_appraisal_for_noise = {
+            "tags": list(result.get("tags") or []),
+            "felt": str(result.get("felt") or ""),
+        }
         if result["bar_effects"]:
             event = {
                 "type": "appraisal",
@@ -1806,6 +2088,88 @@ class TonicBody:
             + self._ebb_w_noise * noise_fill
         )
         return max(0.0, min(1.0, s))
+
+    def compute_salience_breakdown(self) -> dict[str, Any]:
+        """Structured salience components for logging and tuning (0..1-ish pieces)."""
+        pct = self.bars.snapshot_pct()
+        init = self.bars._initial
+        names = self.bars.ordered_names
+        n = len(names) or 1
+        dev_sum = sum(
+            abs(float(pct.get(name, 0)) - float(init.get(name, 50.0))) for name in names
+        )
+        bar_dev = min(1.0, (dev_sum / n) / 100.0)
+
+        conflicts = self.bars._active_conflicts
+        conf_score = 0.0
+        if conflicts:
+            conf_score = min(1.0, max(float(c.get("intensity", 0.0)) for c in conflicts))
+
+        impulses = [i for i in self.bars._active_impulses if not i.get("on_cooldown")]
+        imp_score = 0.0
+        if impulses:
+            imp_score = min(1.0, max(float(i.get("intensity", 0.0)) for i in impulses))
+
+        affect_load = min(1.0, len(self._current_affects) / 6.0)
+
+        frags = self.noise.current_fragments()
+        mf = float(self.noise._fragments.maxlen or 8)
+        noise_fill = min(1.0, len(frags) / max(1.0, mf))
+
+        total = self.compute_salience()
+        return {
+            "total": round(total, 4),
+            "bar_deviation": round(
+                self._ebb_w_bar * bar_dev, 4
+            ),
+            "conflict": round(self._ebb_w_conf * conf_score, 4),
+            "impulse": round(self._ebb_w_imp * imp_score, 4),
+            "affect_load": round(self._ebb_w_aff * affect_load, 4),
+            "noise_fill": round(self._ebb_w_noise * noise_fill, 4),
+            "raw_bar_dev": round(bar_dev, 4),
+            "raw_conflict": round(conf_score, 4),
+            "raw_impulse": round(imp_score, 4),
+        }
+
+    def maybe_log_salience_debug(
+        self,
+        *,
+        route: str,
+        platform: str,
+        presentation: str,
+    ) -> None:
+        if not self._ebb_debug_salience:
+            return
+        bd = self.compute_salience_breakdown()
+        log.info(
+            "soma_salience_debug",
+            route=route,
+            platform=platform,
+            presentation=presentation,
+            **bd,
+        )
+
+    def append_timeline_line(self, line: str) -> None:
+        if not self._obs_timeline_enabled:
+            return
+        text = (line or "").strip()
+        if not text:
+            return
+        try:
+            path = self._soma_dir / self._obs_timeline_name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            block = f"{stamp}  {text}\n"
+            if path.is_file():
+                existing = path.read_text(encoding="utf-8", errors="replace")
+                combined = existing + block
+                if len(combined.encode("utf-8")) > self._obs_timeline_max_bytes:
+                    combined = combined[-self._obs_timeline_max_bytes :]
+                path.write_text(combined, encoding="utf-8")
+            else:
+                path.write_text(block, encoding="utf-8")
+        except Exception as e:
+            log.debug("soma_timeline_append_failed", error=str(e))
 
     def resolve_presentation(
         self,
@@ -1963,6 +2327,7 @@ class TonicBody:
             "saved_at": time.time(),
             "affects": [dict(a) for a in self._current_affects],
             "noise_fragments": list(self.noise.current_fragments()),
+            "noise_coherent_streak": int(getattr(self.noise, "_coherent_streak", 0)),
         }
 
     def _restore_from_snapshot(self, data: dict[str, Any]) -> bool:
@@ -2000,6 +2365,13 @@ class TonicBody:
                     if not _fragment_is_duplicate(c, self.noise._fragments):
                         self.noise._fragments.append(c)
             log.info("soma_noise_restored", count=len(self.noise._fragments))
+
+        ncs = data.get("noise_coherent_streak")
+        if ncs is not None:
+            try:
+                self.noise._coherent_streak = max(0, int(ncs))
+            except (TypeError, ValueError):
+                pass
 
         return True
 

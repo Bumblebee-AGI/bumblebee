@@ -250,12 +250,14 @@ On Railway, mount a volume at **`/app/data`** and set **`BUMBLEBEE_EXECUTION_WOR
 
 ## Tools
 
-31 tool modules organized across the entity's full surface area. Tools register at startup based on YAML toggles in `configs/default.yaml` and entity overrides.
+36 tool modules organized across the entity's full surface area. Tools register at startup based on YAML toggles in `configs/default.yaml` and entity overrides.
 
 | Category | Capabilities |
 |----------|-------------|
 | **Web and discovery** | Search, fetch URLs, site crawl, Wikipedia, Reddit |
-| **Filesystem and workspace** | Scoped file read/write, PDF extraction, file send |
+| **Filesystem and workspace** | Scoped file read/write, unified-diff `apply_patch`, PDF extraction, file send |
+| **Memory and planning** | Semantic `search_past_conversations`, session todo list, long-horizon project ledger |
+| **Human-in-the-loop** | `ask_user` clarifications; `delegate_task` bounded sub-runs with a tool subset |
 | **Shell and code** | Terminal commands, Python/JavaScript execution, sandboxed execution RPC |
 | **Browser** | Playwright-based browsing (optional `bumblebee[browser]` extra) |
 | **Voice and media** | Edge-TTS voice notes, audio transcription, YouTube search |
@@ -424,7 +426,7 @@ bumblebee/
 ├── memory/            # episodic, relational, beliefs, imprints, narrative, consolidation, knowledge, journal
 ├── presence/          # daemon, wake cycles, initiative, embodiment, platforms, automations
 │   ├── platforms/     # CLI, Telegram, Discord adapters
-│   ├── tools/         # 31 tool modules
+│   ├── tools/         # 36 tool modules
 │   └── automations/   # cron engine, emergence, scheduling
 ├── inference/         # provider abstraction, OpenAI transport, Ollama helpers
 ├── inference_gateway/  # home gateway server for hybrid deployment

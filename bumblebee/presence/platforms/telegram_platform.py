@@ -46,6 +46,7 @@ from bumblebee.presence.platforms.telegram_format import (
     format_memories_html,
     format_models_html,
     format_ping_html,
+    format_version_html,
     format_private_usage_html,
     format_update_blocked_html,
     format_update_result_html,
@@ -314,6 +315,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("tools", self._on_tools_command), group=_g)
         self.app.add_handler(CommandHandler("routines", self._on_routines_command), group=_g)
         self.app.add_handler(CommandHandler("ping", self._on_ping_command), group=_g)
+        self.app.add_handler(CommandHandler("version", self._on_version_command), group=_g)
         self.app.add_handler(CommandHandler("busy", self._on_busy_command), group=_g)
         self.app.add_handler(CommandHandler("update", self._on_update_command), group=_g)
         self.app.add_handler(CommandHandler("context", self._on_context_command), group=_g)
@@ -1301,6 +1303,14 @@ class TelegramPlatform(Platform):
             return
         _ = context
         await self._reply_html(update, format_ping_html(self._app_version))
+
+    async def _on_version_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        if not await self._check_allowed(update, notify=True):
+            return
+        _ = context
+        await self._reply_html(update, format_version_html(self._app_version))
 
     async def _on_busy_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):

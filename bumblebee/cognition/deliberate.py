@@ -234,6 +234,12 @@ class DeliberateCognition:
         step_cap = self._agent_step_cap()
         meta = getattr(_inp, "metadata", None) or {}
         if isinstance(meta, dict):
+            if meta.get("delegation"):
+                cap = int(meta.get("delegation_max_steps") or 10)
+                step_cap = max(3, min(25, cap))
+            elif meta.get("code_task"):
+                cap = int(meta.get("code_task_max_steps") or 14)
+                step_cap = max(5, min(25, cap))
             ss = meta.get("sustained_session")
             if isinstance(ss, dict):
                 extra = int(ss.get("extra_tool_steps", 0) or 0)
