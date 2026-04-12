@@ -400,7 +400,7 @@ bumblebee recall <entity> "<query>"            semantic search over memory
 bumblebee wipe <entity> [--yes]               clear memory
 bumblebee export <entity> <dir>                backup entity
 bumblebee import <dir>                         restore entity
-bumblebee gateway setup|on|off|status|restart  home inference stack (Windows)
+bumblebee gateway setup|on|off|status|restart  home inference stack (gateway.ps1 / gateway.sh)
 ```
 
 ---

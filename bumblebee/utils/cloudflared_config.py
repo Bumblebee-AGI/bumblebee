@@ -1,4 +1,4 @@
-"""Read tunnel hostname from a cloudflared ``config.yml`` (same heuristics as ``gateway.ps1``)."""
+"""Read tunnel hostname from a cloudflared ``config.yml`` (same heuristics as ``gateway.ps1`` / ``gateway.sh``)."""
 
 from __future__ import annotations
 
@@ -18,6 +18,10 @@ def find_cloudflared_executable() -> str | None:
             link = Path(local) / "Microsoft" / "WinGet" / "Links" / "cloudflared.exe"
             if link.is_file():
                 return str(link)
+    else:
+        for candidate in (Path("/opt/homebrew/bin/cloudflared"), Path("/usr/local/bin/cloudflared")):
+            if candidate.is_file():
+                return str(candidate)
     return None
 
 

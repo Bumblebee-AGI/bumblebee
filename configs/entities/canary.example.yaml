@@ -136,8 +136,8 @@ cognition:
   knowledge_recent_turns: 10
   history_message_char_limit: 2800
   thinking_mode: false
-  temperature: 0.85
-  max_context_tokens: 16384
+  temperature: 0.9
+  max_context_tokens: 32768
   thinking_budget: 2048
 
 # Per-entity harness.autonomy merge — sustained multi-round autonomous wake (see wake_cycle.py).

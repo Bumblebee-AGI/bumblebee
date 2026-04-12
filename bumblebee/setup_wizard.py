@@ -1,7 +1,7 @@
 """Interactive harness setup: ``bumblebee setup``.
 
 Default path: **hybrid** — Ollama + inference gateway + Cloudflare tunnel at home, body on Railway.
-Can run ``gateway.ps1`` (Windows), ``npm run ollama:reset``, automated ``cloudflared`` tunnel + DNS,
+Can run ``gateway.ps1`` / ``gateway.sh`` (home stack), ``npm run ollama:reset``, automated ``cloudflared`` tunnel + DNS,
 and ``railway`` CLI when available.
 """
 
@@ -360,8 +360,9 @@ def _run_hybrid_env_and_home(
             run_gateway_script("status")
     else:
         click.echo(
-            "\nHome stack: on Windows run `bumblebee gateway on` after cloudflared is configured.\n"
-            "Else: ollama serve, then INFERENCE_GATEWAY_TOKEN=… py -m bumblebee.inference_gateway, "
+            "\nHome stack: run `bumblebee gateway on` after cloudflared is configured "
+            "(requires `scripts/gateway.ps1` on Windows or `scripts/gateway.sh` on macOS/Linux).\n"
+            "Else: ollama serve, then INFERENCE_GATEWAY_TOKEN=… python -m bumblebee.inference_gateway, "
             "then cloudflared tunnel run …\n"
         )
 

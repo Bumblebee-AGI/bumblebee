@@ -1,4 +1,4 @@
-"""Tests for the proactive context compaction system (Hermes-style)."""
+"""Tests for the proactive context compaction system."""
 
 import json
 

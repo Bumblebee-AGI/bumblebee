@@ -259,7 +259,7 @@ def cmd_create() -> None:
 
 @cli.group("gateway")
 def cmd_gateway() -> None:
-    """Inference gateway + Cloudflare tunnel: setup wizard; on/off/status/restart (Windows script)."""
+    """Inference gateway + Cloudflare tunnel: setup wizard; on/off/status/restart (gateway.ps1 or gateway.sh)."""
 
 
 @cmd_gateway.command("setup")
@@ -280,7 +280,7 @@ def cmd_gateway_setup(
     gateway_port: int,
     skip_tunnel_bootstrap: bool,
 ) -> None:
-    """Interactive wizard: bearer token, tunnel config, .env, then optional gateway on (Windows)."""
+    """Interactive wizard: bearer token, tunnel config, .env, then optional gateway on (local script)."""
     from bumblebee.gateway_setup import run_gateway_setup_wizard
 
     run_gateway_setup_wizard(
@@ -546,13 +546,13 @@ def cmd_run(entity_name: str, with_ollama: bool, pull_models: bool) -> None:
 @click.option(
     "--skip-gateway",
     is_flag=True,
-    help="Do not run scripts/gateway.ps1 off (Windows home stack: cloudflared + gateway + Ollama).",
+    help="Do not run the gateway helper script off (home stack: cloudflared + gateway + Ollama).",
 )
 @click.option("--tunnel-name", default="bumblebee-inference", show_default=True)
 @click.option(
     "--leave-ollama-running",
     is_flag=True,
-    help="Do not terminate Ollama OS processes; forward to gateway.ps1 off when applicable.",
+    help="Do not terminate Ollama OS processes; forward to gateway off script when applicable.",
 )
 @click.option(
     "--dry-run",
@@ -565,7 +565,7 @@ def cmd_stop(
     leave_ollama_running: bool,
     dry_run: bool,
 ) -> None:
-    """Stop local Bumblebee processes, optional Windows gateway stack, and all Ollama OS processes."""
+    """Stop local Bumblebee processes, optional home gateway stack, and all Ollama OS processes."""
     from bumblebee.utils.stack_stop import stop_all_ollama_processes, stop_local_bumblebee_processes
 
     stop_local_bumblebee_processes(dry_run=dry_run, log=click.echo)
@@ -578,7 +578,7 @@ def cmd_stop(
                 f"{', leave Ollama running (script only)' if leave_ollama_running else ''})."
             )
         else:
-            click.echo("Dry run: gateway.ps1 not available — would skip gateway off.")
+            click.echo("Dry run: gateway helper script not available — would skip gateway off.")
         if leave_ollama_running:
             click.echo("Dry run: would leave Ollama OS processes running (--leave-ollama-running).")
         else:
@@ -596,11 +596,11 @@ def cmd_stop(
                 err=True,
             )
         else:
-            click.echo("Home gateway stack stopped (gateway.ps1 off).")
+            click.echo("Home gateway stack stopped (gateway off).")
     elif not skip_gateway:
         click.echo(
-            "Gateway script not available (Windows + scripts/gateway.ps1 only). "
-            "Skipping gateway off; stopping Bumblebee + Ollama processes only.",
+            "Gateway helper script not available (install bash + scripts/gateway.sh on macOS/Linux, "
+            "or scripts/gateway.ps1 on Windows). Skipping gateway off; stopping Bumblebee + Ollama processes only.",
             err=True,
         )
 

@@ -1,4 +1,4 @@
-"""Context compaction engine — Hermes-style proactive compression with structured summaries.
+"""Context compaction engine — Proactive context compression with structured summaries.
 
 The legacy ``merge_rolling_summary`` (post-commit safety net) is preserved alongside the new
 proactive compactor that fires *before* inference when context approaches the token limit.

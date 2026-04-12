@@ -1,7 +1,7 @@
 """Interactive gateway + Cloudflare tunnel setup: ``bumblebee gateway setup``.
 
 Walks through **both** together: shared bearer token + tunnel ingress to the local inference
-gateway (Ollama stays behind the gateway). Windows can finish with ``bumblebee gateway on``.
+gateway (Ollama stays behind the gateway). After setup, run ``bumblebee gateway on`` when the helper script is available.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def run_gateway_setup_wizard(
     click.echo(click.style("Bumblebee gateway + tunnel setup", fg="cyan", bold=True))
     click.echo(
         "You will wire two things together:\n"
-        "  • A bearer token — used by the inference gateway and by `scripts/gateway.ps1` health checks.\n"
+        "  • A bearer token — used by the inference gateway and by the gateway helper script health checks.\n"
         "  • Cloudflare Tunnel — public HTTPS → this machine’s gateway only "
         f"(`http://{gateway_host}:{gateway_port}`).\n"
     )
@@ -205,8 +205,8 @@ def run_gateway_setup_wizard(
     click.echo(click.style("— Step 5 — Start the stack", fg="green"))
     if gateway_script_available():
         click.echo(
-            "Windows: `bumblebee gateway on` starts Ollama (if needed), the inference gateway, "
-            "and cloudflared using your .env token.\n"
+            "`bumblebee gateway on` starts Ollama (if needed), the inference gateway, "
+            "and cloudflared using your .env token (via `scripts/gateway.ps1` or `scripts/gateway.sh`).\n"
         )
         if click.confirm("Run it now?", default=True):
             args = [
@@ -239,7 +239,8 @@ def run_gateway_setup_wizard(
             run_gateway_script("status", args)
     else:
         click.echo(
-            "`scripts/gateway.ps1` not found (run from repo root on Windows for one-command startup).\n"
+            "Gateway helper script not found (run from repo root on Windows for `gateway.ps1`, "
+            "or macOS/Linux for `gateway.sh`).\n"
             "Otherwise, in separate terminals:\n"
             "  ollama serve\n"
             f"  INFERENCE_GATEWAY_TOKEN=<token> python -m bumblebee.inference_gateway\n"
