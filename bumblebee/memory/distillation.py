@@ -99,6 +99,33 @@ Deltas are small (-0.05 to +0.05).
 - Return ONLY valid JSON. No markdown fences, no explanation.\
 """
 
+_DISTILL_PROMPT_NO_RELATIONAL = """\
+You are reviewing a conversation window for an AI entity named {entity_name}. \
+Extract ONLY information worth remembering permanently. Be highly selective — \
+most conversation is ephemeral and should NOT be extracted.
+
+PARTICIPANTS: {participants}
+ENTITY EMOTIONAL STATE: {soma_snapshot}
+
+CONVERSATION WINDOW:
+{conversation}
+
+Return a JSON object with exactly these keys (omit relational insights — they are handled elsewhere). \
+Use empty arrays and null when a category has nothing worth extracting.
+
+{{"knowledge": [{{"title": "short section title", "body": "the durable fact or preference"}}], \
+"beliefs": [{{"category": "preference|correction|world_fact|self_insight", \
+"content": "the belief", "confidence": 0.8}}], \
+"journal_entry": null}}
+
+Rules:
+- knowledge: durable facts about people, places, projects, preferences, corrections. \
+NOT task ephemera or things already in knowledge.
+- beliefs: corrections to prior assumptions, newly formed opinions, self-discoveries.
+- journal_entry: only if the entity had a genuine self-insight. Null is the expected default.
+- Return ONLY valid JSON. No markdown fences, no explanation.\
+"""
+
 
 # ---------------------------------------------------------------------------
 # Core engine
@@ -142,6 +169,7 @@ class ExperienceDistiller:
         participants: list[str],
         soma_snapshot: str,
         num_ctx: int | None = None,
+        skip_relational_extract: bool = False,
     ) -> DistillationResult | None:
         window_hash = self._window_hash(history_window)
         if window_hash == self._last_hash:
@@ -153,7 +181,8 @@ class ExperienceDistiller:
         if len(conversation) > budget:
             conversation = conversation[-budget:]
 
-        prompt = _DISTILL_PROMPT.format(
+        tmpl = _DISTILL_PROMPT_NO_RELATIONAL if skip_relational_extract else _DISTILL_PROMPT
+        prompt = tmpl.format(
             entity_name=entity_name,
             participants=", ".join(participants) if participants else "(unknown)",
             soma_snapshot=soma_snapshot or "(neutral)",
@@ -208,6 +237,8 @@ class ExperienceDistiller:
         journal: Journal,
         conn: Any,
         client: Any,
+        relational_doc_mode: bool = False,
+        relational_docs: Any = None,
     ) -> dict[str, int]:
         counts: dict[str, int] = {"knowledge": 0, "relational": 0, "beliefs": 0, "journal": 0}
 
@@ -220,14 +251,18 @@ class ExperienceDistiller:
 
         for ri in result.relational:
             try:
-                await relational.upsert_interaction(
-                    conn,
-                    ri.person_id,
-                    ri.person_name,
-                    warmth_delta=max(-0.1, min(0.1, ri.warmth_delta)),
-                    trust_delta=max(-0.1, min(0.1, ri.trust_delta)),
-                    note=ri.note,
-                )
+                if relational_doc_mode and relational_docs is not None:
+                    note = f"{ri.note} (warmth {ri.warmth_delta:+.2f}, trust {ri.trust_delta:+.2f})"
+                    await relational_docs.add_pending_distillation(conn, ri.person_id, note)
+                else:
+                    await relational.upsert_interaction(
+                        conn,
+                        ri.person_id,
+                        ri.person_name,
+                        warmth_delta=max(-0.1, min(0.1, ri.warmth_delta)),
+                        trust_delta=max(-0.1, min(0.1, ri.trust_delta)),
+                        note=ri.note,
+                    )
                 counts["relational"] += 1
             except Exception as e:
                 log.debug("distillation_relational_failed", person=ri.person_name, error=str(e))

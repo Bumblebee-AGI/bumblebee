@@ -39,6 +39,17 @@ def translate_sql(sql: str) -> str:
             "dynamic = EXCLUDED.dynamic, notes = EXCLUDED.notes, topics_shared = EXCLUDED.topics_shared, "
             "unresolved = EXCLUDED.unresolved"
         )
+    if s.startswith("INSERT OR REPLACE INTO relational_documents"):
+        return (
+            "INSERT INTO relational_documents (person_id, person_name, document, derived_scores, "
+            "last_interaction, last_reflection, interaction_count, significant_moments, meta, created_at, updated_at) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+            "ON CONFLICT (person_id) DO UPDATE SET person_name = EXCLUDED.person_name, "
+            "document = EXCLUDED.document, derived_scores = EXCLUDED.derived_scores, "
+            "last_interaction = EXCLUDED.last_interaction, last_reflection = EXCLUDED.last_reflection, "
+            "interaction_count = EXCLUDED.interaction_count, significant_moments = EXCLUDED.significant_moments, "
+            "meta = EXCLUDED.meta, updated_at = EXCLUDED.updated_at"
+        )
     if s.startswith("INSERT OR REPLACE INTO entity_state"):
         return (
             "INSERT INTO entity_state (key, value) VALUES ($1, $2) "

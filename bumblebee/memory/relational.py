@@ -1,4 +1,10 @@
-"""Per-person relationship models."""
+"""Per-person relationship models.
+
+Scalar-first tracking (familiarity, warmth, trust) remains in the ``relationships`` table.
+When :class:`bumblebee.memory.relational_document.RelationalDocumentMemory` is enabled,
+warmth/trust/familiarity are primarily derived from LLM-maintained documents and synced here
+for backward compatibility — see ``rel_sync_derived`` / upsert ``document_mode`` flag.
+"""
 
 from __future__ import annotations
 
@@ -85,39 +91,60 @@ class RelationalMemory:
         trust_delta: float = 0.0,
         note: Optional[str] = None,
         meaningful: bool = True,
+        document_mode: bool = False,
     ) -> Relationship:
+        """When ``document_mode`` is True, only bump interaction metadata; scalars stay for reflection sync."""
         now = time.time()
         half_life_h, fam_floor, bump_hi, bump_lo = self._familiarity_settings()
         bump = bump_hi if meaningful else bump_lo
         existing = await self.get(conn, person_id)
         if existing:
             n = existing.interaction_count + 1
-            dt_hours = max(0.0, (now - float(existing.last_interaction)) / 3600.0)
-            fam = _decay_toward_floor(
-                existing.familiarity, fam_floor, dt_hours, half_life_h
-            )
-            fam = min(1.0, fam + bump)
-            cap = min(1.0, math.log1p(n) / math.log1p(80))
-            fam = min(fam, cap)
-            warmth = max(-1.0, min(1.0, existing.warmth + warmth_delta))
-            trust = max(0.0, min(1.0, existing.trust + trust_delta))
-            notes = list(existing.notes)
-            if note:
-                notes.append(note)
-            rel = Relationship(
-                person_id=person_id,
-                name=name or existing.name,
-                first_met=existing.first_met,
-                last_interaction=now,
-                interaction_count=n,
-                familiarity=fam,
-                warmth=warmth,
-                trust=trust,
-                dynamic=existing.dynamic,
-                notes=notes[-50:],
-                topics_shared=existing.topics_shared,
-                unresolved=existing.unresolved,
-            )
+            if document_mode:
+                notes = list(existing.notes)
+                if note:
+                    notes.append(note)
+                rel = Relationship(
+                    person_id=person_id,
+                    name=name or existing.name,
+                    first_met=existing.first_met,
+                    last_interaction=now,
+                    interaction_count=n,
+                    familiarity=existing.familiarity,
+                    warmth=existing.warmth,
+                    trust=existing.trust,
+                    dynamic=existing.dynamic,
+                    notes=notes[-50:],
+                    topics_shared=existing.topics_shared,
+                    unresolved=existing.unresolved,
+                )
+            else:
+                dt_hours = max(0.0, (now - float(existing.last_interaction)) / 3600.0)
+                fam = _decay_toward_floor(
+                    existing.familiarity, fam_floor, dt_hours, half_life_h
+                )
+                fam = min(1.0, fam + bump)
+                cap = min(1.0, math.log1p(n) / math.log1p(80))
+                fam = min(fam, cap)
+                warmth = max(-1.0, min(1.0, existing.warmth + warmth_delta))
+                trust = max(0.0, min(1.0, existing.trust + trust_delta))
+                notes = list(existing.notes)
+                if note:
+                    notes.append(note)
+                rel = Relationship(
+                    person_id=person_id,
+                    name=name or existing.name,
+                    first_met=existing.first_met,
+                    last_interaction=now,
+                    interaction_count=n,
+                    familiarity=fam,
+                    warmth=warmth,
+                    trust=trust,
+                    dynamic=existing.dynamic,
+                    notes=notes[-50:],
+                    topics_shared=existing.topics_shared,
+                    unresolved=existing.unresolved,
+                )
         else:
             rel = Relationship(
                 person_id=person_id,

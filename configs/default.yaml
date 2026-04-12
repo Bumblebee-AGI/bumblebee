@@ -79,6 +79,21 @@ memory:
   narrative_every_n_consolidations: 3
   imprint_decay_half_life_seconds: 2592000
   imprint_recall_weight: 0.35
+  # LLM-maintained prose relationship portraits (see bumblebee/memory/relational_document.py).
+  relational:
+    enabled: true
+    reflection_temperature: 0.4
+    reflection_max_tokens: 800
+    reflection_min_gap_seconds: 30
+    score_derivation: true
+    flush_to_disk: true
+    max_context_tokens: 800
+    deep_review_on_consolidation: true
+    amendment_mode_threshold: 0.3
+    deep_review_min_new_interactions: 3
+    deep_review_max_tokens: 1200
+    gen_recent_hours: 24
+    gen_tail_sentences: 3
 
 presence:
   heartbeat_interval: 120

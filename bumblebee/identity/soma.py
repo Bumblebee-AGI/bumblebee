@@ -1811,6 +1811,7 @@ class NoiseEngine:
         mode: str = "entropic",
         last_appraisal_tags: list[str] | None = None,
         last_appraisal_felt: str = "",
+        relationship_tail: str = "",
         num_ctx: int | None = None,
     ) -> list[str]:
         """Call the small model and return new noise fragments."""
@@ -1881,11 +1882,17 @@ class NoiseEngine:
             "batch; if context is thin, invent a small ordinary detail or sideways "
             "ping rather than repeating the same theme."
         )
+        rel_tail = (relationship_tail or "").strip()
+        rel_block = ""
+        if rel_tail:
+            rel_block = f"RECENT RELATIONSHIP TAILS (inner voice may echo these):\n{rel_tail}\n\n"
+
         shape = random.choice(_NOISE_SHAPE_HINTS)
         user = (
             f"BODY STATE:\n{bars_summary}\n{affects_summary}\n\n"
             f"RECENT EVENTS:\n{events_brief}\n"
             f"JOURNAL (recent):\n{journal_tail or '(empty)'}\n\n"
+            f"{rel_block}"
             f"LAST CONVERSATION:\n{conversation_tail or '(silence)'}\n\n"
             f"{prev_block}"
             f"Shape pressure (follow this in this batch only):\n{shape}\n\n"
@@ -2330,6 +2337,7 @@ class TonicBody:
         entity_name: str = "",
         journal_tail: str = "",
         conversation_tail: str = "",
+        relationship_tail: str = "",
         num_ctx: int | None = None,
     ) -> None:
         """Generate noise fragments if enabled and enough time has elapsed."""
@@ -2358,6 +2366,7 @@ class TonicBody:
             mode=noise_mode,
             last_appraisal_tags=list(lap.get("tags") or []),
             last_appraisal_felt=str(lap.get("felt") or ""),
+            relationship_tail=relationship_tail,
             num_ctx=num_ctx,
         )
         self.flush_body_md()
@@ -2466,6 +2475,7 @@ class TonicBody:
         self._last_appraisal_for_noise = {
             "tags": list(result.get("tags") or []),
             "felt": str(result.get("felt") or ""),
+            "bar_effects": dict(result.get("bar_effects") or {}),
         }
         if result["bar_effects"]:
             event = {
@@ -2516,6 +2526,7 @@ class TonicBody:
         self._last_appraisal_for_noise = {
             "tags": list(result.get("tags") or []),
             "felt": str(result.get("felt") or ""),
+            "bar_effects": dict(result.get("bar_effects") or {}),
         }
         if result["bar_effects"]:
             event = {

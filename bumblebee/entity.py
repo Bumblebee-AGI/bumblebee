@@ -60,6 +60,7 @@ from bumblebee.memory.narrative import NarrativeMemory, NarrativeSynthesizer
 from bumblebee.memory.procedural import ProceduralMemoryStore
 from bumblebee.memory.projects import ProjectLedger
 from bumblebee.memory.relational import RelationalMemory
+from bumblebee.memory.relational_document import RelationalDocumentMemory
 from bumblebee.memory.self_model import SelfModelStore
 from bumblebee.models import Episode, EmotionCategory, EmotionalState, ImprintRecord, Input, is_group_like_chat, speaker_label_for_model
 from bumblebee.presence.embodiment import Embodiment
@@ -196,6 +197,8 @@ class TurnContext:
 
     # --- computed during _commit_turn ---
     meaningful: bool = False
+    prior_last_interaction: float = 0.0
+    relational_reflection_ran: bool = False
 
 
 async def _emit_text_stream(
@@ -277,6 +280,10 @@ class Entity:
         self.projects = ProjectLedger(Path(self.config.projects_path()))
         self.self_model = SelfModelStore(Path(self.config.self_model_path()))
         self.relational = RelationalMemory(self.store, config.harness.memory)
+        self.relational_docs = RelationalDocumentMemory(
+            entity_config=config,
+            settings=config.harness.memory.relational,
+        )
         self.inner_voice = InnerVoiceProcessor(self.store)
         self.imprints = ImprintStore(self.store)
         self.beliefs = BeliefStore(self.store)
@@ -330,6 +337,23 @@ class Entity:
 
     def register_proactive_sink(self, fn: Callable[[str], Awaitable[None]]) -> None:
         self._proactive_sends.append(fn)
+
+    def _relational_docs_enabled(self) -> bool:
+        m = getattr(self.config.harness.memory, "relational", None)
+        return bool(m and getattr(m, "enabled", True))
+
+    def _format_rel_blurb_from_doc(self, doc: Any) -> str:
+        m = self.config.harness.memory.relational
+        max_tok = int(getattr(m, "max_context_tokens", 800) or 800)
+        max_chars = max(800, max_tok * 4)
+        return self.relational_docs.format_for_prompt(doc, max_chars=max_chars, compact=False)
+
+    async def run_relational_consolidation_review(self, conn: Any) -> int:
+        if not self._relational_docs_enabled():
+            return 0
+        from bumblebee.memory.relational_reflection import run_consolidation_deep_reviews
+
+        return await run_consolidation_deep_reviews(self, conn, self.relational_docs)
 
     def register_platform(self, name: str, platform: Platform) -> None:
         n = (name or "").strip().lower()
@@ -889,9 +913,20 @@ class Entity:
         if pid:
             try:
                 async with self.store.session() as db:
-                    rel = await self.relational.get(db, pid)
-                if rel is not None:
-                    rel_note = self.relational.blurb(rel)
+                    if self._relational_docs_enabled():
+                        doc = await self.relational_docs.get(db, pid)
+                        if doc is None:
+                            rel = await self.relational.get(db, pid)
+                            doc = await self.relational_docs.ensure_from_legacy_row(db, rel) if rel else None
+                        if doc and (doc.document or "").strip():
+                            rel_note = self._format_rel_blurb_from_doc(doc)
+                        else:
+                            rel = await self.relational.get(db, pid)
+                            rel_note = self.relational.blurb(rel) if rel is not None else ""
+                    else:
+                        rel = await self.relational.get(db, pid)
+                        if rel is not None:
+                            rel_note = self.relational.blurb(rel)
             except Exception:
                 rel_note = ""
         projects = await self.projects.summary_lines(limit=4)
@@ -1978,6 +2013,19 @@ class Entity:
                 truncated = content[:500] + ("..." if len(content) > 500 else "")
                 conv_lines.append(f"{role}: {truncated}")
             conv_tail = "\n".join(conv_lines) if conv_lines else "(silence)"
+            rel_tail = ""
+            if self._relational_docs_enabled():
+                try:
+                    hrs = float(
+                        getattr(self.config.harness.memory.relational, "gen_recent_hours", 24.0) or 24.0
+                    )
+                    since = time.time() - hrs * 3600.0
+                    docs = await self.relational_docs.list_recent_for_gen(
+                        tc.db, since_ts=since, limit=6
+                    )
+                    rel_tail = self.relational_docs.gen_context_tail(docs)
+                except Exception:
+                    rel_tail = ""
             self.tonic.noise._last_tick = 0.0
             await self.tonic.maybe_tick_noise(
                 self.client,
@@ -1985,12 +2033,15 @@ class Entity:
                 entity_name=self.config.name,
                 journal_tail=journal_tail,
                 conversation_tail=conv_tail,
+                relationship_tail=rel_tail,
                 num_ctx=self.config.effective_ollama_num_ctx(),
             )
         except Exception as e:
             log.debug("post_turn_noise_tick_failed", error=str(e))
 
-    async def maybe_distill(self, conn: Any | None = None) -> None:
+    async def maybe_distill(
+        self, conn: Any | None = None, *, skip_relational_extract: bool = False
+    ) -> None:
         """Check if experience distillation is due and run it if so.
 
         When ``conn`` is provided (same handle as the active perceive/commit transaction),
@@ -2028,12 +2079,14 @@ class Entity:
                 participants=participants,
                 soma_snapshot=soma_snapshot,
                 num_ctx=self.config.effective_ollama_num_ctx(),
+                skip_relational_extract=skip_relational_extract,
             )
         except Exception as e:
             log.warning("distillation_failed", error=str(e))
             return
         if result is None:
             return
+        rdoc_mode = self._relational_docs_enabled()
         try:
             if conn is not None:
                 counts = await self._distiller.route_results(
@@ -2045,6 +2098,8 @@ class Entity:
                     journal=self.journal,
                     conn=conn,
                     client=self.client,
+                    relational_doc_mode=rdoc_mode,
+                    relational_docs=self.relational_docs if rdoc_mode else None,
                 )
             else:
                 async with self.store.session() as db:
@@ -2057,6 +2112,8 @@ class Entity:
                         journal=self.journal,
                         conn=db,
                         client=self.client,
+                        relational_doc_mode=rdoc_mode,
+                        relational_docs=self.relational_docs if rdoc_mode else None,
                     )
             log.info("distillation_completed", **counts)
         except Exception as e:
@@ -2080,11 +2137,59 @@ class Entity:
                 log.warning("persist_person_routes_failed", module="entity", error=str(e))
 
         tc.rel_existing = await self.relational.get(db, tc.inp.person_id)
-        tc.rel_blurb = (
-            self.relational.blurb(tc.rel_existing)
-            if tc.rel_existing
-            else "A new voice — I have no history with them yet."
-        )
+        tc.prior_last_interaction = float(tc.rel_existing.last_interaction) if tc.rel_existing else 0.0
+
+        if self._relational_docs_enabled():
+            doc = await self.relational_docs.get(db, tc.inp.person_id)
+            if doc is None and tc.rel_existing:
+                doc = await self.relational_docs.ensure_from_legacy_row(db, tc.rel_existing)
+            md = tc.inp.metadata or {}
+            participants = md.get("relationship_context_participants")
+            if isinstance(participants, list) and len(participants) > 1:
+                parts: list[str] = []
+                m = self.config.harness.memory.relational
+                max_tok = int(getattr(m, "max_context_tokens", 800) or 800)
+                max_c = max(200, min(1200, max_tok * 3))
+                for p in participants[:8]:
+                    if not isinstance(p, dict):
+                        continue
+                    pid = str(p.get("person_id") or "").strip()
+                    if not pid:
+                        continue
+                    d = await self.relational_docs.get(db, pid)
+                    if d is None:
+                        r = await self.relational.get(db, pid)
+                        d = await self.relational_docs.ensure_from_legacy_row(db, r) if r else None
+                    if d and (d.document or "").strip():
+                        parts.append(
+                            self.relational_docs.format_for_prompt(
+                                d, max_chars=max_c, compact=True
+                            )
+                        )
+                if parts:
+                    tc.rel_blurb = "People in this thread:\n" + "\n".join(parts)
+                elif doc and (doc.document or "").strip():
+                    tc.rel_blurb = self._format_rel_blurb_from_doc(doc)
+                else:
+                    tc.rel_blurb = (
+                        self.relational.blurb(tc.rel_existing)
+                        if tc.rel_existing
+                        else "A new voice — I have no history with them yet."
+                    )
+            elif doc and (doc.document or "").strip():
+                tc.rel_blurb = self._format_rel_blurb_from_doc(doc)
+            else:
+                tc.rel_blurb = (
+                    self.relational.blurb(tc.rel_existing)
+                    if tc.rel_existing
+                    else "A new voice — I have no history with them yet."
+                )
+        else:
+            tc.rel_blurb = (
+                self.relational.blurb(tc.rel_existing)
+                if tc.rel_existing
+                else "A new voice — I have no history with them yet."
+            )
         tc.narrative_text = await self.narrative_memory.latest(db)
 
         emb_model = self.config.harness.models.embedding
@@ -2527,6 +2632,7 @@ class Entity:
             except Exception as e:
                 log.warning("episode_save_failed", error=str(e))
 
+        doc_mode = self._relational_docs_enabled()
         if not tc.skip_relational_upsert:
             await self.relational.upsert_interaction(
                 tc.db,
@@ -2534,6 +2640,7 @@ class Entity:
                 tc.inp.person_name,
                 warmth_delta=0.02 if tc.meaningful else 0.0,
                 meaningful=tc.meaningful,
+                document_mode=doc_mode,
             )
 
         await self._refresh_self_model_snapshot(note=f"completed turn via {tc.faculty} faculty")
@@ -2562,6 +2669,19 @@ class Entity:
                 except Exception:
                     pass
         await self._somatic_appraise_interaction(tc)
+        tc.relational_reflection_ran = False
+        if doc_mode:
+            try:
+                from bumblebee.memory.relational_reflection import run_relational_reflection_after_turn
+
+                tc.relational_reflection_ran = await run_relational_reflection_after_turn(
+                    self,
+                    tc,
+                    tc.db,
+                    relational_docs=self.relational_docs,
+                )
+            except Exception as e:
+                log.debug("relational_reflection_skipped", error=str(e))
         try:
             await self.tonic.save_state_db(tc.db)
         except Exception as e:
@@ -2575,7 +2695,10 @@ class Entity:
             pass
         await self._tick_noise_post_turn(tc)
         try:
-            await self.maybe_distill(conn=tc.db)
+            await self.maybe_distill(
+                conn=tc.db,
+                skip_relational_extract=bool(tc.relational_reflection_ran),
+            )
         except Exception as e:
             log.debug("distillation_in_commit_failed", error=str(e))
         log.info(

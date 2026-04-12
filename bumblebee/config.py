@@ -117,6 +117,25 @@ class DistillationSettings:
 
 
 @dataclass
+class RelationalDocumentSettings:
+    """LLM-maintained prose portraits per person; derived scalars sync to ``relationships``."""
+
+    enabled: bool = True
+    reflection_temperature: float = 0.4
+    reflection_max_tokens: int = 800
+    reflection_min_gap_seconds: float = 30.0
+    score_derivation: bool = True
+    flush_to_disk: bool = True
+    max_context_tokens: int = 800
+    deep_review_on_consolidation: bool = True
+    amendment_mode_threshold: float = 0.3
+    deep_review_min_new_interactions: int = 3
+    deep_review_max_tokens: int = 1200
+    gen_recent_hours: float = 24.0
+    gen_tail_sentences: int = 3
+
+
+@dataclass
 class MemoryHarnessSettings:
     database_path: str = "~/.bumblebee/entities/{entity_name}/memory.db"
     """When set (e.g. postgresql://...), use Postgres instead of SQLite file path."""
@@ -135,6 +154,7 @@ class MemoryHarnessSettings:
     familiarity_bump_meaningful: float = 0.017
     familiarity_bump_light: float = 0.007
     distillation: DistillationSettings = field(default_factory=DistillationSettings)
+    relational: RelationalDocumentSettings = field(default_factory=RelationalDocumentSettings)
 
 
 @dataclass
@@ -455,7 +475,7 @@ class HistoryCompressionSettings:
     merge_max_tokens: int = 900
     format_per_message_chars: int = 2200
 
-    # --- proactive context compaction (Hermes-style) ---
+    # --- proactive context compaction ---
     compaction_threshold_ratio: float = 0.6
     compaction_target_ratio: float = 0.08
     compaction_protect_last_n: int = 12
@@ -634,6 +654,13 @@ class EntityConfig:
             return str(Path(ws) / "soma")
         return _expand("~/.bumblebee/entities/{entity_name}/soma", self.name)
 
+    def relationships_dir(self) -> str:
+        """Filesystem mirror for per-person relationship documents (markdown)."""
+        ws = self.execution_workspace_dir().strip()
+        if ws:
+            return str(Path(ws) / "relationships")
+        return _expand("~/.bumblebee/entities/{entity_name}/relationships", self.name)
+
 
 def _merge_dict(base: dict, override: dict) -> dict:
     out = {**base}
@@ -676,6 +703,13 @@ def _dict_to_harness(d: dict[str, Any]) -> HarnessConfig:
         mem_raw["distillation"] = DistillationSettings(**{**DistillationSettings().__dict__, **dist_sub})
     elif not isinstance(dist_sub, DistillationSettings):
         mem_raw["distillation"] = DistillationSettings()
+    rel_sub = mem_raw.pop("relational", None)
+    if isinstance(rel_sub, dict):
+        mem_raw["relational"] = RelationalDocumentSettings(
+            **{**RelationalDocumentSettings().__dict__, **rel_sub}
+        )
+    elif not isinstance(rel_sub, RelationalDocumentSettings):
+        mem_raw["relational"] = RelationalDocumentSettings()
     tools_raw = _merge_dict(default_tools_config(), d.get("tools") or {})
     soma_raw = _merge_dict(default_soma_config(), d.get("soma") or {})
     auto_raw = dict(d.get("autonomy") or {})

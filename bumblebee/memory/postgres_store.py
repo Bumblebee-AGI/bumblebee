@@ -51,6 +51,20 @@ CREATE TABLE IF NOT EXISTS relationships (
     unresolved TEXT
 );
 
+CREATE TABLE IF NOT EXISTS relational_documents (
+    person_id TEXT PRIMARY KEY,
+    person_name TEXT,
+    document TEXT,
+    derived_scores TEXT,
+    last_interaction DOUBLE PRECISION,
+    last_reflection DOUBLE PRECISION,
+    interaction_count INTEGER,
+    significant_moments TEXT,
+    meta TEXT,
+    created_at DOUBLE PRECISION,
+    updated_at DOUBLE PRECISION
+);
+
 CREATE TABLE IF NOT EXISTS beliefs (
     id TEXT PRIMARY KEY,
     category TEXT,
@@ -157,6 +171,7 @@ _EXPERIENCE_TABLES = (
     "imprints",
     "episodes",
     "relationships",
+    "relational_documents",
     "beliefs",
     "narrative",
     "inner_voice",

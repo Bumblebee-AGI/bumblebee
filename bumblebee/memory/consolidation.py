@@ -50,6 +50,14 @@ class ConsolidationJob:
         await conn.commit()
         log.info("consolidation_tick", module="memory", decay_applied=rate)
 
+        if entity_facade:
+            try:
+                n_rev = await entity_facade.run_relational_consolidation_review(conn)
+                if n_rev:
+                    log.info("relational_consolidation_reviews", module="memory", count=n_rev)
+            except Exception as e:
+                log.warning("relational_consolidation_failed", module="memory", error=str(e))
+
         self._run_count += 1
         n_every = max(1, self._cfg.harness.memory.narrative_every_n_consolidations)
         if entity_facade and self._run_count % n_every == 0:
@@ -78,6 +86,15 @@ class ConsolidationJob:
         else:
             await asyncio.to_thread(apply_episode_decay_sync, store.db_path, delta)
         log.info("consolidation_tick", module="memory", decay_applied=rate)
+
+        if entity_facade:
+            async with entity_facade.store.session() as db:
+                try:
+                    n_rev = await entity_facade.run_relational_consolidation_review(db)
+                    if n_rev:
+                        log.info("relational_consolidation_reviews", module="memory", count=n_rev)
+                except Exception as e:
+                    log.warning("relational_consolidation_failed", module="memory", error=str(e))
 
         self._run_count += 1
         n_every = max(1, self._cfg.harness.memory.narrative_every_n_consolidations)

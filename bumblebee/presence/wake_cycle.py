@@ -964,9 +964,18 @@ class WakeCycleEngine:
                 if rels:
                     blurbs = []
                     for r in rels:
-                        blurbs.append(
-                            f"{r.name} (warmth={r.warmth:.1f}, trust={r.trust:.1f})"
-                        )
+                        line = f"{r.name} (warmth={r.warmth:.1f}, trust={r.trust:.1f})"
+                        if getattr(entity, "_relational_docs_enabled", lambda: False)():
+                            try:
+                                rd = await entity.relational_docs.get(db, r.person_id)
+                            except Exception:
+                                rd = None
+                            if rd and rd.derived_scores:
+                                ds = rd.derived_scores
+                                t = float(ds.get("tension", 0) or 0)
+                                inv = float(ds.get("investment", 0) or 0)
+                                line += f", tension≈{t:.2f}, investment≈{inv:.2f}"
+                        blurbs.append(line)
                     relationship_blurb = ", ".join(blurbs)
         except Exception:
             pass
