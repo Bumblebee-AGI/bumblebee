@@ -112,9 +112,12 @@ soma:
         decay_rate: -15.0
         floor: 0
         ceiling: 100
+      # Epistemic appetite — not "chat is happening". Stronger decay + no flat receive bump;
+      # curiosity moves from appraisal (content) and tool/action events, not from every message.
       - name: curiosity
-        initial: 50
-        decay_rate: -10.0
+        initial: 45
+        decay_rate: -22.0
+        decay_time_scale: 0.88
         floor: 0
         ceiling: 100
       - name: creative
@@ -138,11 +141,15 @@ soma:
       effect: "curiosity.decay_rate *= 1.5"
     - when: "tension > 70"
       effect: "comfort.decay_rate *= 2.0"
+    # When curiosity is already saturated, pull homeostasis a bit harder so it can breathe.
+    - when: "curiosity > 82"
+      effect: "curiosity.decay_rate *= 1.25"
   event_effects:
-    message_received: { social: 2, curiosity: 0.5 }
+    # No automatic curiosity on receive — somatic appraisal decides if the *content* warrants it.
+    message_received: { social: 2 }
     message_sent: { social: 1, creative: 0.5 }
-    action: { curiosity: 2 }
-    idle: { social: -0.015, curiosity: 0.01 }
+    action: { curiosity: 1 }
+    idle: { social: -0.015, curiosity: -0.008 }
     idle_cycle: { comfort: 3, tension: -2 }
     mood_declared: { comfort: 1 }
   impulses:
@@ -153,11 +160,11 @@ soma:
       cooldown_minutes: 30
       relief: { social: -25 }
     - drive: curiosity
-      threshold: 85
+      threshold: 88
       type: explore
       label: explore_something
       cooldown_minutes: 20
-      relief: { curiosity: -20 }
+      relief: { curiosity: -22 }
   conflicts:
     - drives: [curiosity, comfort]
       threshold: 70
@@ -166,8 +173,7 @@ soma:
       tension_ceiling: 65
       comfort_per_tick: -0.15
   # Somatic appraisal — fast LLM pass that reads message content and translates
-  # it into dynamic bar effects.  A warm message raises social; a confrontational
-  # one raises tension; an intellectually stimulating one spikes curiosity.
+  # it into dynamic bar effects. Curiosity is *not* raised for routine chat; see prompts in code.
   # Replaces the flat "message_received → social +3" with content-aware signal.
   appraisal:
     enabled: true
@@ -269,7 +275,7 @@ autonomy:
   transcript_enabled: true
   transcript_filename: autonomy_transcript.md
   transcript_path: ""                 # optional override path (absolute or relative to workspace / entity dir)
-  wake_chat_tool_activity: false      # mirror per-tool lines to Telegram during autonomous wake
+  wake_chat_tool_activity: true       # mirror per-tool lines to Telegram during autonomous wake
   # Optional internal disposition prompts — large bundled deck in configs/poker_prompts/default.yaml
   poker_prompts:
     enabled: false

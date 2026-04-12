@@ -1389,7 +1389,7 @@ class TelegramPlatform(Platform):
         sub = args[0] if args else "status"
         auto = self._entity.config.harness.autonomy
         yaml_s = bool(getattr(auto, "wake_user_visible_status", True))
-        yaml_t = bool(getattr(auto, "wake_chat_tool_activity", False))
+        yaml_t = bool(getattr(auto, "wake_chat_tool_activity", True))
 
         if sub in ("help", "h"):
             await self._reply_html(

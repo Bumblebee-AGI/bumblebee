@@ -116,7 +116,7 @@ async def effective_wake_status_in_chat(entity: Any, autonomy_cfg: Any) -> bool:
 
 async def effective_wake_tools_in_chat(entity: Any, autonomy_cfg: Any) -> bool:
     """Effective mirror for per-tool lines during autonomous wake."""
-    base = bool(getattr(autonomy_cfg, "wake_chat_tool_activity", False))
+    base = bool(getattr(autonomy_cfg, "wake_chat_tool_activity", True))
     try:
         async with entity.store.session() as conn:
             if await is_wake_quiet(conn):

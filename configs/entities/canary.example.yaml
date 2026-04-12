@@ -157,6 +157,7 @@ autonomy:
   wake_wide_mode: true
   wake_wide_bonus_steps: 36
   wake_user_visible_status: true
+  wake_chat_tool_activity: true   # default; mirror per-tool italic lines during autonomous wake
   wake_verbose_worker_log: true
 
 presence:

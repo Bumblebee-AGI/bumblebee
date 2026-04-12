@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from bumblebee.identity.voice import strip_html_layout_leaks
 from bumblebee.presence.tools.registry import tool
 from bumblebee.presence.tools.runtime import get_tool_runtime
 
@@ -70,7 +71,7 @@ async def say(message: str) -> str:
     inp = ctx.inp
     if platform is None or inp is None:
         return "[no active chat to send to]"
-    text = (message or "").strip()
+    text = strip_html_layout_leaks((message or "").strip())
     if not text:
         return "[empty message, not sent]"
     count = 0

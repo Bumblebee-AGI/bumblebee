@@ -1,5 +1,6 @@
 from bumblebee.identity.voice import (
     apply_voice_outgoing_substitutions,
+    strip_html_layout_leaks,
     strip_internal_history_echo,
     strip_stage_directions,
 )
@@ -25,6 +26,16 @@ def test_strip_lone_asterisk_action_line():
 def test_strip_media_html_tags():
     raw = '<audio src="/tmp/bb_voice_1.mp3"></audio>\n\nstill here'
     assert strip_stage_directions(raw) == "still here"
+
+
+def test_strip_html_layout_p_tags():
+    raw = "<p>okay, one more thing.</p>\n\n<p>second graph.</p>"
+    assert strip_html_layout_leaks(raw) == "okay, one more thing.\n\nsecond graph."
+
+
+def test_strip_html_br_and_inline():
+    assert strip_html_layout_leaks("a<br/>b") == "a\nb"
+    assert strip_html_layout_leaks("x <strong>bold</strong> y") == "x bold y"
 
 
 def test_outgoing_substitutions_word_boundary():

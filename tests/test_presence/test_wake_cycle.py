@@ -15,6 +15,16 @@ def _engine(*, allow_tools: bool) -> WakeCycleEngine:
     return WakeCycleEngine(cfg)  # type: ignore[arg-type]
 
 
+def _engine_deterministic_intent() -> WakeCycleEngine:
+    auto = AutonomySettings(
+        allow_tool_calls_on_wake=True,
+        wake_intent_softmax_temperature=0.0,
+        wake_entropy_score_noise=0.0,
+    )
+    cfg = SimpleNamespace(harness=SimpleNamespace(autonomy=auto))
+    return WakeCycleEngine(cfg)  # type: ignore[arg-type]
+
+
 def _entity() -> SimpleNamespace:
     return SimpleNamespace(_platforms={"telegram": object(), "discord": object()})
 
@@ -252,4 +262,60 @@ def test_maybe_revise_want_pivots_when_stalled() -> None:
     assert "I want to learn one specific missing piece" in str(mem.get("want") or "")
     assert float(mem.get("want_confidence") or 0.0) >= 0.5
     assert int(mem.get("want_revision_count") or 0) >= 1
+
+
+def test_select_primary_intent_entropy_fear_prefers_outward_over_follow_desire() -> None:
+    eng = _engine_deterministic_intent()
+    eng._last_desires = [
+        {
+            "kind": "fear_stir",
+            "urgency": 0.88,
+            "source": "entropy",
+            "why": "entropy:soul",
+            "target": "a specific way stalling could hurt you",
+        },
+    ]
+    tonic = SimpleNamespace(bars=SimpleNamespace(snapshot_pct=lambda: {}))
+    intent = eng._select_primary_intent(
+        "desire:fear_stir:a specific way stalling could hurt you",
+        tonic=tonic,
+        entity=SimpleNamespace(),
+        lingering_sparks=[],
+    )
+    assert intent == "explore_question"
+
+
+def test_build_session_continuation_includes_outward_nudge_from_round_two() -> None:
+    eng = _engine(allow_tools=True)
+    text = eng._build_session_continuation(
+        stirring="stir",
+        reason="desire:test",
+        poker_disposition=None,
+        round_idx=2,
+        max_rounds=4,
+        accumulated_tools=["read_file", "list_directory"],
+        last_reply="done",
+        wide_mode=False,
+        session_memory="board",
+        wake_want="want",
+    )
+    assert "[Outward modality — round 2+]" in text
+    assert "fetch_url or search_web" in text
+
+
+def test_build_session_continuation_skips_outward_nudge_on_round_one() -> None:
+    eng = _engine(allow_tools=True)
+    text = eng._build_session_continuation(
+        stirring="stir",
+        reason="desire:test",
+        poker_disposition=None,
+        round_idx=1,
+        max_rounds=4,
+        accumulated_tools=[],
+        last_reply="",
+        wide_mode=False,
+        session_memory="",
+        wake_want="",
+    )
+    assert "[Outward modality — round 2+]" not in text
 

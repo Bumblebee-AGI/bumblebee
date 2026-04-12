@@ -339,7 +339,9 @@ class BarEngine:
         self._conflict_cfgs: list[dict[str, Any]] = config.get("conflicts") or []
 
         self._impulse_first_active: dict[str, float] = {}
-        now = time.time()
+        # Must use time.monotonic() here: _detect_impulses() compares against the same
+        # clock. Mixing in time.time() makes cool_left ~epoch scale (millions of "minutes").
+        now = time.monotonic()
         self._impulse_last_fired: dict[str, float] = {
             str(imp.get("label", "")): now for imp in self._impulse_cfgs if imp.get("label")
         }
@@ -360,7 +362,7 @@ class BarEngine:
         self._impulse_first_active.clear()
         self._active_impulses.clear()
         self._active_conflicts.clear()
-        now = time.time()
+        now = time.monotonic()
         self._impulse_last_fired = {
             str(imp.get("label", "")): now for imp in self._impulse_cfgs if imp.get("label")
         }
@@ -1351,14 +1353,32 @@ _APPRAISAL_LINE_RE = re.compile(
 _TAGS_RE = re.compile(r"^tags\s*:\s*(.+)$", re.IGNORECASE)
 _FELT_RE = re.compile(r"^felt\s*:\s*(.+)$", re.IGNORECASE)
 
+# Tighten curiosity (epistemic appetite) so it is not redundant with "chat is active".
+_SOMATIC_CURIOSITY_RULES_INPUT = (
+    "Curiosity (epistemic appetite): raise it only when the message creates genuine intellectual "
+    "pull — novel information, open questions, puzzles, surprise, invitations to explore, or "
+    "threads that clearly lack closure. Do NOT raise curiosity for routine greetings, thanks, "
+    "acknowledgments, pure social maintenance, venting without informational novelty, or "
+    "\"someone spoke\" by itself. If curiosity is already at 70%+ in CURRENT BODY, use small "
+    "positive deltas (about 0–3) only for strong intellectual pulls; otherwise 0 or negative so "
+    "it can settle. "
+)
+
+_SOMATIC_CURIOSITY_RULES_INTERACTION = (
+    "Curiosity: raise only if the exchange as a whole opened something worth pursuing — new "
+    "questions, unfinished ideas, or exploration the reply leaned into. Not for routine "
+    "back-and-forth. If curiosity is already at 70%+ in CURRENT BODY, use small positives only "
+    "for strong pulls; otherwise 0 or negative. "
+)
+
 
 class SomaticAppraiser:
     """Fast LLM appraisal that translates message content into body-state signal.
 
     Instead of every ``message_received`` producing the same flat bar bump,
     the appraiser reads what was actually said and returns context-sensitive
-    deltas.  A confrontational message raises tension; an intellectually
-    stimulating one spikes curiosity; a warm personal message fills social.
+    deltas.  A confrontational message raises tension; curiosity moves with
+    epistemic novelty (not routine chat); a warm personal message fills social.
 
     Runs once at the start of each perceive cycle (before the agent reads its
     body) and optionally again after the response to appraise the full
@@ -1433,6 +1453,7 @@ class SomaticAppraiser:
                 "from -10 to +10 (float allowed).\n"
                 "tags: up to 6 short lowercase tokens (e.g. affectionate, probing, terse).\n"
                 "felt: brief first-person somatic note.\n"
+                f"{_SOMATIC_CURIOSITY_RULES_INPUT}"
                 "If a bar is already at 90%+ in CURRENT BODY, do not raise it further unless the "
                 "hit is extreme; prefer 0 or a negative delta so saturated drives can ease.\n"
                 "Only use bar names from the list above."
@@ -1448,6 +1469,7 @@ class SomaticAppraiser:
                 "  tags: tag1, tag2, tag3\n"
                 "  felt: brief felt note (one sentence, first person)\n\n"
                 "Delta range: -10 to +10. Use 0 or omit bars that aren't affected.\n"
+                f"{_SOMATIC_CURIOSITY_RULES_INPUT}"
                 "If a bar is already at 90% or above in CURRENT BODY, do not raise it further "
                 "unless the hit is extreme; prefer 0 or a negative delta so saturated drives can ease.\n"
                 "Only use bar names from the list above.\n"
@@ -1516,8 +1538,10 @@ class SomaticAppraiser:
                 f"Available bars: {bar_names_str}\n\n"
                 "Respond with ONLY a single JSON object (no markdown fences):\n"
                 '{"bar_effects":{"bar_name":<number>,...},"tags":["..."],"felt":"<one sentence>"}\n'
-                "Delta range -10 to +10 per bar. If a bar is already at 90%+ in CURRENT BODY, "
-                "avoid pushing it higher unless the exchange was truly overwhelming."
+                "Delta range -10 to +10 per bar. "
+                f"{_SOMATIC_CURIOSITY_RULES_INTERACTION}"
+                "If a bar is already at 90%+ in CURRENT BODY, avoid pushing it higher unless the "
+                "exchange was truly overwhelming."
             )
         else:
             system = (
@@ -1530,8 +1554,10 @@ class SomaticAppraiser:
                 "  bar_name: delta — one-word reason\n"
                 "  tags: tag1, tag2\n"
                 "  felt: brief felt note\n\n"
-                "Delta range: -10 to +10. Only affected bars. If a bar is already at 90%+ in "
-                "CURRENT BODY, avoid pushing it higher unless the exchange was truly overwhelming.\n"
+                "Delta range: -10 to +10. Only affected bars. "
+                f"{_SOMATIC_CURIOSITY_RULES_INTERACTION}"
+                "If a bar is already at 90%+ in CURRENT BODY, avoid pushing it higher unless the "
+                "exchange was truly overwhelming.\n"
                 "No preamble."
             )
         user = f"CURRENT BODY: {bars_line}\n"

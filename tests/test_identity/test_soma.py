@@ -95,7 +95,7 @@ class TestBarEngineDecay:
 
 
 class TestBarEngineEvents:
-    def test_message_received_bumps_social_and_curiosity(self):
+    def test_message_received_bumps_social(self):
         bars = BarEngine(_default_bar_config())
         before = bars.snapshot_pct()["social"]
         bars.apply_event({"type": "message_received"})
@@ -238,6 +238,24 @@ class TestBarEngineImpulses:
         bars.tick(0.001)
         labels = [i["label"] for i in bars._active_impulses]
         assert "reach_out" not in labels
+
+    def test_impulse_cooldown_seconds_left_matches_config(self):
+        """Regression: last_fired must use the same clock as _detect_impulses (monotonic)."""
+        cfg = _default_bar_config()
+        for v in cfg["bars"]["variables"]:
+            if v["name"] == "social":
+                v["initial"] = 90
+        bars = BarEngine(cfg)
+        bars.tick(0.001)
+        reach = next(i for i in bars._active_impulses if i["label"] == "reach_out")
+        assert reach["on_cooldown"] is True
+        cd_min = next(
+            float(i["cooldown_minutes"])
+            for i in (cfg.get("impulses") or [])
+            if i.get("label") == "reach_out"
+        )
+        max_left = cd_min * 60.0 + 2.0
+        assert reach["cooldown_seconds_left"] <= max_left
 
 
 class TestBarEnginePersistence:

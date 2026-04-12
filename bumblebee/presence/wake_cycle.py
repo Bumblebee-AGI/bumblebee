@@ -1345,6 +1345,18 @@ class WakeCycleEngine:
                     "",
                 ]
             )
+        if round_idx >= 2:
+            nudge = random.choice(_EXPANSION_NUDGES)
+            parts.extend(
+                [
+                    "[Outward modality — round 2+]",
+                    f"Nudge: {nudge}",
+                    "If earlier rounds were mostly repo/files/search, do something different this round: "
+                    "fetch_url or search_web on a fresh topic, reach outward with say/send_dm if appropriate, "
+                    "or pick a tool that widens the map — not only the same inward scan.",
+                    "",
+                ]
+            )
         return "\n".join(parts)
 
     def _new_session_memory(
@@ -1635,24 +1647,61 @@ class WakeCycleEngine:
             scores["explore_question"] += 0.16 * min(3, len(rut))
             scores["learn_something"] += 0.14 * min(3, len(rut))
             scores["play_or_experiment"] += 0.1 * min(3, len(rut))
+        desire_reason = str(reason or "").strip().lower().startswith("desire:")
         if self._last_desires:
             top = self._last_desires[0]
             k = str(top.get("kind") or "").strip().lower()
-            if k == "social":
-                scores["social_or_action"] += 0.6
-            if k == "learn":
-                scores["explore_question"] += 0.6
-            scores["follow_desire"] += float(top.get("urgency", 0.0) or 0.0)
-            if k in ("fear_stir", "avoidance", "resolve_tension"):
-                scores["resolve_tension"] += 0.45
-                scores["explore_question"] += 0.22
-            if k in ("novelty_hunger", "world_expand", "explore", "contrarian"):
+            src = str(top.get("source") or "").strip().lower()
+            # Map infer_desires kinds → intents (legacy "social"/"learn" strings never matched real kinds).
+            if k in ("reach_out", "longing"):
+                scores["social_or_action"] += 0.72
+            if k == "opinion":
+                scores["social_or_action"] += 0.42
+                scores["explore_question"] += 0.12
+            if k in ("explore", "self_direct"):
+                scores["explore_question"] += 0.55
+                scores["learn_something"] += 0.35
+            if k == "create":
+                scores["build_something"] += 0.45
+                scores["play_or_experiment"] += 0.35
+                scores["explore_question"] += 0.12
+            if k == "stabilize":
+                scores["explore_or_recover"] += 0.38
+                scores["resolve_tension"] += 0.12
+            if k == "act":
+                scores["play_or_experiment"] += 0.22
+                scores["explore_question"] += 0.18
+            if k in ("novelty_hunger", "world_expand", "contrarian", "explore_world", "follow_thread"):
                 scores["explore_question"] += 0.48
                 scores["learn_something"] += 0.38
                 scores["play_or_experiment"] += 0.22
-            if k in ("longing", "reach_out", "opinion"):
-                scores["social_or_action"] += 0.42
-                scores["explore_question"] += 0.12
+            if k in ("fear_stir", "avoidance"):
+                scores["resolve_tension"] += 0.4
+                # Counterweight: internal dread prompts should still open outward, not only "follow lean".
+                scores["explore_question"] += 0.42
+                scores["learn_something"] += 0.32
+                scores["social_or_action"] += 0.2
+                scores["play_or_experiment"] += 0.18
+            if k in ("resolve_tension",):
+                scores["resolve_tension"] += 0.45
+                scores["explore_question"] += 0.22
+            # Entropy-generated desires: prefer map-widening intents over pure follow_desire.
+            if src == "entropy":
+                scores["explore_question"] += 0.36
+                scores["learn_something"] += 0.28
+                scores["social_or_action"] += 0.22
+                scores["play_or_experiment"] += 0.2
+                scores["follow_desire"] -= 0.28
+            # Urgency should not drown every other bucket — cap follow_desire pull.
+            urg = float(top.get("urgency", 0.0) or 0.0)
+            scores["follow_desire"] += min(0.38, urg * 0.48)
+            # Desire-triggered wake: reason already adds +1.2 to follow_desire via _wake_intent_label;
+            # spread mass so the session does not collapse into "ride the same pressure" every time.
+            if desire_reason:
+                scores["explore_question"] += 0.42
+                scores["learn_something"] += 0.32
+                scores["social_or_action"] += 0.26
+                scores["follow_desire"] -= 0.22
         for spark in lingering_sparks or []:
             lab = _spark_label(spark)
             if lab == "build":

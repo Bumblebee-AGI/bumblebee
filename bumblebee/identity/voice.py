@@ -27,6 +27,16 @@ _MEDIA_TAG_SINGLE = re.compile(
     r"<\s*(audio|video|source)\b[^>]*\/?\s*>",
     re.IGNORECASE,
 )
+# Layout / inline tags models sometimes emit (plain chat is not HTML).
+_HTML_BR = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)
+_HTML_LAYOUT = re.compile(
+    r"<\s*/?\s*(?:p|div|span|section|article|body|html|head|blockquote)\b[^>]*>",
+    re.IGNORECASE,
+)
+_HTML_INLINE = re.compile(
+    r"<\s*/?\s*(?:strong|b|em|i|u)\b[^>]*>",
+    re.IGNORECASE,
+)
 # Echo of deliberate tool-continuation nudge ("…finished…") on its own line.
 _TRAILING_TOOL_META_DONE = re.compile(
     r"(?:\n\n|\n)\s*i['\u2019]?m\s+done\.?\s*$",
@@ -37,6 +47,17 @@ _INTERNAL_PROACTIVE_MARKERS = (
     re.compile(r"\[\s*you\s+sent\s+this\s+unprompted\s*\]", re.IGNORECASE),
     re.compile(r"\[\s*bb:proactive_outbound\s*\]", re.IGNORECASE),
 )
+
+
+def strip_html_layout_leaks(text: str) -> str:
+    """Remove common HTML tags from user-visible chat (plain-text platforms, no parse_mode)."""
+    if not text:
+        return text
+    t = _HTML_BR.sub("\n", text)
+    t = _HTML_LAYOUT.sub("", t)
+    t = _HTML_INLINE.sub("", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
 
 
 def strip_internal_history_echo(text: str) -> str:
@@ -167,6 +188,7 @@ class VoiceController:
 
     def sanitize_reply(self, text: str) -> str:
         t = strip_stage_directions(text)
+        t = strip_html_layout_leaks(t)
         t = strip_internal_history_echo(t)
         t = _strip_degenerate_repetition(t)
         vis, cot = gemma.separate_plaintext_chain_of_thought(t)

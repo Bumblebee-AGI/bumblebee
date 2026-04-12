@@ -172,7 +172,14 @@ def default_soma_config() -> dict[str, Any]:
                 # decay_rate is now homeostatic: % of distance to resting point
                 # restored per hour.  -40 means 40% of the gap closes each hour.
                 {"name": "social", "initial": 45, "decay_rate": -40, "floor": 0, "ceiling": 100},
-                {"name": "curiosity", "initial": 40, "decay_rate": -30, "floor": 0, "ceiling": 100},
+                {
+                    "name": "curiosity",
+                    "initial": 45,
+                    "decay_rate": -22,
+                    "decay_time_scale": 0.88,
+                    "floor": 0,
+                    "ceiling": 100,
+                },
                 {"name": "creative", "initial": 35, "decay_rate": -25, "floor": 0, "ceiling": 100},
                 {"name": "tension", "initial": 10, "decay_rate": -50, "floor": 0, "ceiling": 100},
                 {"name": "comfort", "initial": 60, "decay_rate": -15, "floor": 0, "ceiling": 100},
@@ -182,20 +189,21 @@ def default_soma_config() -> dict[str, Any]:
         "coupling": [
             {"when": "social > 80", "effect": "curiosity.decay_rate *= 1.5"},
             {"when": "tension > 70", "effect": "comfort.decay_rate *= 2.0"},
+            {"when": "curiosity > 82", "effect": "curiosity.decay_rate *= 1.25"},
         ],
         "event_effects": {
             # Values are scaled by headroom automatically (full-range saturation).
             # At resting point (~50%), a +6 gives roughly +3 effective.
-            "message_received": {"social": 6, "curiosity": 3},
+            "message_received": {"social": 6},
             "message_sent": {"social": 4, "creative": 3},
-            "action": {"curiosity": 5},
-            "idle": {"social": -0.02, "curiosity": 0.01},
+            "action": {"curiosity": 1},
+            "idle": {"social": -0.02, "curiosity": -0.008},
             "idle_cycle": {"comfort": 4, "tension": -3},
             "mood_declared": {"comfort": 2},
         },
         "impulses": [
             {"drive": "social", "threshold": 80, "type": "reach_out", "label": "reach_out", "cooldown_minutes": 30, "relief": {"social": -25}},
-            {"drive": "curiosity", "threshold": 85, "type": "explore", "label": "explore_something", "cooldown_minutes": 20, "relief": {"curiosity": -20}},
+            {"drive": "curiosity", "threshold": 88, "type": "explore", "label": "explore_something", "cooldown_minutes": 20, "relief": {"curiosity": -22}},
         ],
         "conflicts": [
             {"drives": ["curiosity", "comfort"], "threshold": 70, "label": "restless comfort", "tension_per_tick": 0.5, "comfort_per_tick": -0.3},
@@ -343,7 +351,7 @@ class AutonomySettings:
     # Optional override: absolute path, or relative to workspace / ~/.bumblebee/entities/<name>/.
     transcript_path: str = ""
     # When False, tool activity during autonomous perceive goes to the transcript file only (not Telegram).
-    wake_chat_tool_activity: bool = False
+    wake_chat_tool_activity: bool = True
     summon: SummonSettings = field(default_factory=SummonSettings)
     poker_prompts: PokerPromptSettings = field(default_factory=PokerPromptSettings)
 
