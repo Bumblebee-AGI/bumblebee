@@ -408,6 +408,9 @@ class BarEngine:
         self._latent_conflicts: list[dict[str, Any]] = []
         self._near_impulses: list[dict[str, Any]] = []
 
+        # Somatic memory: persistent markers tied to specific external entities (e.g., person_id)
+        self._somatic_markers: dict[str, dict[str, float]] = {}
+
     @property
     def ordered_names(self) -> list[str]:
         return list(self._ordered_names)
@@ -485,6 +488,21 @@ class BarEngine:
             if k in self._values:
                 self._values[k] += self._saturation_scale(k, float(dv))
 
+    def register_somatic_marker(self, source_id: str, effect: dict[str, float]) -> None:
+        """Bind a specific entity or topic directly to a somatic state shift."""
+        if source_id not in self._somatic_markers:
+            self._somatic_markers[source_id] = {}
+        for k, v in effect.items():
+            if k in self._values:
+                self._somatic_markers[source_id][k] = self._somatic_markers[source_id].get(k, 0.0) + v
+
+    def trigger_somatic_marker(self, source_id: str) -> None:
+        """Instantly apply the gut reaction associated with a source_id."""
+        if source_id in self._somatic_markers:
+            for k, v in self._somatic_markers[source_id].items():
+                if k in self._values:
+                    self._values[k] += self._saturation_scale(k, v)
+
     def tick(self, dt_hours: float) -> None:
         """Advance decay, apply coupling, detect impulses/conflicts, snapshot history.
 
@@ -497,13 +515,25 @@ class BarEngine:
         """
         base_rates = dict(self._decay_rates)
         eff_rates, tension_ph = self._apply_coupling(base_rates)
+        
+        # Circadian Rhythm: modulate decay rates organically over 24 hours
+        hour = time.localtime().tm_hour
+        # Peak around 14:00, trough around 02:00
+        circadian_mult = 1.0 + 0.15 * math.sin((hour - 8) * math.pi / 12.0)
+        
         for name in self._ordered_names:
             rate_frac = abs(eff_rates[name]) / 100.0
-            scale = float(self._decay_time_scale.get(name, 1.0))
+            scale = float(self._decay_time_scale.get(name, 1.0)) * circadian_mult
             distance = self._values[name] - self._initial.get(name, 50.0)
             self._values[name] -= distance * rate_frac * dt_hours * scale
+            
+            # Allostasis: The initial resting point slowly drifts toward the chronic state.
+            # Drifts slowly (e.g. 0.5% per hour of the distance)
+            allostasis_rate = 0.005 
+            self._initial[name] += (self._values[name] - self._initial[name]) * allostasis_rate * dt_hours
+
         if tension_ph != 0.0 and "tension" in self._values:
-            self._values["tension"] += tension_ph * dt_hours
+            self._values["tension"] += tension_ph * dt_hours * circadian_mult
 
         self._active_conflicts = self._detect_conflicts()
         for c in self._active_conflicts:
@@ -772,6 +802,8 @@ class BarEngine:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "values": dict(self._values),
+            "initial": dict(self._initial),
+            "somatic_markers": dict(self._somatic_markers),
             "history": list(self._history),
             "ordered_names": list(self._ordered_names),
             "saved_at": time.time(),
@@ -790,6 +822,10 @@ class BarEngine:
                 log.info("soma_bar_names_changed", saved=saved_names, current=self._ordered_names)
                 return False
             self._values = {k: float(data["values"][k]) for k in self._ordered_names}
+            if "initial" in data:
+                self._initial = {k: float(data["initial"][k]) for k in self._ordered_names}
+            if "somatic_markers" in data:
+                self._somatic_markers = {k: dict(v) for k, v in data["somatic_markers"].items()}
             self._history.clear()
             for snap in data.get("history", []):
                 self._history.append({k: float(snap.get(k, 0)) for k in self._ordered_names})

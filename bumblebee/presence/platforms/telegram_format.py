@@ -106,6 +106,12 @@ COMMAND_REGISTRY: list[TelegramCommandSpec] = [
         category="Introspection",
     ),
     TelegramCommandSpec(
+        name="relationship",
+        summary="Deep-dive into a relationship — full portrait, signals, moments",
+        usage="/relationship [name]",
+        category="Introspection",
+    ),
+    TelegramCommandSpec(
         name="models",
         summary="Inference and runtime model configuration",
         usage="/models",
@@ -674,15 +680,119 @@ def format_me_html(
     relationship: Any | None,
     *,
     target_label: str | None = None,
+    relational_doc: Any | None = None,
+    somatic_marker: dict[str, float] | None = None,
 ) -> str:
+    """Premium at-a-glance relationship card for /me.
+
+    If a ``relational_doc`` (RelationalDocument) is provided, the card shows
+    all 5 derived scores, health, stage, trajectory, significant moments,
+    and somatic markers. Falls back to legacy 3-bar display when no doc exists.
+    """
     _ = entity_name
     who = html.escape((target_label or "you").strip() or "you")
-    if relationship is None:
+    sep = "<code>────────────────────</code>"
+
+    if relationship is None and relational_doc is None:
         return (
             f"<b>Relationship · {who}</b>\n\n"
             "<i>No relationship profile yet.</i>\n"
             "If you just started chatting, send a few messages and check again."
         )
+
+    # --- Use relational document if available for the rich card ---
+    if relational_doc is not None:
+        from bumblebee.memory.relational_document import compute_health_snapshot
+
+        ds = relational_doc.derived_scores
+        snap = compute_health_snapshot(relational_doc)
+        readiness, caveats = _relationship_readiness(relationship) if relationship else ("forming profile", [])
+
+        # Header with stage emoji
+        out = f"{snap['stage_emoji']} <b>Relationship · {who}</b>\n\n"
+
+        # Stage + health + trajectory line
+        out += (
+            f"<b>Stage</b>: {html.escape(snap['stage'])} · "
+            f"<b>Health</b>: {html.escape(snap['health_label'])} ({snap['health']:.0%}) · "
+            f"<b>Trend</b>: {snap['trajectory_emoji']} {html.escape(snap['trajectory'])}\n"
+        )
+        out += f"<b>Cadence</b>: {html.escape(snap['cadence_label'])}\n"
+        if relationship:
+            out += f"<b>Dynamic</b>: {html.escape(str(relationship.dynamic) or 'forming')}\n"
+        out += f"{sep}\n"
+
+        # All 5 derived scores
+        fam = float(ds.get("familiarity", 0.2))
+        warmth = float(ds.get("warmth", 0.5))
+        trust = float(ds.get("trust", 0.35))
+        tension = float(ds.get("tension", 0.1))
+        investment = float(ds.get("investment", 0.4))
+
+        out += (
+            f"<b>Signals</b>\n"
+            f"Familiarity  <code>{_mini_bar(fam)}</code> {fam:.2f} · {_relationship_band(fam)}\n"
+            f"Warmth       <code>{_mini_bar(warmth)}</code> {warmth:.2f} · {_relationship_band(warmth)}\n"
+            f"Trust        <code>{_mini_bar(trust)}</code> {trust:.2f} · {_relationship_band(trust)}\n"
+            f"Tension      <code>{_mini_bar(tension)}</code> {tension:.2f} · {_relationship_band(tension)}\n"
+            f"Investment   <code>{_mini_bar(investment)}</code> {investment:.2f} · {_relationship_band(investment)}\n"
+        )
+        out += f"{sep}\n"
+
+        # History
+        first_met_ago = ""
+        last_seen_ago = ""
+        if relationship:
+            first_met_ago = _fmt_duration(max(0.0, time.time() - float(relationship.first_met)))
+            last_seen_ago = _fmt_duration(max(0.0, time.time() - float(relationship.last_interaction)))
+        elif relational_doc.created_at > 0:
+            first_met_ago = _fmt_duration(max(0.0, time.time() - relational_doc.created_at))
+            last_seen_ago = _fmt_duration(max(0.0, time.time() - relational_doc.last_interaction))
+        n = relational_doc.interaction_count
+        if relationship:
+            n = max(n, relationship.interaction_count)
+        out += f"<b>History</b>\n"
+        out += f"Interactions: {n}\n"
+        if first_met_ago:
+            out += f"First met: {html.escape(first_met_ago)} ago\n"
+        if last_seen_ago:
+            out += f"Last seen: {html.escape(last_seen_ago)} ago\n"
+        if snap["days_known"] > 0:
+            out += f"Known for: {html.escape(_fmt_duration(snap['days_known'] * 86400))}\n"
+
+        # Somatic marker (gut reaction)
+        if somatic_marker:
+            effects = []
+            for bar_name, delta in somatic_marker.items():
+                sign = "+" if delta >= 0 else ""
+                effects.append(f"{bar_name} {sign}{delta:.0f}")
+            out += f"\n<b>Body response</b> (gut reaction)\n"
+            out += f"<code>{' · '.join(effects)}</code>\n"
+
+        # Significant moments
+        moments = list(relational_doc.significant_moments or [])
+        if moments:
+            out += f"\n<b>Significant moments</b>\n"
+            for m in moments[-4:]:
+                out += f"• {html.escape(str(m).strip()[:120])}\n"
+
+        # Shared topics (from legacy rel)
+        if relationship:
+            top_topics = [str(t).strip() for t in list(getattr(relationship, "topics_shared", []) or []) if str(t).strip()]
+            if top_topics:
+                out += f"\n<b>Shared topics</b>\n"
+                for t in top_topics[:5]:
+                    out += f"• {html.escape(t[:90])}\n"
+
+        # Caveats
+        if caveats:
+            out += f"\n<b>Model caveats</b>\n"
+            for c in caveats:
+                out += f"• {html.escape(c)}\n"
+
+        return out.rstrip()
+
+    # --- Fallback: legacy 3-bar display (no relational document) ---
     first_met_ago = _fmt_duration(max(0.0, time.time() - float(relationship.first_met)))
     last_seen_ago = _fmt_duration(max(0.0, time.time() - float(relationship.last_interaction)))
 
@@ -690,12 +800,11 @@ def format_me_html(
     warm_bar = _mini_bar(relationship.warmth)
     trust_bar = _mini_bar(relationship.trust)
     readiness, caveats = _relationship_readiness(relationship)
-    sep = "<code>────────────────────</code>"
     top_topics = [str(t).strip() for t in list(getattr(relationship, "topics_shared", []) or []) if str(t).strip()]
     unresolved = [str(u).strip() for u in list(getattr(relationship, "unresolved", []) or []) if str(u).strip()]
 
     out = (
-        f"<b>Relationship · {who}</b>\n\n"
+        f"🌱 <b>Relationship · {who}</b>\n\n"
         f"<b>Profile quality</b>: {html.escape(readiness)}\n"
         f"<b>Dynamic</b>: {html.escape(str(relationship.dynamic) or 'forming')}\n"
         f"{sep}\n"
@@ -703,13 +812,20 @@ def format_me_html(
         f"Familiarity  <code>{fam_bar}</code> {relationship.familiarity:.2f} · {_relationship_band(relationship.familiarity)}\n"
         f"Warmth      <code>{warm_bar}</code> {relationship.warmth:.2f} · {_relationship_band(relationship.warmth, bipolar=True)}\n"
         f"Trust       <code>{trust_bar}</code> {relationship.trust:.2f} · {_relationship_band(relationship.trust)}\n"
-        "<i>Familiarity drifts down during long gaps and rebuilds on contact (slow half-life).</i>\n"
+        f"<i>Familiarity drifts down during long gaps and rebuilds on contact (slow half-life).</i>\n"
         f"{sep}\n"
         f"<b>History</b>\n"
         f"Interactions: {relationship.interaction_count}\n"
         f"First met: {html.escape(first_met_ago)} ago\n"
         f"Last seen: {html.escape(last_seen_ago)} ago"
     )
+    if somatic_marker:
+        effects = []
+        for bar_name, delta in somatic_marker.items():
+            sign = "+" if delta >= 0 else ""
+            effects.append(f"{bar_name} {sign}{delta:.0f}")
+        out += f"\n\n<b>Body response</b> (gut reaction)\n"
+        out += f"<code>{' · '.join(effects)}</code>"
     if top_topics:
         out += "\n\n<b>Shared topics</b>\n"
         for t in top_topics[:5]:
@@ -723,6 +839,135 @@ def format_me_html(
         for c in caveats:
             out += f"\n• {html.escape(c)}"
     return out
+
+
+def format_relationship_html(
+    entity_name: str,
+    relationship: Any | None,
+    relational_doc: Any | None,
+    *,
+    target_label: str | None = None,
+    somatic_marker: dict[str, float] | None = None,
+) -> str:
+    """Deep-dive relationship card for /relationship — shows the full prose portrait."""
+    _ = entity_name
+    who = html.escape((target_label or "someone").strip() or "someone")
+    sep = "<code>────────────────────</code>"
+
+    if relational_doc is None and relationship is None:
+        return (
+            f"<b>Relationship · {who}</b>\n\n"
+            "<i>No relationship data found.</i>\n"
+            "Try chatting first, then use <code>/relationship</code> again."
+        )
+
+    # If we have a relational doc, use the rich view
+    if relational_doc is not None:
+        from bumblebee.memory.relational_document import compute_health_snapshot, tail_sentences
+
+        ds = relational_doc.derived_scores
+        snap = compute_health_snapshot(relational_doc)
+
+        # Header
+        out = f"{snap['stage_emoji']} <b>{who}</b> · {html.escape(snap['stage'])}\n"
+        out += f"{sep}\n\n"
+
+        # Health + trajectory banner
+        out += (
+            f"<b>Health</b>: {html.escape(snap['health_label'])} ({snap['health']:.0%}) · "
+            f"<b>Trend</b>: {snap['trajectory_emoji']} {html.escape(snap['trajectory'])} · "
+            f"<b>Cadence</b>: {html.escape(snap['cadence_label'])}\n"
+        )
+        if relationship:
+            out += f"<b>Dynamic</b>: {html.escape(str(relationship.dynamic) or 'forming')}\n"
+        out += "\n"
+
+        # All 5 bars
+        fam = float(ds.get("familiarity", 0.2))
+        warmth = float(ds.get("warmth", 0.5))
+        trust = float(ds.get("trust", 0.35))
+        tension = float(ds.get("tension", 0.1))
+        investment = float(ds.get("investment", 0.4))
+
+        out += (
+            f"<b>Derived signals</b>\n"
+            f"Familiarity  <code>{_mini_bar(fam, 10)}</code> {fam:.2f} · {_relationship_band(fam)}\n"
+            f"Warmth       <code>{_mini_bar(warmth, 10)}</code> {warmth:.2f} · {_relationship_band(warmth)}\n"
+            f"Trust        <code>{_mini_bar(trust, 10)}</code> {trust:.2f} · {_relationship_band(trust)}\n"
+            f"Tension      <code>{_mini_bar(tension, 10)}</code> {tension:.2f} · {_relationship_band(tension)}\n"
+            f"Investment   <code>{_mini_bar(investment, 10)}</code> {investment:.2f} · {_relationship_band(investment)}\n"
+        )
+        out += f"{sep}\n\n"
+
+        # Somatic marker
+        if somatic_marker:
+            effects = []
+            for bar_name, delta in somatic_marker.items():
+                sign = "+" if delta >= 0 else ""
+                effects.append(f"{bar_name} {sign}{delta:.0f}")
+            out += f"<b>Body response</b> (gut reaction on contact)\n"
+            out += f"<code>{' · '.join(effects)}</code>\n\n"
+
+        # History block
+        out += f"<b>History</b>\n"
+        n = relational_doc.interaction_count
+        if relationship:
+            n = max(n, relationship.interaction_count)
+        out += f"Interactions: {n}\n"
+        if relationship:
+            first_met_ago = _fmt_duration(max(0.0, time.time() - float(relationship.first_met)))
+            last_seen_ago = _fmt_duration(max(0.0, time.time() - float(relationship.last_interaction)))
+            out += f"First met: {html.escape(first_met_ago)} ago\n"
+            out += f"Last seen: {html.escape(last_seen_ago)} ago\n"
+        if snap["days_known"] > 0:
+            out += f"Known for: {html.escape(_fmt_duration(snap['days_known'] * 86400))}\n"
+        out += f"{sep}\n\n"
+
+        # Significant moments timeline
+        moments = list(relational_doc.significant_moments or [])
+        if moments:
+            out += f"<b>Significant moments</b>\n"
+            for i, m in enumerate(moments[-6:], 1):
+                out += f"  {i}. {html.escape(str(m).strip()[:160])}\n"
+            out += "\n"
+
+        # Shared topics
+        if relationship:
+            top_topics = [str(t).strip() for t in list(getattr(relationship, "topics_shared", []) or []) if str(t).strip()]
+            if top_topics:
+                out += f"<b>Shared topics</b>\n"
+                for t in top_topics[:6]:
+                    out += f"• {html.escape(t[:100])}\n"
+                out += "\n"
+
+        # Prose portrait (trimmed)
+        doc_text = (relational_doc.document or "").strip()
+        if doc_text:
+            out += f"<b>Portrait</b>\n{sep}\n"
+            # Show last ~2000 chars
+            if len(doc_text) > 2000:
+                doc_text = "…\n" + doc_text[-2000:]
+            out += html.escape(doc_text)
+            out += f"\n{sep}\n"
+
+        # Caveats
+        if relationship:
+            _, caveats = _relationship_readiness(relationship)
+            if caveats:
+                out += f"\n<b>Model caveats</b>\n"
+                for c in caveats:
+                    out += f"• {html.escape(c)}\n"
+
+        return out.rstrip()
+
+    # Fallback when no relational doc — just show legacy info
+    return format_me_html(
+        entity_name,
+        relationship,
+        target_label=target_label,
+        somatic_marker=somatic_marker,
+    )
+
 
 
 def format_models_html(entity: "Entity") -> str:
@@ -924,8 +1169,18 @@ def format_routines_html(
     return body
 
 
-def format_tools_html(entity: "Entity") -> str:
-    """Render active runtime tools for this entity, including dynamic MCP tools."""
+def format_tools_html(
+    entity: "Entity",
+    *,
+    page: int = 0,
+    per_page: int = 12,
+    query: str | None = None,
+) -> tuple[str, int, int]:
+    """Paginated codeblock table of active tools.
+
+    Returns ``(html_body, page_index, total_pages)`` — same shape as
+    ``format_commands_page`` for handler consistency.
+    """
     rows: list[tuple[str, str]] = []
     list_fn = getattr(entity.tools, "list_tools", None)
     if callable(list_fn):
@@ -941,19 +1196,62 @@ def format_tools_html(entity: "Entity") -> str:
             )
         rows = sorted([r for r in rows if r[0]], key=lambda r: r[0])
 
-    lines = [f"<b>Active tools</b> · {len(rows)} total", ""]
-    if not rows:
-        lines.append("No tools are currently registered.")
-        return "\n".join(lines)
+    # Optional search filter
+    q = (query or "").strip().lower()
+    if q:
+        rows = [r for r in rows if q in r[0].lower() or q in r[1].lower()]
 
-    for name, desc in rows:
-        summary = (desc or "").strip()
-        if len(summary) > 180:
-            summary = summary[:177] + "..."
-        lines.append(f"• <code>{html.escape(name)}</code>")
-        if summary:
-            lines.append(f"  {html.escape(summary)}")
-    return "\n".join(lines)
+    total_tools = len(rows)
+    if not rows:
+        body = "<b>Active tools</b>\n\n"
+        if q:
+            body += f"No tools matching <code>{html.escape(query or '')}</code>.\n"
+            body += "Try <code>/tools</code> for the full list."
+        else:
+            body += "No tools are currently registered."
+        return body, 0, 1
+
+    # Pagination
+    total_pages = max(1, (len(rows) + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    start = page * per_page
+    page_rows = rows[start : start + per_page]
+
+    # Compute column width for alignment
+    name_w = max(len(r[0]) for r in page_rows)
+    name_w = max(name_w, 4)  # minimum "Name" header width
+    # Description gets remaining space; truncate to fit Telegram <pre> nicely
+    desc_max = 42
+
+    # Build table
+    header = f"{'Tool':<{name_w}}  {'Description'}"
+    rule = "─" * name_w + "──" + "─" * min(desc_max, max(11, max(len(r[1][:desc_max]) for r in page_rows)))
+    table_lines = [header, rule]
+    for name, desc in page_rows:
+        desc_display = desc.strip()
+        if len(desc_display) > desc_max:
+            desc_display = desc_display[: desc_max - 1] + "…"
+        table_lines.append(f"{name:<{name_w}}  {desc_display}")
+
+    title = f"<b>Active tools</b> · {total_tools} total — page {page + 1}/{total_pages}"
+    if q:
+        title += f" · filter <code>{html.escape(query or '')}</code>"
+
+    pre_block = "\n".join(table_lines)
+    body = f"{title}\n\n<pre>{html.escape(pre_block)}</pre>"
+
+    # Navigation hint
+    if q:
+        body += "\n\n<i>Next page:</i> <code>/tools {} {}</code>".format(
+            page + 2 if page + 1 < total_pages else 1,
+            html.escape(query or ""),
+        )
+    else:
+        body += "\n\n<i>Next page:</i> <code>/tools {}</code>".format(
+            page + 2 if page + 1 < total_pages else 1,
+        )
+
+    return body, page, total_pages
 
 
 def format_body_md_reply_html_chunks(

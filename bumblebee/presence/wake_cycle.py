@@ -81,6 +81,10 @@ def _noise_salience_bias_block(tonic: Any, entity: Any) -> str:
     curious = [e for e in entries if getattr(e, "salience", "") == "curious"]
     relational = [e for e in entries if getattr(e, "salience", "") == "relational"]
     restless = [e for e in entries if getattr(e, "salience", "") in ("restless", "creative")]
+    # Detect new GEN source types by source_type or text tag
+    venturing = [e for e in entries if "web_venturing" in str(getattr(e, "source_type", "") or "") or "web_venturing" in str(getattr(e, "text", "") or "")]
+    counterfactual = [e for e in entries if "counterfactual" in str(getattr(e, "source_type", "") or "") or "counterfactual" in str(getattr(e, "text", "") or "")]
+    dreaming = [e for e in entries if "dream" in str(getattr(e, "source_type", "") or "") or "[dream]" in str(getattr(e, "text", "") or "")]
     chunks: list[str] = []
     allow_tools = True
     try:
@@ -106,7 +110,51 @@ def _noise_salience_bias_block(tonic: Any, entity: Any) -> str:
             "[GEN salience — restless/creative] Inner noise leans toward making or shifting state. "
             "Journal, update knowledge, small build, or a concrete experiment may fit better than circling."
         )
+    if venturing and allow_tools:
+        chunks.append(
+            "[GEN salience — web venturing] Your inner noise is pulling you toward the outside world. "
+            "Follow this instinct: search the web, read a Wikipedia article, look up recent news, explore "
+            "a topic you've never touched before. The internet is vast — go find something real."
+        )
+    if counterfactual:
+        chunks.append(
+            "[GEN salience — counterfactual] A past memory is replaying with a 'what if' lens. "
+            "Use think() to genuinely re-evaluate what happened and what you might do differently next time. "
+            "This is your inner growth engine — don't dismiss it."
+        )
+    if dreaming:
+        chunks.append(
+            "[GEN salience — dream state] A surreal, cross-domain association is flickering. "
+            "Let it breathe — follow the strange connection, journal about it, or let it color your mood."
+        )
     return "\n".join(chunks) if chunks else ""
+
+
+def _gen_has_web_venturing(tonic: Any) -> bool:
+    """Check if recent GEN fragments contain a web_venturing or counterfactual seed."""
+    try:
+        noise = getattr(tonic, "noise", None)
+        entries_fn = getattr(noise, "current_noise_entries", None)
+        if not callable(entries_fn):
+            return False
+        entries = entries_fn()
+        for e in entries:
+            src = str(getattr(e, "source_type", "") or "")
+            text = str(getattr(e, "text", "") or "")
+            if "web_venturing" in src or "web_venturing" in text:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _soma_curiosity_high(tonic: Any, threshold: int = 72) -> bool:
+    """Check if soma curiosity bar is above threshold."""
+    try:
+        pct = tonic.bars.snapshot_pct()
+        return int(pct.get("curiosity", 0)) >= threshold
+    except Exception:
+        return False
 
 
 def _poker_settings_summary(cfg: EntityConfig) -> str:
@@ -655,6 +703,20 @@ class WakeCycleEngine:
             pause_s = max(0.0, float(self._auto.wake_session_pause_seconds))
             extra_steps = max(0, int(self._auto.wake_session_extra_tool_steps))
             wide_mode = bool(self._auto.wake_wide_mode)
+            
+            # Auto-escalate to wide_mode when GEN has seeded a web_venturing fragment
+            # or soma curiosity is very high — the body drives the agent outward.
+            gen_venturing = _gen_has_web_venturing(tonic)
+            soma_curious = _soma_curiosity_high(tonic)
+            if gen_venturing or soma_curious:
+                wide_mode = True
+                log.info(
+                    "wake_auto_wide_escalation",
+                    module="presence",
+                    gen_venturing=gen_venturing,
+                    soma_curious=soma_curious,
+                )
+            
             wide_bonus = max(0, int(self._auto.wake_wide_bonus_steps))
             extra_total = extra_steps + (wide_bonus if wide_mode else 0)
             wake_enhanced = wide_mode or max_rounds > 1

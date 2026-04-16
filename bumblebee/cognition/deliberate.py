@@ -311,7 +311,7 @@ class DeliberateCognition:
                     )
                 loop_state.last_tool_failed = tool_failed
 
-                if any(tm.get("content") == "[turn ended]" for tm in tool_msgs):
+                if any("[turn ended]" in str(tm.get("content", "")) for tm in tool_msgs):
                     merged = "\n\n".join(thinking_acc) if thinking_acc else None
                     yield DeliberateStreamEvent(
                         kind="final",

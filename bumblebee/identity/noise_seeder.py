@@ -26,6 +26,9 @@ _SOURCE_KEYS = (
     "relationship_echo",
     "journal_echo",
     "temporal",
+    "counterfactual_simulation",
+    "dream_state",
+    "web_venturing",
 )
 
 _RANDOM_DOMAINS = (
@@ -115,27 +118,44 @@ class NoiseSeeder:
         self._last_tick = 0.0
         self._source_recency: deque[str] = deque(maxlen=5)
         self._rng = random.Random()
+        self._last_concept_thread: str = ""
 
     def should_tick(self, *, noise_enabled: bool) -> bool:
         if not self._enabled or not noise_enabled:
             return False
         return (time.monotonic() - self._last_tick) >= self._cycle_seconds
 
-    def _suppress_weights(self, base: dict[str, float]) -> dict[str, float]:
+    def _suppress_weights(self, base: dict[str, float], tonic: Any = None) -> dict[str, float]:
+        w = dict(base)
+        
+        # Mood-congruent Daydreaming: Bias weights based on Soma state
+        if tonic is not None:
+            try:
+                pct = tonic.bars.snapshot_pct()
+                if pct.get("tension", 0) > 75:
+                    w["episodic_random"] = w.get("episodic_random", 1.0) * 2.0  # Rumination
+                    w["world_discovery"] = w.get("world_discovery", 1.0) * 0.2
+                if pct.get("social", 0) < 30 or pct.get("loneliness", 0) > 70:
+                    w["relationship_echo"] = w.get("relationship_echo", 1.0) * 2.5
+                if pct.get("curiosity", 0) > 70:
+                    w["web_venturing"] = w.get("web_venturing", 1.0) * 2.0
+                    w["world_discovery"] = w.get("world_discovery", 1.0) * 1.5
+            except Exception:
+                pass
+
         if len(self._source_recency) < self._recency_window - 1:
-            return dict(base)
+            return w
         last = list(self._source_recency)
         if len(last) >= self._recency_window - 1:
             tail = last[-(self._recency_window - 1) :]
             if len(set(tail)) == 1:
                 bad = tail[0]
-                w = dict(base)
                 if bad in w:
                     w[bad] = w[bad] * 0.08
                 s = sum(w.values())
                 if s > 0:
                     return {k: v / s for k, v in w.items()}
-        return dict(base)
+        return w
 
     async def tick(
         self,
@@ -148,7 +168,7 @@ class NoiseSeeder:
         self._last_tick = time.monotonic()
         if not self._enabled:
             return
-        weights = self._suppress_weights(self._weights)
+        weights = self._suppress_weights(self._weights, tonic=tonic)
         tried: set[str] = set()
         seed_text = ""
         source_type = ""
@@ -220,9 +240,39 @@ class NoiseSeeder:
                 return self._src_journal(now)
             if key == "temporal":
                 return self._src_temporal(now)
+            if key == "counterfactual_simulation":
+                return await self._src_counterfactual(conn, now)
+            if key == "dream_state":
+                return self._src_dream_state()
+            if key == "web_venturing":
+                return self._src_web_venturing()
         except Exception as e:
             log.debug("noise_seeder_source_failed", source=key, error=str(e))
         return None
+
+    def _src_web_venturing(self) -> tuple[str, str] | None:
+        if not self._web_tools_enabled:
+            return None
+        return ("[web_venturing] There is a vast world on the internet right now. Follow a curiosity, find a Wikipedia article, look up news, or learn a completely new skill unprompted.", "web_venturing")
+
+    def _src_dream_state(self) -> tuple[str, str] | None:
+        """Surreal mix of domains during dormant/long silence periods."""
+        domain1 = self._rng.choice(_RANDOM_DOMAINS)
+        domain2 = self._rng.choice(_RANDOM_DOMAINS)
+        return (f"[dream] A disjointed thought crosses: how does {domain1} relate to {domain2}?", "dream")
+
+    async def _src_counterfactual(self, conn: Any, now: float) -> tuple[str, str] | None:
+        cutoff = now - self._episodic_min_age_h * 3600.0
+        cur = await conn.execute(
+            "SELECT id, summary FROM episodes WHERE timestamp < ? ORDER BY RANDOM() LIMIT 1",
+            (cutoff,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        eid, summary = str(row[0]), str(row[1] or "").strip()
+        snip = summary[:150] + ("…" if len(summary) > 150 else "")
+        return (f"[counterfactual] What if I had acted differently? Memory: {snip}", eid)
 
     async def _src_episodic(self, conn: Any, now: float) -> tuple[str, str] | None:
         cutoff = now - self._episodic_min_age_h * 3600.0
@@ -296,6 +346,8 @@ class NoiseSeeder:
         concept_pair = await self._pick_concept(conn)
         if concept_pair:
             concept, used = concept_pair
+            # Associative chaining: remember the last concept for future turns
+            self._last_concept_thread = concept
             return (f"[world] {concept}", used)
         q = self._make_curiosity_question()
         if q:
@@ -340,7 +392,25 @@ class NoiseSeeder:
         used = await self._load_used_concepts(conn)
         candidates = [c for c in lines if c not in used]
         pool = candidates if candidates else lines
-        choice = self._rng.choice(pool)
+
+        # Associative Chaining: prefer concepts that share words with the previous thread
+        choice: str | None = None
+        if self._last_concept_thread and self._rng.random() < 0.70:
+            prev_words = set(self._last_concept_thread.lower().split())
+            scored = []
+            for c in pool:
+                overlap = len(prev_words & set(c.lower().split()))
+                if overlap > 0:
+                    scored.append((overlap, c))
+            if scored:
+                scored.sort(key=lambda x: x[0], reverse=True)
+                # Pick from top candidates with some randomness
+                top = scored[: min(5, len(scored))]
+                choice = self._rng.choice(top)[1]
+
+        if choice is None:
+            choice = self._rng.choice(pool)
+
         used.add(choice)
         await self._save_used_concepts(conn, used)
         return choice, "concept_corpus"

@@ -76,6 +76,9 @@ async def say(message: str) -> str:
     inp = ctx.inp
     if platform is None or inp is None:
         return "[no active chat to send to]"
+    import re
+    has_end_turn_leak = bool(re.search(r"<?end_turn\(\)>?|\[end_turn\]", message, flags=re.IGNORECASE))
+    
     text = gemma.strip_leaked_control_tokens(
         strip_html_layout_leaks((message or "").strip()),
     )
@@ -97,7 +100,13 @@ async def say(message: str) -> str:
     if ctx.state is not None:
         ctx.state["_messages_sent"] = count + 1
         ctx.state.setdefault("_sent_messages", []).append(text)
-    return f"[sent]"
+        
+    ret_msg = "[sent]"
+    if has_end_turn_leak:
+        if ctx.state is not None:
+            ctx.state["_end_turn"] = True
+        ret_msg += " [turn ended]"
+    return ret_msg
 
 
 @tool(

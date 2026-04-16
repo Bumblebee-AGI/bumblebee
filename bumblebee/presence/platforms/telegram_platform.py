@@ -45,6 +45,7 @@ from bumblebee.presence.platforms.telegram_format import (
     format_feelings_html,
     format_help_html,
     format_me_html,
+    format_relationship_html,
     format_memories_html,
     format_models_html,
     format_ping_html,
@@ -383,6 +384,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("memeories", self._on_memories_command), group=_g)
         self.app.add_handler(CommandHandler("feelings", self._on_feelings_command), group=_g)
         self.app.add_handler(CommandHandler("me", self._on_me_command), group=_g)
+        self.app.add_handler(CommandHandler("relationship", self._on_relationship_command), group=_g)
         self.app.add_handler(CommandHandler("models", self._on_models_command), group=_g)
         self.app.add_handler(CommandHandler("tools", self._on_tools_command), group=_g)
         self.app.add_handler(CommandHandler("routines", self._on_routines_command), group=_g)
@@ -1370,12 +1372,74 @@ class TelegramPlatform(Platform):
                 target_label = str(route.get("person_name") or target_label)
         async with self._entity.store.session() as db:
             rel = await self._entity.relational.get(db, person_id)
+            # Try to fetch the deep relational document
+            rel_doc = None
+            try:
+                rel_doc_mem = getattr(self._entity, "relational_docs", None)
+                if rel_doc_mem is not None:
+                    rel_doc = await rel_doc_mem.get(db, person_id)
+            except Exception:
+                pass
+        # Fetch somatic marker if available
+        somatic_marker = None
+        try:
+            bars = getattr(self._entity.tonic, "bars", None)
+            markers = getattr(bars, "_somatic_markers", {}) if bars else {}
+            if person_id in markers:
+                somatic_marker = dict(markers[person_id])
+        except Exception:
+            pass
         await self._reply_html(
             update,
             format_me_html(
                 self._entity.config.name,
                 rel,
                 target_label=target_label,
+                relational_doc=rel_doc,
+                somatic_marker=somatic_marker,
+            ),
+        )
+
+    async def _on_relationship_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        if not await self._check_allowed(update, notify=True):
+            return
+        args = [str(a).strip() for a in (context.args or []) if str(a).strip()]
+        u = update.effective_user
+        person_id = str(u.id) if u else "unknown"
+        target_label = _telegram_display_name(u) if u else "you"
+        if args:
+            target = " ".join(args).strip()
+            route = self._entity.resolve_person_route(target, platform="telegram", prefer_private=True)
+            if route and str(route.get("person_id") or "").strip():
+                person_id = str(route.get("person_id"))
+                target_label = str(route.get("person_name") or target_label)
+        async with self._entity.store.session() as db:
+            rel = await self._entity.relational.get(db, person_id)
+            rel_doc = None
+            try:
+                rel_doc_mem = getattr(self._entity, "relational_docs", None)
+                if rel_doc_mem is not None:
+                    rel_doc = await rel_doc_mem.get(db, person_id)
+            except Exception:
+                pass
+        somatic_marker = None
+        try:
+            bars = getattr(self._entity.tonic, "bars", None)
+            markers = getattr(bars, "_somatic_markers", {}) if bars else {}
+            if person_id in markers:
+                somatic_marker = dict(markers[person_id])
+        except Exception:
+            pass
+        await self._reply_html(
+            update,
+            format_relationship_html(
+                self._entity.config.name,
+                rel,
+                rel_doc,
+                target_label=target_label,
+                somatic_marker=somatic_marker,
             ),
         )
 
@@ -1392,8 +1456,9 @@ class TelegramPlatform(Platform):
             return
         if not await self._check_allowed(update, notify=True):
             return
-        _ = context
-        await self._reply_html(update, format_tools_html(self._entity))
+        page, query = self._parse_commands_args(list(context.args or []))
+        body, _, _ = format_tools_html(self._entity, page=page, query=query)
+        await self._reply_html(update, body)
 
     async def _on_routines_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):

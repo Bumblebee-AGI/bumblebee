@@ -2047,6 +2047,14 @@ class Entity:
     async def _somatic_appraise_input(self, tc: TurnContext) -> None:
         """Run somatic appraisal on the incoming message so bars reflect content before the agent reads its body."""
         text = tc.inp.text
+        
+        # Trigger somatic memory ("Gut Reaction") for this specific user
+        if tc.inp.person_id:
+            try:
+                self.tonic.bars.trigger_somatic_marker(tc.inp.person_id)
+            except Exception as e:
+                log.debug("somatic_marker_trigger_failed", error=str(e))
+                
         if not text:
             return
         try:

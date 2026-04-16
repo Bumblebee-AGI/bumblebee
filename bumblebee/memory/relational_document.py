@@ -48,6 +48,97 @@ class RelationalDocument:
     updated_at: float = 0.0
 
 
+def compute_health_snapshot(doc: RelationalDocument) -> dict[str, Any]:
+    """Compute relationship stage, health score, trajectory, and cadence.
+
+    Returns a dict with:
+        stage: str           — "forming" | "developing" | "established" | "deep"
+        stage_emoji: str     — 🌱 | 🌿 | 🌳 | 🏛️
+        health: float        — 0..1 composite score
+        health_label: str    — "fragile" | "uncertain" | "steady" | "strong" | "thriving"
+        trajectory: str      — "accelerating" | "steady" | "fading" | "dormant" | "new"
+        trajectory_emoji: str — 📈 | ➡️ | 📉 | 💤 | 🆕
+        cadence_label: str   — human-readable interaction cadence
+        days_known: float    — days since first interaction
+        silence_hours: float — hours since last interaction
+    """
+    now = time.time()
+    ds = doc.derived_scores
+    n = doc.interaction_count
+
+    # Stage — based on interaction count
+    if n < 10:
+        stage, stage_emoji = "forming", "🌱"
+    elif n < 50:
+        stage, stage_emoji = "developing", "🌿"
+    elif n < 150:
+        stage, stage_emoji = "established", "🌳"
+    else:
+        stage, stage_emoji = "deep", "🏛️"
+
+    # Health — composite of warmth + trust + investment - tension
+    warmth = float(ds.get("warmth", 0.5))
+    trust = float(ds.get("trust", 0.35))
+    investment = float(ds.get("investment", 0.4))
+    tension_val = float(ds.get("tension", 0.1))
+    health = max(0.0, min(1.0, (warmth + trust + investment - tension_val * 0.5) / 2.5))
+
+    if health < 0.25:
+        health_label = "fragile"
+    elif health < 0.40:
+        health_label = "uncertain"
+    elif health < 0.60:
+        health_label = "steady"
+    elif health < 0.80:
+        health_label = "strong"
+    else:
+        health_label = "thriving"
+
+    # Trajectory — based on interaction cadence and recency
+    days_known = max(0.0, (now - doc.created_at) / 86400.0) if doc.created_at > 0 else 0.0
+    silence_hours = max(0.0, (now - doc.last_interaction) / 3600.0) if doc.last_interaction > 0 else 0.0
+
+    if n < 3:
+        trajectory, trajectory_emoji = "new", "🆕"
+    elif silence_hours > 168:  # 7 days
+        trajectory, trajectory_emoji = "dormant", "💤"
+    elif days_known > 0:
+        rate = n / max(1.0, days_known)  # interactions per day
+        if rate > 5.0:
+            trajectory, trajectory_emoji = "accelerating", "📈"
+        elif rate > 1.0:
+            trajectory, trajectory_emoji = "steady", "➡️"
+        else:
+            trajectory, trajectory_emoji = "fading", "📉"
+    else:
+        trajectory, trajectory_emoji = "new", "🆕"
+
+    # Cadence label
+    if silence_hours < 1:
+        cadence_label = "active now"
+    elif silence_hours < 24:
+        cadence_label = "daily contact"
+    elif silence_hours < 72:
+        cadence_label = "regular"
+    elif silence_hours < 168:
+        cadence_label = "occasional"
+    elif silence_hours < 720:
+        cadence_label = "infrequent"
+    else:
+        cadence_label = "long gap"
+
+    return {
+        "stage": stage,
+        "stage_emoji": stage_emoji,
+        "health": health,
+        "health_label": health_label,
+        "trajectory": trajectory,
+        "trajectory_emoji": trajectory_emoji,
+        "cadence_label": cadence_label,
+        "days_known": days_known,
+        "silence_hours": silence_hours,
+    }
+
 def warmth_derived_to_relationship(w: float) -> float:
     """Map 0..1 derived warmth to Relationship's -1..1 scale."""
     w = max(0.0, min(1.0, float(w)))
