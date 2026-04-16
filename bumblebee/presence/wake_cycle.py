@@ -66,6 +66,49 @@ def _gen_fragments_tail(tonic: Any, limit: int = 6) -> list[str]:
         return []
 
 
+def _noise_salience_bias_block(tonic: Any, entity: Any) -> str:
+    """Bias autonomous context from tagged GEN fragments (no extra LLM calls)."""
+    try:
+        noise = getattr(tonic, "noise", None)
+        entries_fn = getattr(noise, "current_noise_entries", None)
+        if not callable(entries_fn):
+            return ""
+        entries = entries_fn()
+    except Exception:
+        return ""
+    if not entries:
+        return ""
+    curious = [e for e in entries if getattr(e, "salience", "") == "curious"]
+    relational = [e for e in entries if getattr(e, "salience", "") == "relational"]
+    restless = [e for e in entries if getattr(e, "salience", "") in ("restless", "creative")]
+    chunks: list[str] = []
+    allow_tools = True
+    try:
+        allow_tools = bool(entity.config.harness.autonomy.allow_tool_calls_on_wake)
+    except Exception:
+        allow_tools = True
+    if len(curious) >= 2:
+        chunks.append(
+            "[GEN salience — curiosity] Multiple curious fragments are live. If one thread genuinely pulls you, "
+            "use tools to verify or learn (search_web, fetch_url, memory_search, read) — not narration alone."
+        )
+    elif curious and allow_tools:
+        chunks.append(
+            "[GEN salience — exploration] Prefer one outward move (read/search/fetch) over re-explaining the same worry."
+        )
+    if relational:
+        chunks.append(
+            "[GEN salience — relational] Something in your inner noise touches people or contact. "
+            "If reaching out fits your boundaries and desire pressure, consider messaging where appropriate."
+        )
+    if restless:
+        chunks.append(
+            "[GEN salience — restless/creative] Inner noise leans toward making or shifting state. "
+            "Journal, update knowledge, small build, or a concrete experiment may fit better than circling."
+        )
+    return "\n".join(chunks) if chunks else ""
+
+
 def _poker_settings_summary(cfg: EntityConfig) -> str:
     pp = cfg.harness.autonomy.poker_prompts
     return (
@@ -1143,14 +1186,12 @@ class WakeCycleEngine:
                     "",
                 ]
             )
-        parts.extend(
-            [
-                "[Your subconscious stirring]",
-                stirring,
-                "",
-                f"[World]",
-            ]
-        )
+        sal_bias = _noise_salience_bias_block(tonic, entity)
+        stir_block = ["[Your subconscious stirring]", stirring, ""]
+        if sal_bias:
+            stir_block.extend([sal_bias, ""])
+        stir_block.append("[World]")
+        parts.extend(stir_block)
         parts.extend(
             [
                 f"Platforms you're present on: {channels_str}",

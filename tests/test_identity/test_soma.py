@@ -15,6 +15,7 @@ from bumblebee.identity.soma import (
     BarEngine,
     BodyRenderer,
     NoiseEngine,
+    NoiseFragment,
     SomaticAppraiser,
     TonicBody,
     _EBB_TIER_ORDER,
@@ -708,7 +709,7 @@ class TestNoiseEngine:
     def test_buffer_rolls_off_old_fragments(self):
         engine = NoiseEngine(max_fragments=3)
         for i in range(5):
-            engine._fragments.append(f"thought {i}")
+            engine._fragments.append(NoiseFragment(text=f"thought {i}"))
         frags = engine.current_fragments()
         assert len(frags) == 3
         assert frags[0] == "thought 2"
@@ -771,7 +772,7 @@ class TestNoiseEngineGenerate:
                 raise ConnectionError("offline")
 
         engine = NoiseEngine(cycle_seconds=0)
-        engine._fragments.append("pre-existing thought")
+        engine._fragments.append(NoiseFragment(text="pre-existing thought"))
         result = await engine.generate(
             _FailClient(), "m", bars_summary="", affects_summary="",
             recent_events=[], journal_tail="", conversation_tail="",
@@ -789,8 +790,8 @@ class TestTonicBodyNoise:
 
     def test_render_body_shows_fragments_when_present(self, tmp_path: Path):
         body = TonicBody(_default_bar_config(), tmp_path)
-        body.noise._fragments.append("a thought about something")
-        body.noise._fragments.append("another half-formed idea")
+        body.noise._fragments.append(NoiseFragment(text="a thought about something"))
+        body.noise._fragments.append(NoiseFragment(text="another half-formed idea"))
         output = body.render_body()
         assert "## Noise" in output
         assert "a thought about something" in output
@@ -848,7 +849,7 @@ class TestSomaEbb:
         body = TonicBody(_default_bar_config(), tmp_path)
         body.noise._fragments.clear()
         for i in range(5):
-            body.noise._fragments.append(f"fragment {i}")
+            body.noise._fragments.append(NoiseFragment(text=f"fragment {i}"))
         out = body.render_body(presentation="quiet")
         assert " · " in out.split("## Affects")[0]
         noise_block = out.split("## Noise\n")[1].split("\n\n##")[0]

@@ -30,7 +30,6 @@ from bumblebee.cognition.reply_heuristics import (
     reply_looks_like_progress_only,
     reply_too_thin,
     tool_state_summary,
-    user_explicitly_requests_tool_grounding,
 )
 from bumblebee.cognition.router import CognitionRouter, ContextPackage
 from bumblebee.cognition import gemma, senses
@@ -48,6 +47,7 @@ from bumblebee.inference import InferenceProvider, build_inference_provider
 from bumblebee.identity.drives import Drive, DriveSystem
 from bumblebee.identity.emotions import EmotionEngine
 from bumblebee.identity.evolution import EvolutionEngine
+from bumblebee.identity.noise_seeder import NoiseSeeder
 from bumblebee.identity.soma import TonicBody
 from bumblebee.identity.personality import PersonalityEngine
 from bumblebee.identity.voice import VoiceController
@@ -133,6 +133,10 @@ from bumblebee.storage import (
 from bumblebee.utils.ollama_client import ChatCompletionResult, ToolCallSpec
 
 log = structlog.get_logger("bumblebee.entity")
+
+# If the model keeps emitting user-visible text but never calls end_turn(), the completion gate
+# would nudge forever (step budget grows toward hard_step_cap). Bail out after this many failures.
+_MAX_COMPLETION_FAILURES_BEFORE_FORCE_DONE = 12
 
 # entity_state key: JSON {"entries": {cache_key: route_dict, ...}} for cross-session messaging routes.
 PERSON_ROUTES_STATE_KEY = "person_routes_v1"
@@ -296,6 +300,21 @@ class Entity:
         self.tonic = TonicBody(soma_cfg, Path(config.soma_dir()))
         self.tonic.restore_state()  # filesystem fallback; DB restore in _retrieve_memory
         self._soma_db_restored = False
+        self.noise_seeder: NoiseSeeder | None = None
+        _ns_cfg = soma_cfg.get("noise_seeder") or {}
+        if isinstance(_ns_cfg, dict) and _ns_cfg.get("enabled"):
+            tools_h = config.harness.tools or {}
+            wiki_cfg = tools_h.get("wikipedia") if isinstance(tools_h.get("wikipedia"), dict) else {}
+            web_tools_on = bool(wiki_cfg.get("enabled", True))
+            self.noise_seeder = NoiseSeeder(
+                entity_name=config.name,
+                soma_cfg=soma_cfg,
+                knowledge_path=Path(config.knowledge_path()),
+                journal_path=Path(config.journal_path()),
+                curiosity_topics=list(config.curiosity_topics or []),
+                relational_enabled=bool(config.harness.memory.relational.enabled),
+                web_tools_enabled=web_tools_on,
+            )
         self.tools = ToolRegistry()
         self._register_tools()
         web_tools.configure_firecrawl(
@@ -1348,7 +1367,12 @@ class Entity:
         loop_state: AgentLoopState,
         tool_state: dict[str, Any],
     ) -> tuple[bool, str | None]:
-        """Decide whether the shared agent loop is done with this turn."""
+        """Decide whether the shared agent loop is done with this turn.
+
+        The model must call the ``end_turn`` tool (``_end_turn`` in tool state) before
+        this turn may finish. Reflex judges only apply after ``end_turn`` when no work
+        tools ran, to catch teased deliverables without follow-through.
+        """
         if tool_state.get("_end_turn"):
             # Model explicitly ended its turn.  Still verify adequacy when
             # no real tools ran — the model may have teased a deliverable
@@ -1369,59 +1393,46 @@ class Entity:
                     if not ok:
                         return False, reason
             return True, None
+
         agency_only = {"think", "say", "end_turn", "wait"}
         real_tool_calls = sum(
             1 for p in (tool_state.get("tool_output_previews") or [])
             if isinstance(p, dict) and p.get("tool") not in agency_only
         )
         visible = (reply_text or "").strip()
-        # Everything the user may already have seen this turn (say/intermediate) plus final text.
         gate_text = self._completion_user_visible_blob(tool_state, visible)
         recap = self._gate_tool_recap(tool_state) if real_tool_calls > 0 else ""
+
+        if (
+            gate_text
+            and not finish_reason_hint(res)
+            and loop_state.completion_failures >= _MAX_COMPLETION_FAILURES_BEFORE_FORCE_DONE
+        ):
+            log.warning(
+                "completion_gate_force_done_without_end_turn",
+                completion_failures=loop_state.completion_failures,
+                finish_reason=res.finish_reason or "",
+                gate_preview=gate_text[:200],
+            )
+            return True, None
+
         if finish_reason_hint(res) and loop_state.completion_failures >= 2:
-            if gate_text:
-                return True, None
             return False, (
                 "Same turn. Output keeps hitting the token limit — use write_file for "
-                "large content, then say() to summarize."
+                "large content, then say() to summarize, then call end_turn()."
             )
+
         if not gate_text:
             if real_tool_calls > 0 or finish_reason_hint(res):
-                return False, f"Same turn. You haven't answered yet.\n{recap}"
-            return False, "Same turn. Use say() to respond."
-        if reply_looks_like_progress_only(gate_text):
-            return False, f"Same turn. Keep going.\n{recap}"
-        if pro_forma_tool_followup(gate_text) and real_tool_calls > 0:
-            return False, f"Same turn. Keep going.\n{recap}"
-        explicit_grounding = user_explicitly_requests_tool_grounding(inp.text)
-        if explicit_grounding and real_tool_calls <= 0:
-            return False, "Same turn. Use tools first, then answer."
-        if loop_state.last_tool_failed:
-            if pro_forma_tool_followup(gate_text) or reply_looks_like_progress_only(gate_text):
-                return False, f"Same turn. Last tool failed.\n{recap}"
-        needs_grounding_judgment = (
-            explicit_grounding
-            or real_tool_calls > 0
-            or loop_state.last_tool_failed
-        )
-        if needs_grounding_judgment:
-            judged_done, judged_reason = await self._judge_grounded_completion(
-                inp,
-                gate_text,
-                res,
-                loop_state,
-                tool_state,
+                return False, (
+                    f"Same turn. You haven't answered yet.\n{recap}\n\n"
+                    "When finished, call end_turn()."
+                )
+            return False, (
+                "Same turn. Use say() to respond, then call end_turn() when you're done with this turn."
             )
-            if not judged_done:
-                return False, judged_reason
-        elif real_tool_calls == 0:
-            # No file/shell/web/code tools — use a small judge instead of phrase lists.
-            judged_done, judged_reason = await self._judge_action_adequacy(
-                inp, gate_text, res, loop_state
-            )
-            if not judged_done:
-                return False, judged_reason
-        return True, None
+
+        return False, "Same turn. Call end_turn() when you're done with this turn."
 
     async def _judge_action_adequacy(
         self,
@@ -1983,6 +1994,62 @@ class Entity:
         except Exception as e:
             log.debug("somatic_interaction_appraisal_skipped", error=str(e))
 
+    async def maybe_tick_noise_heartbeat(
+        self,
+        *,
+        journal_tail: str | None = None,
+        conversation_tail: str | None = None,
+        relationship_tail: str | None = None,
+        force_immediate_noise: bool = False,
+    ) -> None:
+        """Run optional NoiseSeeder + GEN on one DB session (daemon + post-turn)."""
+        if not getattr(self.tonic, "_noise_enabled", True):
+            return
+        if journal_tail is None:
+            journal_tail = ""
+            if hasattr(self, "journal") and self.journal.path.is_file():
+                raw = self.journal.path.read_text(encoding="utf-8", errors="replace")
+                journal_tail = raw[-800:] if len(raw) > 800 else raw
+        if conversation_tail is None:
+            conv_lines: list[str] = []
+            for m in self._history[-8:]:
+                role = m.get("role", "")
+                if role == "system":
+                    continue
+                content = str(m.get("content", ""))
+                if not content.strip():
+                    continue
+                truncated = content[:500] + ("..." if len(content) > 500 else "")
+                conv_lines.append(f"{role}: {truncated}")
+            conversation_tail = "\n".join(conv_lines) if conv_lines else "(silence)"
+        if relationship_tail is None:
+            relationship_tail = ""
+        if force_immediate_noise:
+            self.tonic.noise._last_tick = 0.0
+        elif not self.tonic.noise.should_tick():
+            return
+        reflex_model = (
+            self.config.cognition.reflex_model
+            or self.config.cognition.deliberate_model
+        )
+        try:
+            async with self.store.session() as conn:
+                if self.noise_seeder is not None and self.noise_seeder.should_tick(noise_enabled=True):
+                    await self.noise_seeder.tick(conn, tonic=self.tonic, client=self.client)
+                await self.tonic.maybe_tick_noise(
+                    self.client,
+                    reflex_model,
+                    entity_name=self.config.name,
+                    journal_tail=journal_tail,
+                    conversation_tail=conversation_tail,
+                    relationship_tail=relationship_tail,
+                    num_ctx=self.config.effective_ollama_num_ctx(),
+                    embed_model=self.config.harness.models.embedding,
+                    db_conn=conn,
+                )
+        except Exception as e:
+            log.debug("noise_heartbeat_tick_failed", error=str(e))
+
     async def _tick_noise_post_turn(self, tc: TurnContext) -> None:
         """Regenerate noise fragments after a turn so GEN stays current during active conversation."""
         try:
@@ -1994,10 +2061,6 @@ class Entity:
                 ):
                     log.debug("post_turn_noise_skipped_ebb_quiet")
                     return
-            reflex_model = (
-                self.config.cognition.reflex_model
-                or self.config.cognition.deliberate_model
-            )
             journal_tail = ""
             if hasattr(self, "journal") and self.journal.path.is_file():
                 raw = self.journal.path.read_text(encoding="utf-8", errors="replace")
@@ -2026,15 +2089,11 @@ class Entity:
                     rel_tail = self.relational_docs.gen_context_tail(docs)
                 except Exception:
                     rel_tail = ""
-            self.tonic.noise._last_tick = 0.0
-            await self.tonic.maybe_tick_noise(
-                self.client,
-                reflex_model,
-                entity_name=self.config.name,
+            await self.maybe_tick_noise_heartbeat(
                 journal_tail=journal_tail,
                 conversation_tail=conv_tail,
                 relationship_tail=rel_tail,
-                num_ctx=self.config.effective_ollama_num_ctx(),
+                force_immediate_noise=True,
             )
         except Exception as e:
             log.debug("post_turn_noise_tick_failed", error=str(e))

@@ -18,12 +18,70 @@ import re
 import random
 import time
 from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
 import structlog
 
+from bumblebee.memory.seed_log import mark_seed_consumed
+from bumblebee.memory.store import cosine_sim
+
 log = structlog.get_logger("bumblebee.identity.soma")
+
+
+@dataclass
+class NoiseFragment:
+    """Single GEN line with optional salience metadata for wake biasing."""
+
+    text: str
+    salience: str = "reflective"
+    embedding: list[float] | None = None
+    seed_trace_id: str = ""
+
+
+def classify_noise_fragment_salience(text: str) -> str:
+    """Lightweight keyword classifier — no LLM."""
+    t = (text or "").strip().lower()
+    if not t:
+        return "reflective"
+    if any(
+        w in t
+        for w in (
+            "need to ",
+            "must ",
+            "restless",
+            "stuck",
+            "something different",
+            "can't sit",
+            "jitter",
+            "unanchored",
+        )
+    ):
+        return "restless"
+    if any(w in t for w in ("write ", "draw ", "make ", "shape ", "compose", "express", "build ")):
+        return "creative"
+    if any(
+        w in t
+        for w in (
+            "haven't heard",
+            "reach out",
+            "message ",
+            "text them",
+            "someone i",
+            "they haven't",
+            "miss ",
+        )
+    ):
+        return "relational"
+    if (
+        "?" in t
+        or any(t.startswith(w) for w in ("what ", "why ", "how ", "when ", "where "))
+        or "wonder" in t
+        or "is there" in t
+    ):
+        return "curious"
+    return "reflective"
 
 # ---------------------------------------------------------------------------
 # Affect vocabulary — the space of possible felt-textures
@@ -1763,19 +1821,29 @@ class NoiseEngine:
         temperature: float = 1.05,
         max_tokens: int = 240,
         thematic_streak_max: int = 0,
+        *,
+        semantic_dedup: bool = False,
+        semantic_similarity_threshold: float = 0.82,
+        semantic_dedup_retries: int = 2,
     ) -> None:
         self.cycle_seconds = cycle_seconds
         self.temperature = temperature
         self.max_tokens = max_tokens
         self._thematic_streak_max = max(0, int(thematic_streak_max))
         self._coherent_streak = 0
-        self._fragments: deque[str] = deque(maxlen=max_fragments)
+        self._fragments: deque[NoiseFragment] = deque(maxlen=max_fragments)
         self._last_tick: float = 0.0
+        self._semantic_dedup = bool(semantic_dedup)
+        self._semantic_threshold = float(semantic_similarity_threshold)
+        self._semantic_retries = max(0, int(semantic_dedup_retries))
 
     def should_tick(self) -> bool:
         return (time.monotonic() - self._last_tick) >= self.cycle_seconds
 
     def current_fragments(self) -> list[str]:
+        return [f.text for f in self._fragments]
+
+    def current_noise_entries(self) -> list[NoiseFragment]:
         return list(self._fragments)
 
     def _streak_instruction(self, mode_norm: str) -> str:
@@ -1797,6 +1865,13 @@ class NoiseEngine:
             "keep the rest loosely tied to recent context.\n\n"
         )
 
+    def _max_sim_to_buffer(self, emb: list[float], buffer: Iterable[NoiseFragment]) -> float:
+        best = 0.0
+        for fr in buffer:
+            if fr.embedding:
+                best = max(best, cosine_sim(emb, fr.embedding))
+        return best
+
     async def generate(
         self,
         client: Any,
@@ -1813,8 +1888,13 @@ class NoiseEngine:
         last_appraisal_felt: str = "",
         relationship_tail: str = "",
         num_ctx: int | None = None,
+        pending_seed: str = "",
+        pending_seed_trace_id: str = "",
+        pending_seed_log_id: str = "",
+        embed_model: str = "",
+        db_conn: Any | None = None,
     ) -> list[str]:
-        """Call the small model and return new noise fragments."""
+        """Call the small model and return new noise fragments (texts)."""
         self._last_tick = time.monotonic()
 
         events_brief = ""
@@ -1828,8 +1908,20 @@ class NoiseEngine:
             recent = list(self._fragments)[-4:]
             prev_block = (
                 "YOUR RECENT THOUGHTS (do NOT repeat or rephrase these):\n"
-                + "\n".join(f"  - {f[:120]}" for f in recent)
+                + "\n".join(f"  - {f.text[:120]}" for f in recent)
                 + "\n\n"
+            )
+
+        seed_block = ""
+        pending_seed = (pending_seed or "").strip()
+        if pending_seed:
+            seed_block = (
+                "## Seed\n"
+                f"{pending_seed}\n\n"
+                "Something has surfaced — a memory, a concept, a question, a distant echo. "
+                "Let it collide with whatever you're already feeling. Don't explain it. Don't be dutiful about it. "
+                "React to it the way a thought reacts to an interruption: follow it if it pulls, ignore it if it doesn't, "
+                "let it color what you were already thinking.\n\n"
             )
 
         mode_norm = "coherent" if str(mode).strip().lower() == "coherent" else "entropic"
@@ -1858,6 +1950,12 @@ class NoiseEngine:
                 "not as analysis, as stray inner voice.\n\n"
             )
 
+        out_line_hint = (
+            "Write 2–4 short inner-voice fragments."
+            if pending_seed
+            else "What crosses your mind? (3-7 fragments, uneven, context-linked.)"
+        )
+
         system = (
             f"You are the inner voice of {entity_name}. Not the part that speaks "
             "to people — the stray, uneven chatter underneath: half-sentences, "
@@ -1866,7 +1964,7 @@ class NoiseEngine:
             f"{streak_block}"
             f"{appraisal_block}"
             f"{mode_guidance}"
-            "Read the body state and recents below. Output 3-7 separate thoughts as "
+            "Read the body state and recents below. Output separate thoughts as "
             "plain lines (or separate short paragraphs). First person, present tense, "
             "mostly lowercase. They can be different lengths — a three-word spike "
             "next to a longer mumble is good.\n\n"
@@ -1895,51 +1993,130 @@ class NoiseEngine:
             f"{rel_block}"
             f"LAST CONVERSATION:\n{conversation_tail or '(silence)'}\n\n"
             f"{prev_block}"
+            f"{seed_block}"
             f"Shape pressure (follow this in this batch only):\n{shape}\n\n"
-            "What crosses your mind? (3-7 fragments, uneven, context-linked.)"
+            f"{out_line_hint}"
         )
 
-        try:
-            res = await client.chat_completion(
-                model,
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                think=False,
-                num_ctx=num_ctx,
-            )
-            text = (res.content or "").strip()
-        except Exception as e:
-            log.debug("soma_noise_generation_failed", error=str(e))
-            return list(self._fragments)
+        use_sem = bool(self._semantic_dedup and embed_model and self._semantic_threshold < 1.0)
+        trace = (pending_seed_trace_id or "").strip()
+        best_fallback: tuple[str, float] | None = None
+        accepted_this_tick: list[NoiseFragment] = []
 
-        new_fragments = _split_noise_fragments(text)
-        for f in new_fragments:
-            if not _fragment_is_duplicate(f, self._fragments):
-                self._fragments.append(f)
-        if new_fragments:
+        for attempt in range(self._semantic_retries + 1):
+            try:
+                res = await client.chat_completion(
+                    model,
+                    [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                    think=False,
+                    num_ctx=num_ctx,
+                )
+                text = (res.content or "").strip()
+            except Exception as e:
+                log.debug("soma_noise_generation_failed", error=str(e))
+                return [f.text for f in self._fragments]
+
+            raw_parts = _split_noise_fragments(text)
+            round_accepted: list[NoiseFragment] = []
+            for cand in raw_parts:
+                if _fragment_is_duplicate(cand, self._fragments):
+                    continue
+                emb: list[float] | None = None
+                if use_sem:
+                    try:
+                        emb = await client.embed(embed_model, cand[:2000])
+                    except Exception as e:
+                        log.debug("soma_noise_embed_failed", error=str(e))
+                        emb = None
+                    if emb:
+                        ms = self._max_sim_to_buffer(emb, self._fragments)
+                        if ms > self._semantic_threshold:
+                            log.debug(
+                                "soma_noise_semantic_reject",
+                                similarity=round(ms, 4),
+                                fragment=cand[:80],
+                            )
+                            if best_fallback is None or ms < best_fallback[1]:
+                                best_fallback = (cand, ms)
+                            continue
+                sal = classify_noise_fragment_salience(cand)
+                round_accepted.append(
+                    NoiseFragment(text=cand, salience=sal, embedding=emb, seed_trace_id=trace)
+                )
+
+            if round_accepted:
+                accepted_this_tick = round_accepted
+                for nf in round_accepted:
+                    self._fragments.append(nf)
+                break
+            if attempt < self._semantic_retries:
+                continue
+            if best_fallback and use_sem:
+                cand, _ms = best_fallback
+                try:
+                    emb_fb = await client.embed(embed_model, cand[:2000])
+                except Exception:
+                    emb_fb = None
+                sal = classify_noise_fragment_salience(cand)
+                self._fragments.append(
+                    NoiseFragment(
+                        text=cand,
+                        salience=sal,
+                        embedding=emb_fb,
+                        seed_trace_id=trace,
+                    )
+                )
+                accepted_this_tick = [self._fragments[-1]]
+                log.info("soma_noise_semantic_fallback_accept", fragment=cand[:80])
+            break
+
+        if accepted_this_tick:
             log.info(
                 "soma_noise_generated",
-                count=len(new_fragments),
-                fragments=[frag[:80] for frag in new_fragments],
+                count=len(accepted_this_tick),
+                fragments=[frag.text[:80] for frag in accepted_this_tick],
             )
-        return list(self._fragments)
+
+        if (
+            pending_seed_log_id
+            and db_conn is not None
+            and accepted_this_tick
+        ):
+            try:
+                await mark_seed_consumed(
+                    db_conn,
+                    row_id=pending_seed_log_id,
+                    fragment_produced=json.dumps([f.text for f in accepted_this_tick]),
+                    fragment_tags=json.dumps([f.salience for f in accepted_this_tick]),
+                )
+                await db_conn.commit()
+                log.info(
+                    "noise_seed_audit",
+                    trace_id=pending_seed_trace_id or None,
+                    seed_log_id=pending_seed_log_id,
+                )
+            except Exception as e:
+                log.debug("noise_seed_audit_failed", error=str(e))
+
+        return [f.text for f in self._fragments]
 
 
-def _fragment_is_duplicate(candidate: str, existing: Iterable[str], threshold: float = 0.6) -> bool:
-    """Return True if *candidate* is too similar to any fragment in *existing*.
-
-    Uses word-level Jaccard overlap — cheap and good enough for catching the
-    verbatim / near-verbatim loops we see in practice.
-    """
+def _fragment_is_duplicate(
+    candidate: str,
+    existing: Iterable[NoiseFragment],
+    threshold: float = 0.6,
+) -> bool:
+    """Word-level Jaccard vs existing fragment texts."""
     c_words = set(candidate.lower().split())
     if len(c_words) < 2:
         return False
     for prev in existing:
-        p_words = set(prev.lower().split())
+        p_words = set(prev.text.lower().split())
         if not p_words:
             continue
         overlap = len(c_words & p_words)
@@ -2175,9 +2352,15 @@ class TonicBody:
             temperature=float(noise_cfg.get("temperature", 1.1)),
             max_tokens=int(noise_cfg.get("max_tokens", 240)),
             thematic_streak_max=int(noise_cfg.get("thematic_streak_max", 0)),
+            semantic_dedup=bool(noise_cfg.get("semantic_dedup", False)),
+            semantic_similarity_threshold=float(noise_cfg.get("semantic_similarity_threshold", 0.82)),
+            semantic_dedup_retries=int(noise_cfg.get("semantic_dedup_retries", 2)),
         )
         self._noise_enabled = bool(noise_cfg.get("enabled", True))
         self._noise_model = str(noise_cfg.get("model") or "")
+        self._pending_seed_text: str = ""
+        self._pending_seed_trace_id: str = ""
+        self._pending_seed_log_id: str = ""
         wake_cfg = cfg.get("wake_voice") or {}
         self.wake_voice = WakeVoice(
             temperature=float(wake_cfg.get("temperature", 0.8)),
@@ -2339,6 +2522,8 @@ class TonicBody:
         conversation_tail: str = "",
         relationship_tail: str = "",
         num_ctx: int | None = None,
+        embed_model: str = "",
+        db_conn: Any | None = None,
     ) -> None:
         """Generate noise fragments if enabled and enough time has elapsed."""
         if not self._noise_enabled or not self.noise.should_tick():
@@ -2354,6 +2539,12 @@ class TonicBody:
             conversation_tail=conversation_tail,
         )
         lap = self._last_appraisal_for_noise
+        pending = (self._pending_seed_text or "").strip()
+        ptrace = (self._pending_seed_trace_id or "").strip()
+        plog = (self._pending_seed_log_id or "").strip()
+        self._pending_seed_text = ""
+        self._pending_seed_trace_id = ""
+        self._pending_seed_log_id = ""
         await self.noise.generate(
             client,
             model,
@@ -2368,6 +2559,11 @@ class TonicBody:
             last_appraisal_felt=str(lap.get("felt") or ""),
             relationship_tail=relationship_tail,
             num_ctx=num_ctx,
+            pending_seed=pending,
+            pending_seed_trace_id=ptrace,
+            pending_seed_log_id=plog if pending else "",
+            embed_model=embed_model,
+            db_conn=db_conn if plog else None,
         )
         self.flush_body_md()
 
@@ -2855,7 +3051,10 @@ class TonicBody:
             "ordered_names": list(self.bars._ordered_names),
             "saved_at": time.time(),
             "affects": [dict(a) for a in self._current_affects],
-            "noise_fragments": list(self.noise.current_fragments()),
+            "noise_fragments": [
+                {"text": f.text, "salience": f.salience, "trace": f.seed_trace_id}
+                for f in self.noise._fragments
+            ],
             "noise_coherent_streak": int(getattr(self.noise, "_coherent_streak", 0)),
         }
 
@@ -2884,15 +3083,27 @@ class TonicBody:
         saved_noise = data.get("noise_fragments")
         if isinstance(saved_noise, list) and saved_noise:
             self.noise._fragments.clear()
-            # Re-sanitize on restore — old fragments may predate current
-            # cleanup regexes and contain leaked model markup.
             for frag in saved_noise:
+                if isinstance(frag, dict):
+                    t = str(frag.get("text") or "").strip()
+                    if not t:
+                        continue
+                    nf = NoiseFragment(
+                        text=t,
+                        salience=str(frag.get("salience") or "reflective"),
+                        seed_trace_id=str(frag.get("trace") or frag.get("seed_trace_id") or ""),
+                    )
+                    if not _fragment_is_duplicate(t, self.noise._fragments):
+                        self.noise._fragments.append(nf)
+                    continue
                 if not isinstance(frag, str):
                     continue
                 cleaned = _split_noise_fragments(frag)
                 for c in cleaned:
                     if not _fragment_is_duplicate(c, self.noise._fragments):
-                        self.noise._fragments.append(c)
+                        self.noise._fragments.append(
+                            NoiseFragment(text=c, salience=classify_noise_fragment_salience(c))
+                        )
             log.info("soma_noise_restored", count=len(self.noise._fragments))
 
         ncs = data.get("noise_coherent_streak")

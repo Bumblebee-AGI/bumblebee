@@ -10,11 +10,13 @@ import shutil
 import signal
 import subprocess
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import click
 
 from bumblebee.__version__ import __version__ as BUMBLEBEE_VERSION
 from bumblebee.config import (
+    EntityConfig,
     load_entity_config,
     load_harness_config,
     project_configs_dir,
@@ -37,6 +39,52 @@ from bumblebee.utils.gateway_script import (
 )
 from bumblebee.utils.repo_dotenv import load_repo_dotenv
 from bumblebee.utils.self_update import perform_self_update
+
+
+def _mask_database_url(url: str) -> str:
+    """Redact password for stderr logging."""
+    try:
+        p = urlsplit(url)
+        if p.scheme not in ("postgresql", "postgres"):
+            return url
+        host = p.hostname or ""
+        port = f":{p.port}" if p.port else ""
+        user = p.username or ""
+        tail = (p.path or "") + (f"?{p.query}" if p.query else "")
+        if user:
+            return f"{p.scheme}://{user}:***@{host}{port}{tail}"
+        return f"{p.scheme}://***@{host}{port}{tail}"
+    except Exception:
+        return "postgresql://…"
+
+
+def _apply_cli_database_url(cli_value: str | None) -> None:
+    """Ensure DATABASE_URL is set before Entity() when the user passes --database-url."""
+    if cli_value and str(cli_value).strip():
+        os.environ["DATABASE_URL"] = str(cli_value).strip()
+
+
+def _echo_cli_database_target(ec: EntityConfig) -> None:
+    """Print which store the CLI will use (local SQLite vs Postgres)."""
+    u = (ec.database_url() or "").strip()
+    if u.startswith("postgresql://") or u.startswith("postgres://"):
+        click.echo(f"Database: {_mask_database_url(u)}", err=True)
+    else:
+        click.echo(f"Database: sqlite {Path(ec.db_path()).expanduser()}", err=True)
+
+
+def _warn_if_hybrid_without_postgres(ec: EntityConfig) -> None:
+    mode = (ec.harness.deployment.mode or "").strip().lower()
+    u = (ec.database_url() or "").strip()
+    if mode == "hybrid_railway" and not (
+        u.startswith("postgresql://") or u.startswith("postgres://")
+    ):
+        click.echo(
+            "Warning: harness deployment.mode is hybrid_railway but DATABASE_URL is not set — "
+            "this command uses local SQLite, not Railway Postgres. "
+            "Set DATABASE_URL (same as the worker) or pass --database-url.",
+            err=True,
+        )
 
 
 def _async(coro):
@@ -951,10 +999,20 @@ def cmd_journal(entity_name: str) -> None:
 @cli.command("recall")
 @click.argument("entity_name")
 @click.argument("query")
-def cmd_recall(entity_name: str, query: str) -> None:
+@click.option(
+    "--database-url",
+    "cli_database_url",
+    envvar="DATABASE_URL",
+    default=None,
+    help="Postgres URL (same as Railway worker DATABASE_URL). Without it, CLI uses local SQLite.",
+)
+def cmd_recall(entity_name: str, query: str, cli_database_url: str | None) -> None:
     """Search episodic memories by semantic similarity."""
     harness = load_harness_config()
     ec = load_entity_config(entity_name, harness)
+    _apply_cli_database_url(cli_database_url)
+    _echo_cli_database_target(ec)
+    _warn_if_hybrid_without_postgres(ec)
     ent = Entity(ec)
 
     async def _recall():
@@ -974,6 +1032,88 @@ def cmd_recall(entity_name: str, query: str) -> None:
                 pass
 
     asyncio.run(_recall())
+
+
+@cli.command("seeds")
+@click.argument("entity_name")
+@click.option("--last", default=50, show_default=True, type=int, help="Max recent seed_log rows.")
+@click.option(
+    "--database-url",
+    "cli_database_url",
+    envvar="DATABASE_URL",
+    default=None,
+    help="Postgres URL (same as Railway worker DATABASE_URL). Without it, CLI uses local SQLite.",
+)
+def cmd_seeds(entity_name: str, last: int, cli_database_url: str | None) -> None:
+    """Show recent exogenous noise seeds and whether GEN consumed them."""
+    harness = load_harness_config()
+    ec = load_entity_config(entity_name, harness)
+    _apply_cli_database_url(cli_database_url)
+    _echo_cli_database_target(ec)
+    _warn_if_hybrid_without_postgres(ec)
+    ent = Entity(ec)
+
+    async def _show():
+        from bumblebee.memory.seed_log import list_recent_seeds
+
+        try:
+            async with ent.store.session() as db:
+                rows = await list_recent_seeds(db, entity_name=ec.name, limit=max(1, last))
+            for r in rows:
+                click.echo(
+                    f"{r['tick_timestamp']:.0f}  {r['source_type']}  consumed={r['consumed']}  "
+                    f"{r['seed_text'][:120]!r}"
+                )
+                if r.get("fragment_produced"):
+                    click.echo(f"    -> fragments: {r['fragment_produced'][:200]}")
+        finally:
+            try:
+                await asyncio.shield(ent.shutdown())
+            except BaseException:
+                pass
+
+    asyncio.run(_show())
+
+
+@cli.command("trace")
+@click.argument("entity_name")
+@click.option("--last", default=30, show_default=True, type=int, help="Max rows with produced fragments.")
+@click.option(
+    "--database-url",
+    "cli_database_url",
+    envvar="DATABASE_URL",
+    default=None,
+    help="Postgres URL (same as Railway worker DATABASE_URL). Without it, CLI uses local SQLite.",
+)
+def cmd_trace(entity_name: str, last: int, cli_database_url: str | None) -> None:
+    """Show seed → fragment audit rows (organism-test trail)."""
+    harness = load_harness_config()
+    ec = load_entity_config(entity_name, harness)
+    _apply_cli_database_url(cli_database_url)
+    _echo_cli_database_target(ec)
+    _warn_if_hybrid_without_postgres(ec)
+    ent = Entity(ec)
+
+    async def _show():
+        from bumblebee.memory.seed_log import list_trace_rows
+
+        try:
+            async with ent.store.session() as db:
+                rows = await list_trace_rows(db, entity_name=ec.name, limit=max(1, last))
+            for r in rows:
+                click.echo(
+                    f"trace={r['trace_id']}  {r['source_type']}  "
+                    f"seed={r['seed_text'][:100]!r}"
+                )
+                click.echo(f"  fragments: {r.get('fragment_produced', '')[:240]}")
+                click.echo(f"  tags: {r.get('fragment_tags', [])}")
+        finally:
+            try:
+                await asyncio.shield(ent.shutdown())
+            except BaseException:
+                pass
+
+    asyncio.run(_show())
 
 
 @cli.command("worker")

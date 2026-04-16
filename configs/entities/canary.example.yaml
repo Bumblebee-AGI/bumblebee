@@ -141,13 +141,18 @@ cognition:
   thinking_budget: 2048
 
 # Per-entity harness.autonomy merge — sustained multi-round autonomous wake (see wake_cycle.py).
+# Wakes: timer only, uniformly random between 2h and 6h apart (no impulse/drive/conflict/noise/desire).
 autonomy:
   enabled: true
-  min_cycle_gap_seconds: 420
-  max_cycles_per_hour: 6
-  base_wake_interval_min: 15
-  base_wake_interval_max: 35
-  noise_wake: true
+  min_cycle_gap_seconds: 7200
+  max_cycles_per_hour: 1
+  base_wake_interval_min: 120
+  base_wake_interval_max: 360
+  impulse_wake: false
+  drive_wake: false
+  conflict_wake: false
+  noise_wake: false
+  desire_wake: false
   desire_wake_threshold: 0.64
   wake_session_max_rounds: 4
   wake_session_wall_seconds: 4400

@@ -246,6 +246,33 @@ def default_soma_config() -> dict[str, Any]:
             "max_fragments": 8,
             # coherent GEN ticks in a row that keep thematic continuity (0 = off).
             "thematic_streak_max": 3,
+            "semantic_dedup": False,
+            "semantic_similarity_threshold": 0.82,
+            "semantic_dedup_retries": 2,
+        },
+        "noise_seeder": {
+            "enabled": False,
+            "cycle_seconds": 90,
+            "source_weights": {
+                "episodic_random": 0.25,
+                "belief_random": 0.10,
+                "knowledge_random": 0.10,
+                "world_discovery": 0.25,
+                "relationship_echo": 0.10,
+                "journal_echo": 0.10,
+                "temporal": 0.10,
+            },
+            "world_discovery": {
+                "concepts_path": "configs/noise_seeds/concepts.txt",
+                "allow_external_fetch": False,
+                "external_fetch_probability": 0.1,
+            },
+            "recency_suppression_window": 3,
+            "max_resample_attempts": 3,
+            "episodic_random": {"min_age_hours": 24},
+            "belief_random": {"min_age_hours": 12},
+            "relationship_echo": {"min_silence_hours": 48},
+            "journal_echo": {"min_age_days": 3},
         },
         "wake_voice": {
             "enabled": True,

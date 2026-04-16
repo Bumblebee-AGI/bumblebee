@@ -228,7 +228,9 @@ def format_start_html(entity_name: str, app_version: str, *, first_name: str | N
     ver = html.escape(app_version)
     return (
         f"🐝 <b>{en}</b>\n\n"
-        f"Hey, {who}. I'm not a task bot; I'm a persistent presence that keeps context and memory over time.\n\n"
+        f"Hey, {who}. I'm an <b>entitative</b> presence — one steady self in this chat, not a "
+        f"disposable session. Memory, relationships, and inner state carry across visits; "
+        f"you're always continuing <i>with</i> me, not rebooting a blank assistant.\n\n"
         "<b>Best ways to use me</b>\n"
         "• Talk naturally, like a real ongoing conversation.\n"
         "• Send photos (with an optional caption) and I can inspect them.\n"
@@ -238,6 +240,8 @@ def format_start_html(entity_name: str, app_version: str, *, first_name: str | N
         "• <code>/memories 3</code> for recent memory traces\n"
         "• <code>/me</code> for how I currently know you\n\n"
         "Tap the <b>/</b> menu anytime, or use <code>/commands</code> to browse everything.\n\n"
+        '<a href="https://bumbleagi.com/">bumbleagi.com</a> — architecture, guides, and the '
+        "full idea behind entitative harnesses.\n\n"
         f"<code>bumblebee v{ver}</code>"
     )
 

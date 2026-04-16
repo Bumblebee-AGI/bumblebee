@@ -346,3 +346,65 @@ class TestCompletionGateEndTurn:
         finally:
             ent_mod.build_inference_provider = original
             await entity.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_gate_force_done_after_many_completion_failures_without_end_turn(self):
+        """Avoid unbounded deliberate loops when the model never calls end_turn()."""
+        from bumblebee.config import HarnessConfig, entity_from_dict
+        from bumblebee.entity import Entity, _MAX_COMPLETION_FAILURES_BEFORE_FORCE_DONE
+        from bumblebee.cognition.deliberate import AgentLoopState
+        from bumblebee.inference.types import ChatCompletionResult
+        from bumblebee.models import Input
+
+        class _StubProvider:
+            async def chat_completion(self, *a, **kw):
+                return ChatCompletionResult(content="ok")
+
+            async def embed(self, *a, **kw):
+                return [0.01] * 8
+
+            async def health(self):
+                return {"ok": True}
+
+            async def list_models(self):
+                return ["stub"]
+
+            async def close(self):
+                pass
+
+            async def ensure_models(self, *names):
+                return True, []
+
+        h = HarnessConfig()
+        data = {
+            "name": "AgencyTest3",
+            "personality": {
+                "core_traits": {k: 0.5 for k in ["curiosity", "warmth", "assertiveness", "humor", "openness", "neuroticism", "conscientiousness"]},
+                "behavioral_patterns": {},
+                "voice": {},
+                "backstory": "Test entity.",
+            },
+            "drives": {"curiosity_topics": [], "attachment_threshold": 5, "restlessness_decay": 3600, "initiative_cooldown": 1800},
+            "cognition": {},
+            "presence": {"platforms": [], "daemon": {}},
+        }
+        import bumblebee.entity as ent_mod
+
+        original = ent_mod.build_inference_provider
+        ent_mod.build_inference_provider = lambda _h: _StubProvider()
+        try:
+            entity = Entity(entity_from_dict(h, data))
+            tool_state = {"tool_calls": 1, "_sent_messages": ["hello"]}
+            st = AgentLoopState(completion_failures=_MAX_COMPLETION_FAILURES_BEFORE_FORCE_DONE)
+            done, reason = await entity._loop_completion_gate(
+                Input(text="hey", person_id="u", person_name="U"),
+                "visible reply",
+                ChatCompletionResult(content="x", finish_reason="stop"),
+                st,
+                tool_state,
+            )
+            assert done is True
+            assert reason is None
+        finally:
+            ent_mod.build_inference_provider = original
+            await entity.shutdown()

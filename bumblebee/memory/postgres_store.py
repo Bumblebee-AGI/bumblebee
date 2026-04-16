@@ -165,6 +165,19 @@ CREATE TABLE IF NOT EXISTS automation_runs (
     self_modified INTEGER DEFAULT 0,
     modification_description TEXT
 );
+
+CREATE TABLE IF NOT EXISTS seed_log (
+    id TEXT PRIMARY KEY,
+    entity_name TEXT NOT NULL,
+    tick_timestamp DOUBLE PRECISION NOT NULL,
+    source_type TEXT NOT NULL,
+    source_detail TEXT,
+    seed_text TEXT NOT NULL,
+    consumed INTEGER DEFAULT 0,
+    fragment_produced TEXT,
+    fragment_tags TEXT,
+    trace_id TEXT
+);
 """
 
 _EXPERIENCE_TABLES = (
@@ -180,6 +193,7 @@ _EXPERIENCE_TABLES = (
     "reminders",
     "automation_runs",
     "automations",
+    "seed_log",
 )
 
 

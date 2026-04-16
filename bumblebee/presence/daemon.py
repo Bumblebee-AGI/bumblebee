@@ -173,19 +173,7 @@ class PresenceDaemon:
                 except Exception as e:
                     log.debug("soma_affect_tick_failed", module="presence", error=str(e))
                 try:
-                    journal_tail = ""
-                    if hasattr(self.entity, "journal") and self.entity.journal.path.is_file():
-                        raw = self.entity.journal.path.read_text(encoding="utf-8", errors="replace")
-                        journal_tail = raw[-800:] if len(raw) > 800 else raw
-                    conv_tail = _build_conversation_tail(getattr(self.entity, "_history", []))
-                    await tonic.maybe_tick_noise(
-                        self.entity.client,
-                        reflex_model,
-                        entity_name=self.entity.config.name,
-                        journal_tail=journal_tail,
-                        conversation_tail=conv_tail,
-                        num_ctx=self.entity.config.effective_ollama_num_ctx(),
-                    )
+                    await self.entity.maybe_tick_noise_heartbeat()
                 except Exception as e:
                     log.debug("soma_noise_tick_failed", module="presence", error=str(e))
 

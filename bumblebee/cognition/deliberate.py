@@ -249,8 +249,11 @@ class DeliberateCognition:
             step_budget=step_cap,
             user_requested_tools="use tools" in (_inp.text or "").lower(),
         )
+        initial_budget = loop_state.step_budget
+        hard_step_cap = min(320, max(96, initial_budget * 14))
         _messages_sent_to_user: list[str] = []
-        for step_idx in range(loop_state.step_budget):
+        step_idx = 0
+        while step_idx < loop_state.step_budget and step_idx < hard_step_cap:
             loop_state.step_index = step_idx + 1
             res = await self.client.chat_completion(
                 model,
@@ -341,6 +344,7 @@ class DeliberateCognition:
                     display_text="",
                     history_entries=[assistant_msg] + tool_msgs + [follow_user],
                 )
+                step_idx += 1
                 continue
 
             loop_state.last_step_had_tools = False
@@ -352,10 +356,17 @@ class DeliberateCognition:
             else:
                 loop_state._consecutive_length = 0
             if loop_state._consecutive_length >= 3:
-                done = True
-                recovery = None
                 if visible:
                     visible += "\n\n(your response was too long — use write_file for large content)"
+                if final_checker is not None:
+                    done, recovery = await final_checker(visible, res, loop_state)
+                else:
+                    done = False
+                    recovery = (
+                        "Same turn. Your output was cut off by the token limit. "
+                        "If you're writing code or long content, use write_file to save it to disk "
+                        "instead of outputting it as text. Then tell the user what you wrote."
+                    )
             elif final_checker is not None:
                 done, recovery = await final_checker(visible, res, loop_state)
             elif _finish_reason_hits_limit(res.finish_reason):
@@ -365,12 +376,14 @@ class DeliberateCognition:
                     "If you're writing code or long content, use write_file to save it to disk "
                     "instead of outputting it as text. Then tell the user what you wrote."
                 )
-            if not done and step_idx + 1 < loop_state.step_budget:
+            if not done:
                 loop_state.completion_failures += 1
                 asst = self._assistant_content_for_message(res)
                 asst_msg = {"role": "assistant", "content": asst}
                 cont_user = {"role": "user", "content": recovery or _FINAL_RECOVERY_USER}
                 msgs = msgs + [asst_msg, cont_user]
+                if step_idx + 1 >= loop_state.step_budget:
+                    loop_state.step_budget = min(loop_state.step_budget + 12, hard_step_cap)
                 log.info(
                     "deliberate_loop_continue",
                     step=loop_state.step_index,
@@ -383,6 +396,7 @@ class DeliberateCognition:
                     display_text="",
                     history_entries=[asst_msg, cont_user],
                 )
+                step_idx += 1
                 continue
 
             merged = "\n\n".join(thinking_acc) if thinking_acc else None
@@ -396,6 +410,12 @@ class DeliberateCognition:
             return
 
         merged = "\n\n".join(thinking_acc) if thinking_acc else None
+        log.info(
+            "deliberate_loop_budget_exhausted",
+            step_budget=loop_state.step_budget,
+            hard_cap=hard_step_cap,
+            completion_failures=loop_state.completion_failures,
+        )
         yield DeliberateStreamEvent(
             kind="final",
             display_text=(last.content or "").strip() if last else "",
