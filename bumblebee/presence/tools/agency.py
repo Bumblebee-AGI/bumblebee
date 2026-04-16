@@ -10,9 +10,13 @@ from __future__ import annotations
 import asyncio
 import json
 
+from bumblebee.cognition import gemma
 from bumblebee.identity.voice import strip_html_layout_leaks
 from bumblebee.presence.tools.registry import tool
 from bumblebee.presence.tools.runtime import get_tool_runtime
+
+# Mid-turn outbound cap: say() plus embodied stream segments share _messages_sent.
+DEFAULT_SAY_BUDGET_PER_TURN = 12
 
 
 @tool(
@@ -45,8 +49,8 @@ async def end_wake_session(reason: str = "") -> str:
 @tool(
     "end_turn",
     "You're done with this turn. Optionally record your mood and a parting "
-    "thought. Call this when you've said what you want to say — or decided "
-    "not to say anything. Silence is valid.",
+    "thought. Call this after any say() lines you need (you can send several "
+    "short updates in one turn). If you truly have nothing to add, silence is valid.",
 )
 async def end_turn(mood: str = "", thought: str = "") -> str:
     ctx = get_tool_runtime()
@@ -71,13 +75,15 @@ async def say(message: str) -> str:
     inp = ctx.inp
     if platform is None or inp is None:
         return "[no active chat to send to]"
-    text = strip_html_layout_leaks((message or "").strip())
+    text = gemma.strip_leaked_control_tokens(
+        strip_html_layout_leaks((message or "").strip()),
+    )
     if not text:
         return "[empty message, not sent]"
     count = 0
     if ctx.state is not None:
         count = ctx.state.get("_messages_sent", 0)
-        budget = ctx.state.get("_message_budget", 6)
+        budget = int(ctx.state.get("_message_budget", DEFAULT_SAY_BUDGET_PER_TURN))
         if count >= budget:
             return (
                 f"[you've already sent {count} messages this cycle — save it "

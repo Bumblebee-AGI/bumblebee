@@ -5,6 +5,7 @@ deployment:
   mode: hybrid_railway
 
 inference:
+  # remote_gateway (home tunnel) | openrouter | venice — hosted values use OPENROUTER_API_KEY / VENICE_API_KEY
   provider: remote_gateway
   base_url: "" # set via BUMBLEBEE_INFERENCE_BASE_URL in Railway
   api_key_env: BUMBLEBEE_INFERENCE_GATEWAY_TOKEN

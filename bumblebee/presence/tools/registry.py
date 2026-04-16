@@ -232,6 +232,25 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         return "🪄 delegating a sub-task..."
     if tool_name == "code_task_session":
         return "🧩 multi-phase code task..."
+    if tool_name == "get_ha_state":
+        return f"🔌 checking state of {args.get('entity_id', 'device')}..."
+    if tool_name == "set_ha_state":
+        return f"🔌 toggling {args.get('entity_id', 'device')}..."
+    if tool_name == "tail_file":
+        name = Path(str(args.get("path", "file") or "file")).name
+        return f"👀 observing {name}..."
+    if tool_name == "check_file_modified":
+        name = Path(str(args.get("path", "file") or "file")).name
+        return f"👀 checking {name}..."
+    if tool_name == "post_mastodon_status":
+        return "🐘 posting to timeline..."
+    if tool_name == "read_mastodon_timeline":
+        return "🐘 reading social timeline..."
+    if tool_name == "index_text":
+        return f"📚 indexing {args.get('source_label', 'document')} into memory..."
+    if tool_name == "search_collection":
+        q = str(args.get("query", "") or "").strip()
+        return f"📚 searching collections for '{q}'..."
     if tool_name.startswith("mcp_"):
         parts = tool_name.split("_", 2)
         server = (parts[1] if len(parts) >= 2 else "mcp").lower()

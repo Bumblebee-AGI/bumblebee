@@ -97,6 +97,21 @@ def test_messages_for_model_drops_duplicate_trailing_user(entity_config):
     assert msgs[0]["content"] == "same"
 
 
+def test_messages_for_model_drops_duplicate_when_current_has_turn_context_preamble(entity_config):
+    """History stores plain user text; the live turn wraps it in [Turn context]…--- preamble."""
+    ent = Entity(entity_config)
+    ent._history_rolling_summary = ""
+    ent.config.cognition.history_compression.enabled = False
+    ent._history = [{"role": "user", "content": "Did you glitch?"}]
+    um = {
+        "role": "user",
+        "content": "[Turn context]\n[Body]\n(soma snapshot)\n\n---\n\nDid you glitch?",
+    }
+    msgs = ent._messages_for_model(um)
+    assert len(msgs) == 1
+    assert msgs[0] == um
+
+
 @pytest.mark.asyncio
 async def test_trim_skips_merge_when_disabled(entity_config):
     entity_config.cognition.history_compression.enabled = False

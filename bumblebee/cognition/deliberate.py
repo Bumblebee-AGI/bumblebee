@@ -259,6 +259,7 @@ class DeliberateCognition:
                 model,
                 msgs,
                 tools=tools,
+                tool_choice="required" if tools else None,
                 temperature=temperature,
                 max_tokens=max_toks,
                 think=think_flag,
@@ -356,8 +357,9 @@ class DeliberateCognition:
             else:
                 loop_state._consecutive_length = 0
             if loop_state._consecutive_length >= 3:
-                if visible:
-                    visible += "\n\n(your response was too long — use write_file for large content)"
+                # Never append write_file guidance to ``visible`` — that string becomes
+                # ``display_text`` and can leak to Telegram/Discord. The model still gets
+                # truncation recovery via ``recovery`` / the gate when the loop continues.
                 if final_checker is not None:
                     done, recovery = await final_checker(visible, res, loop_state)
                 else:

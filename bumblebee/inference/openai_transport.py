@@ -119,6 +119,7 @@ class OpenAICompatibleTransport:
         messages: list[dict[str, Any]],
         *,
         tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
         think: bool = False,
@@ -153,6 +154,8 @@ class OpenAICompatibleTransport:
         }
         if tools:
             payload["tools"] = tools
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
         if num_ctx is not None and int(num_ctx) > 0:
             payload["options"] = {"num_ctx": int(num_ctx)}
         return payload
@@ -163,6 +166,7 @@ class OpenAICompatibleTransport:
         messages: list[dict[str, Any]],
         *,
         tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
         think: bool = False,
@@ -173,6 +177,7 @@ class OpenAICompatibleTransport:
             model,
             messages,
             tools=tools,
+            tool_choice=tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
             think=think,

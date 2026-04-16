@@ -27,6 +27,32 @@ def test_strip_leaked_control_tokens_mangled_concat():
     assert out.split() == ["ok", "cool"]
 
 
+def test_strip_leaked_informal_end_turn_with_colon_multiline():
+    """Ollama sometimes emits end_turn as pseudo-JSON text instead of a real tool call."""
+    leaked = (
+        'end_turn: {\n'
+        'thought: "Give the user the link.",\n'
+        'mood: "neutral"\n'
+        "}\n?"
+    )
+    assert gemma.strip_leaked_control_tokens(leaked).strip() == "?"
+
+
+def test_strip_leaked_informal_tool_call_without_colon_still_stripped():
+    assert gemma.strip_leaked_control_tokens('say {message: "hi"} there') == "there"
+
+
+def test_strip_leaked_mangled_thought_channel_lines():
+    raw = "<thought>\n<channel|><thought>\n<channel|>"
+    assert gemma.strip_leaked_control_tokens(raw) == ""
+
+
+def test_strip_leaked_length_stall_nudge():
+    t = "ok\n\n(your response was too long — use write_file for large content)"
+    assert "write_file" not in gemma.strip_leaked_control_tokens(t).lower()
+    assert gemma.strip_leaked_control_tokens(t).strip() == "ok"
+
+
 def test_parse_tool_call_gemma_delimiters():
     inner = 'call:weather{location:<|"|>London<|"|>}'
     raw = f"{gemma.TOOL_CALL_START}{inner}{gemma.TOOL_CALL_END}"

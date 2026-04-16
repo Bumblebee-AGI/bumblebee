@@ -279,13 +279,263 @@ class TestCompletionGateEndTurn:
         ent_mod.build_inference_provider = lambda _h: _StubProvider()
         try:
             entity = Entity(entity_from_dict(h, data))
-            tool_state = {"_end_turn": True, "tool_calls": 1}
+            tool_state = {
+                "_end_turn": True,
+                "tool_calls": 1,
+                "_sent_messages": ["hey back — all good here."],
+            }
             done, reason = await entity._loop_completion_gate(
                 Input(text="hey", person_id="u", person_name="U"),
                 "",
                 ChatCompletionResult(content=""),
                 AgentLoopState(tool_calls_seen=1),
                 tool_state,
+            )
+            assert done is True
+            assert reason is None
+        finally:
+            ent_mod.build_inference_provider = original
+            await entity.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_gate_rejects_end_turn_without_visible_reply_on_telegram(self):
+        from bumblebee.config import HarnessConfig, entity_from_dict
+        from bumblebee.entity import Entity
+        from bumblebee.cognition.deliberate import AgentLoopState
+        from bumblebee.inference.types import ChatCompletionResult
+        from bumblebee.models import Input
+
+        class _StubProvider:
+            async def chat_completion(self, *a, **kw):
+                return ChatCompletionResult(content="ok")
+
+            async def embed(self, *a, **kw):
+                return [0.01] * 8
+
+            async def health(self):
+                return {"ok": True}
+
+            async def list_models(self):
+                return ["stub"]
+
+            async def close(self):
+                pass
+
+            async def ensure_models(self, *names):
+                return True, []
+
+        h = HarnessConfig()
+        data = {
+            "name": "AgencyTestTelegramGate",
+            "personality": {
+                "core_traits": {k: 0.5 for k in ["curiosity", "warmth", "assertiveness", "humor", "openness", "neuroticism", "conscientiousness"]},
+                "behavioral_patterns": {},
+                "voice": {},
+                "backstory": "Test entity.",
+            },
+            "drives": {"curiosity_topics": [], "attachment_threshold": 5, "restlessness_decay": 3600, "initiative_cooldown": 1800},
+            "cognition": {},
+            "presence": {"platforms": [], "daemon": {}},
+        }
+        import bumblebee.entity as ent_mod
+
+        original = ent_mod.build_inference_provider
+        ent_mod.build_inference_provider = lambda _h: _StubProvider()
+        try:
+            entity = Entity(entity_from_dict(h, data))
+            tool_state = {"_end_turn": True, "tool_calls": 1}
+            done, reason = await entity._loop_completion_gate(
+                Input(text="hey", person_id="u", person_name="U", platform="telegram"),
+                "",
+                ChatCompletionResult(content=""),
+                AgentLoopState(tool_calls_seen=1),
+                tool_state,
+            )
+            assert done is False
+            assert reason is not None
+            assert "say()" in (reason or "").lower()
+        finally:
+            ent_mod.build_inference_provider = original
+            await entity.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_gate_force_done_after_silent_completion_failures(self):
+        from bumblebee.config import HarnessConfig, entity_from_dict
+        from bumblebee.entity import Entity, _MAX_SILENT_COMPLETION_FAILURES_BEFORE_FORCE_REPLY
+        from bumblebee.cognition.deliberate import AgentLoopState
+        from bumblebee.inference.types import ChatCompletionResult
+        from bumblebee.models import Input
+
+        class _StubProvider:
+            async def chat_completion(self, *a, **kw):
+                return ChatCompletionResult(content="ok")
+
+            async def embed(self, *a, **kw):
+                return [0.01] * 8
+
+            async def health(self):
+                return {"ok": True}
+
+            async def list_models(self):
+                return ["stub"]
+
+            async def close(self):
+                pass
+
+            async def ensure_models(self, *names):
+                return True, []
+
+        h = HarnessConfig()
+        data = {
+            "name": "AgencyTestSilentLoops",
+            "personality": {
+                "core_traits": {k: 0.5 for k in ["curiosity", "warmth", "assertiveness", "humor", "openness", "neuroticism", "conscientiousness"]},
+                "behavioral_patterns": {},
+                "voice": {},
+                "backstory": "Test entity.",
+            },
+            "drives": {"curiosity_topics": [], "attachment_threshold": 5, "restlessness_decay": 3600, "initiative_cooldown": 1800},
+            "cognition": {},
+            "presence": {"platforms": [], "daemon": {}},
+        }
+        import bumblebee.entity as ent_mod
+
+        original = ent_mod.build_inference_provider
+        ent_mod.build_inference_provider = lambda _h: _StubProvider()
+        try:
+            entity = Entity(entity_from_dict(h, data))
+            tool_state: dict = {"_messages_sent": 0}
+            done, reason = await entity._loop_completion_gate(
+                Input(text="hey", person_id="u", person_name="U", platform="telegram"),
+                "<end_turn>",
+                ChatCompletionResult(content="<end_turn>", finish_reason="stop"),
+                AgentLoopState(
+                    completion_failures=_MAX_SILENT_COMPLETION_FAILURES_BEFORE_FORCE_REPLY,
+                ),
+                tool_state,
+            )
+            assert done is True
+            assert reason is None
+            assert tool_state.get("_force_user_anchored_reply") is True
+        finally:
+            ent_mod.build_inference_provider = original
+            await entity.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_gate_silent_loops_without_flag_when_substantive_visible(self):
+        from bumblebee.config import HarnessConfig, entity_from_dict
+        from bumblebee.entity import Entity, _MAX_SILENT_COMPLETION_FAILURES_BEFORE_FORCE_REPLY
+        from bumblebee.cognition.deliberate import AgentLoopState
+        from bumblebee.inference.types import ChatCompletionResult
+        from bumblebee.models import Input
+
+        class _StubProvider:
+            async def chat_completion(self, *a, **kw):
+                return ChatCompletionResult(content="ok")
+
+            async def embed(self, *a, **kw):
+                return [0.01] * 8
+
+            async def health(self):
+                return {"ok": True}
+
+            async def list_models(self):
+                return ["stub"]
+
+            async def close(self):
+                pass
+
+            async def ensure_models(self, *names):
+                return True, []
+
+        h = HarnessConfig()
+        data = {
+            "name": "AgencyTestSilentLoopsSubstantive",
+            "personality": {
+                "core_traits": {k: 0.5 for k in ["curiosity", "warmth", "assertiveness", "humor", "openness", "neuroticism", "conscientiousness"]},
+                "behavioral_patterns": {},
+                "voice": {},
+                "backstory": "Test entity.",
+            },
+            "drives": {"curiosity_topics": [], "attachment_threshold": 5, "restlessness_decay": 3600, "initiative_cooldown": 1800},
+            "cognition": {},
+            "presence": {"platforms": [], "daemon": {}},
+        }
+        import bumblebee.entity as ent_mod
+
+        original = ent_mod.build_inference_provider
+        ent_mod.build_inference_provider = lambda _h: _StubProvider()
+        try:
+            entity = Entity(entity_from_dict(h, data))
+            tool_state = {"_messages_sent": 0}
+            done, reason = await entity._loop_completion_gate(
+                Input(text="hey", person_id="u", person_name="U", platform="telegram"),
+                "A real reply the user could read.",
+                ChatCompletionResult(content="A real reply the user could read.", finish_reason="stop"),
+                AgentLoopState(
+                    completion_failures=_MAX_SILENT_COMPLETION_FAILURES_BEFORE_FORCE_REPLY,
+                ),
+                tool_state,
+            )
+            assert done is True
+            assert reason is None
+            assert "_force_user_anchored_reply" not in tool_state
+        finally:
+            ent_mod.build_inference_provider = original
+            await entity.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_gate_force_done_after_repeated_length_truncation(self):
+        from bumblebee.config import HarnessConfig, entity_from_dict
+        from bumblebee.entity import Entity, _MAX_LENGTH_STALL_FAILURES_BEFORE_FORCE_DONE
+        from bumblebee.cognition.deliberate import AgentLoopState
+        from bumblebee.inference.types import ChatCompletionResult
+        from bumblebee.models import Input
+
+        class _StubProvider:
+            async def chat_completion(self, *a, **kw):
+                return ChatCompletionResult(content="ok")
+
+            async def embed(self, *a, **kw):
+                return [0.01] * 8
+
+            async def health(self):
+                return {"ok": True}
+
+            async def list_models(self):
+                return ["stub"]
+
+            async def close(self):
+                pass
+
+            async def ensure_models(self, *names):
+                return True, []
+
+        h = HarnessConfig()
+        data = {
+            "name": "AgencyTestLengthStall",
+            "personality": {
+                "core_traits": {k: 0.5 for k in ["curiosity", "warmth", "assertiveness", "humor", "openness", "neuroticism", "conscientiousness"]},
+                "behavioral_patterns": {},
+                "voice": {},
+                "backstory": "Test entity.",
+            },
+            "drives": {"curiosity_topics": [], "attachment_threshold": 5, "restlessness_decay": 3600, "initiative_cooldown": 1800},
+            "cognition": {},
+            "presence": {"platforms": [], "daemon": {}},
+        }
+        import bumblebee.entity as ent_mod
+
+        original = ent_mod.build_inference_provider
+        ent_mod.build_inference_provider = lambda _h: _StubProvider()
+        try:
+            entity = Entity(entity_from_dict(h, data))
+            done, reason = await entity._loop_completion_gate(
+                Input(text="hey", person_id="u", person_name="U", platform="telegram"),
+                "partial visible reply",
+                ChatCompletionResult(content="partial", finish_reason="length"),
+                AgentLoopState(completion_failures=_MAX_LENGTH_STALL_FAILURES_BEFORE_FORCE_DONE),
+                {},
             )
             assert done is True
             assert reason is None

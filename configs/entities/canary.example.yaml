@@ -132,11 +132,11 @@ cognition:
   fast_deliberate_mode: true
   deliberate_max_tokens: 2048
   system_prompt_char_limit: 11000
-  rolling_history_max_messages: 60
+  rolling_history_max_messages: 200
   knowledge_recent_turns: 10
   history_message_char_limit: 2800
   thinking_mode: false
-  temperature: 0.9
+  temperature: 0.75
   max_context_tokens: 32768
   thinking_budget: 2048
 

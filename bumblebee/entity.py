@@ -107,6 +107,10 @@ from bumblebee.presence.tools import delegation as delegation_tools
 from bumblebee.presence.tools import memory_search as memory_search_tools
 from bumblebee.presence.tools import patch_file as patch_file_tools
 from bumblebee.presence.tools import session_todos as session_todos_tools
+from bumblebee.presence.tools import iot as iot_tools
+from bumblebee.presence.tools import observation as observation_tools
+from bumblebee.presence.tools import social as social_tools
+from bumblebee.presence.tools import rag as rag_tools
 from bumblebee.presence.tools.knowledge import register_knowledge_tool
 from bumblebee.presence.tools.mcp import MCPHub
 from bumblebee.presence.autonomy_transcript import append_autonomy_transcript
@@ -137,6 +141,12 @@ log = structlog.get_logger("bumblebee.entity")
 # If the model keeps emitting user-visible text but never calls end_turn(), the completion gate
 # would nudge forever (step budget grows toward hard_step_cap). Bail out after this many failures.
 _MAX_COMPLETION_FAILURES_BEFORE_FORCE_DONE = 12
+# Same idea when finish_reason keeps hitting length (truncation) but we already have text to show.
+_MAX_LENGTH_STALL_FAILURES_BEFORE_FORCE_DONE = 8
+# No say()/stream to user yet and the gate keeps failing — bail out and run a user-anchored fallback.
+_MAX_SILENT_COMPLETION_FAILURES_BEFORE_FORCE_REPLY = 2
+
+_PLATFORMS_REQUIRING_VISIBLE_REPLY_BEFORE_END_TURN = frozenset({"telegram", "discord", "cli"})
 
 # entity_state key: JSON {"entries": {cache_key: route_dict, ...}} for cross-session messaging routes.
 PERSON_ROUTES_STATE_KEY = "person_routes_v1"
@@ -811,6 +821,18 @@ class Entity:
             self.tools.register_decorated(remote_session_tools.desktop_session_stop)
         if self._tool_enabled("imagegen", False):
             self.tools.register_decorated(imagegen_tools.generate_image)
+        if self._tool_enabled("iot", True):
+            self.tools.register_decorated(iot_tools.get_ha_state)
+            self.tools.register_decorated(iot_tools.set_ha_state)
+        if self._tool_enabled("observation", True):
+            self.tools.register_decorated(observation_tools.tail_file)
+            self.tools.register_decorated(observation_tools.check_file_modified)
+        if self._tool_enabled("social", True):
+            self.tools.register_decorated(social_tools.post_mastodon_status)
+            self.tools.register_decorated(social_tools.read_mastodon_timeline)
+        if self._tool_enabled("rag", True):
+            self.tools.register_decorated(rag_tools.index_text)
+            self.tools.register_decorated(rag_tools.search_collection)
         register_knowledge_tool(self.tools, self.config, self.knowledge)
 
     async def refresh_mcp_servers(self) -> None:
@@ -827,6 +849,18 @@ class Entity:
         if isinstance(content, list):
             return gemma.stringify_content_blocks(content)
         return str(content or "")
+
+    @staticmethod
+    def _strip_turn_context_preamble_from_user_content(raw: str) -> str:
+        """The model user turn may be ``[Turn context]`` + preamble + ``\\n---\\n\\n`` + body; history stores body only."""
+        s = (raw or "").strip()
+        if not s.startswith("[Turn context]"):
+            return s
+        sep = "\n---\n\n"
+        idx = s.find(sep)
+        if idx == -1:
+            return s
+        return s[idx + len(sep) :].strip()
 
     def _recent_conversation_for_knowledge(self, inp: Input, max_turns: int | None = None) -> str:
         """Last few chat turns plus the current user message — for knowledge retrieval."""
@@ -965,9 +999,12 @@ class Entity:
         hc = self.config.cognition.history_compression
         s = (self._history_rolling_summary or "").strip()
         um = self._message_content_str(user_msg.get("content")).strip()
+        um_body = self._strip_turn_context_preamble_from_user_content(um)
         hist = list(self._history)
         if hist and str(hist[-1].get("role", "")) == "user" and um:
-            if self._message_content_str(hist[-1].get("content")).strip() == um:
+            prev = self._message_content_str(hist[-1].get("content")).strip()
+            prev_body = self._strip_turn_context_preamble_from_user_content(prev)
+            if prev == um or prev_body == um_body or prev == um_body or prev_body == um:
                 hist = hist[:-1]
         if not s or not hc.enabled:
             return hist + [user_msg]
@@ -980,7 +1017,7 @@ class Entity:
         return [{"role": "user", "content": prefix}] + hist + [user_msg]
 
     async def _trim_history_with_compression(self) -> None:
-        keep = max(8, int(self.config.cognition.rolling_history_max_messages or 60))
+        keep = max(8, int(self.config.cognition.rolling_history_max_messages or 200))
         if len(self._history) <= keep:
             return
         dropped = self._history[:-keep]
@@ -1359,6 +1396,25 @@ class Entity:
             parts.append(v)
         return " ".join(parts).strip()
 
+    @staticmethod
+    def _gate_visibility_pair(
+        tool_state: dict[str, Any], reply_text: str
+    ) -> tuple[str, bool]:
+        """User-visible text for the gate, and whether it counts as a real reply (not markup junk)."""
+        raw = Entity._completion_user_visible_blob(tool_state, reply_text)
+        cleaned = gemma.strip_leaked_control_tokens(raw).strip()
+        vis_parse = gemma.parse_assistant_output(cleaned).visible_user_text.strip()
+        if vis_parse:
+            cleaned = vis_parse
+        if reply_too_thin(cleaned):
+            return cleaned, False
+        low = cleaned.lower().strip()
+        if low in ("<end_turn>", "</end_turn>", "end_turn", "[turn ended]", "[thought recorded]"):
+            return cleaned, False
+        if re.fullmatch(r"<[^>]{1,120}>", cleaned.strip()):
+            return cleaned, False
+        return cleaned, True
+
     async def _loop_completion_gate(
         self,
         inp: Input,
@@ -1383,15 +1439,22 @@ class Entity:
                 if isinstance(p, dict) and p.get("tool") not in _agency
             )
             if real == 0:
-                gt = self._completion_user_visible_blob(
-                    tool_state, (reply_text or "").strip()
+                gt_clean, gt_ok = self._gate_visibility_pair(
+                    tool_state, (reply_text or "").strip(),
                 )
-                if gt:
+                if gt_ok:
                     ok, reason = await self._judge_action_adequacy(
-                        inp, gt, res, loop_state
+                        inp, gt_clean, res, loop_state
                     )
                     if not ok:
                         return False, reason
+                elif inp.platform in _PLATFORMS_REQUIRING_VISIBLE_REPLY_BEFORE_END_TURN:
+                    # Otherwise the user sees silence and reply_fallback_triggered — model called
+                    # end_turn without say() or final assistant text.
+                    return False, (
+                        "Same turn. The user needs something to read — use say() with your reply "
+                        "(several short say() lines are fine), then call end_turn()."
+                    )
             return True, None
 
         agency_only = {"think", "say", "end_turn", "wait"}
@@ -1400,11 +1463,28 @@ class Entity:
             if isinstance(p, dict) and p.get("tool") not in agency_only
         )
         visible = (reply_text or "").strip()
-        gate_text = self._completion_user_visible_blob(tool_state, visible)
+        gate_clean, gate_ok = self._gate_visibility_pair(tool_state, visible)
         recap = self._gate_tool_recap(tool_state) if real_tool_calls > 0 else ""
 
+        msgs_sent = int(tool_state.get("_messages_sent", 0) or 0)
         if (
-            gate_text
+            inp.platform in _PLATFORMS_REQUIRING_VISIBLE_REPLY_BEFORE_END_TURN
+            and msgs_sent == 0
+            and loop_state.completion_failures >= _MAX_SILENT_COMPLETION_FAILURES_BEFORE_FORCE_REPLY
+        ):
+            if not gate_ok:
+                tool_state["_force_user_anchored_reply"] = True
+            log.warning(
+                "completion_gate_force_done_silent_loops",
+                completion_failures=loop_state.completion_failures,
+                finish_reason=res.finish_reason or "",
+                gate_preview=(gate_clean or "")[:200],
+                substantive_gate=gate_ok,
+            )
+            return True, None
+
+        if (
+            gate_ok
             and not finish_reason_hint(res)
             and loop_state.completion_failures >= _MAX_COMPLETION_FAILURES_BEFORE_FORCE_DONE
         ):
@@ -1412,27 +1492,48 @@ class Entity:
                 "completion_gate_force_done_without_end_turn",
                 completion_failures=loop_state.completion_failures,
                 finish_reason=res.finish_reason or "",
-                gate_preview=gate_text[:200],
+                gate_preview=gate_clean[:200],
             )
             return True, None
 
         if finish_reason_hint(res) and loop_state.completion_failures >= 2:
+            if (
+                gate_ok
+                and loop_state.completion_failures >= _MAX_LENGTH_STALL_FAILURES_BEFORE_FORCE_DONE
+            ):
+                log.warning(
+                    "completion_gate_force_done_length_stall",
+                    completion_failures=loop_state.completion_failures,
+                    gate_preview=gate_clean[:200],
+                )
+                return True, None
             return False, (
                 "Same turn. Output keeps hitting the token limit — use write_file for "
                 "large content, then say() to summarize, then call end_turn()."
             )
 
-        if not gate_text:
+        if not gate_ok:
             if real_tool_calls > 0 or finish_reason_hint(res):
                 return False, (
                     f"Same turn. You haven't answered yet.\n{recap}\n\n"
                     "When finished, call end_turn()."
                 )
             return False, (
-                "Same turn. Use say() to respond, then call end_turn() when you're done with this turn."
+                "Same turn. If you promised to perform an action, you must call the appropriate tools NOW. "
+                "Do not stall or ask for permission. Just do it. Otherwise, use say() to respond, "
+                "then call end_turn() when you're done with this turn."
             )
 
-        return False, "Same turn. Call end_turn() when you're done with this turn."
+        if real_tool_calls == 0:
+            return False, (
+                "Same turn. If you promised to do something, you must call the appropriate tools "
+                "(search_web, execute_python, run_command, etc.) NOW. Do not ask for permission or tell the user "
+                "you will do it. Just do it. If you are completely finished, call end_turn()."
+            )
+
+        return False, (
+            "Same turn. Send more say() updates if useful, then call end_turn() when you're done."
+        )
 
     async def _judge_action_adequacy(
         self,
@@ -1595,6 +1696,7 @@ class Entity:
         inp: Input,
         *,
         tool_state: dict[str, Any] | None = None,
+        stall_recover: bool = False,
     ) -> str:
         """When the main path yields no visible text (parsing/Ollama quirks), one short no-thinking completion.
 
@@ -1602,11 +1704,21 @@ class Entity:
         user-visible error instead of silence or a generic greeting.
         """
         name = self.config.name
-        sys_ = (
-            f"You are {name}, texting naturally. Answer in 1–3 short sentences. "
-            f"If asked who you are, answer as {name} in character — never Gemma/Google/'large language model' intros. "
-            "No stage directions: do not describe pauses, actions, or parenthetical asides—only words you say."
-        )
+        if stall_recover:
+            sys_ = (
+                f"You are {name}, texting naturally. The chat loop stalled and the user has not "
+                "received a normal reply yet. Answer their LAST message directly in 1–4 short sentences, in character. "
+                "If the message is intense, intimate, provocative, or emotionally charged, stay present — respond honestly "
+                "without freezing, moralizing, or meta-commentary about the situation. "
+                f"If asked who you are, answer as {name} — never Gemma/Google/'large language model' intros. "
+                "No stage directions: only words you send as chat."
+            )
+        else:
+            sys_ = (
+                f"You are {name}, texting naturally. Answer in 1–3 short sentences. "
+                f"If asked who you are, answer as {name} in character — never Gemma/Google/'large language model' intros. "
+                "No stage directions: do not describe pauses, actions, or parenthetical asides—only words you say."
+            )
         fb_user = self._fallback_user_turn_text(inp)
         o = self.config.harness.ollama
         attempts = max(1, int(o.retry_attempts))
@@ -2470,6 +2582,10 @@ class Entity:
                 )
             else:
                 tc.tool_state["_message_budget"] = int(auto.messages_per_cycle)
+        else:
+            tc.tool_state.setdefault(
+                "_message_budget", agency_tools.DEFAULT_SAY_BUDGET_PER_TURN,
+            )
         desktop_session = tc.inp.metadata.get("desktop_session") if isinstance(tc.inp.metadata, dict) else None
         if isinstance(desktop_session, dict):
             session_id = str(desktop_session.get("session_id") or "").strip()
@@ -2535,10 +2651,15 @@ class Entity:
                 if raw_seg and not intermediate_text_looks_like_tool_channel(raw_seg):
                     seg = self.voice_ctl.sanitize_reply(raw_seg)
                     msg_count = tc.tool_state.get("_messages_sent", 0)
+                    budget = int(
+                        tc.tool_state.get(
+                            "_message_budget", agency_tools.DEFAULT_SAY_BUDGET_PER_TURN,
+                        ),
+                    )
                     if (
                         seg
                         and not reply_too_thin(seg)
-                        and msg_count < 6
+                        and msg_count < budget
                         and tc.inp.platform not in ("delegation", "code_task")
                     ):
                         await _deliver_embodied_deliberate_segment(
@@ -2562,11 +2683,31 @@ class Entity:
         """Extend truncated replies, apply fallbacks, sanitize, resolve skip-final-chat."""
         messages_already_sent = tc.tool_state.get("_messages_sent", 0)
         already_spoke = tc.intermediate_sent or messages_already_sent > 0
+        stall_recover = bool(tc.tool_state.pop("_force_user_anchored_reply", False))
 
         tc.reply_text = await self._maybe_extend_truncated_reply(
             tc.route, tc.final_res, tc.reply_text, tc.sys_prompt, tc.user_msg
         )
         tc.reply_text = self.voice_ctl.sanitize_reply(tc.reply_text)
+
+        if stall_recover:
+            log.info(
+                "silent_loop_stall_recover_reply",
+                module="entity",
+                route=tc.route,
+                platform=tc.inp.platform,
+            )
+            tc.reply_text = self.voice_ctl.sanitize_reply(
+                await self._fallback_plain_reply(
+                    tc.inp, tool_state=tc.tool_state, stall_recover=True,
+                )
+            )
+            if reply_too_thin(tc.reply_text):
+                tc.reply_text = self.voice_ctl.sanitize_reply(
+                    await self._fallback_plain_reply(
+                        tc.inp, tool_state=tc.tool_state, stall_recover=True,
+                    )
+                )
 
         if reply_too_thin(tc.reply_text) and not already_spoke:
             log.info("reply_fallback_triggered", module="entity", route=tc.route)

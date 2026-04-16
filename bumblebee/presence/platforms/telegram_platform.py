@@ -2102,14 +2102,62 @@ class TelegramPlatform(Platform):
             log.debug("send_tool_activity_failed", error=str(e))
 
     async def send_plain_chunks(self, channel: str, text: str, pause: float = 1.0) -> None:
+        """Plain chat: split into multiple Telegram messages under ``presence.message_chunk_max``.
+
+        Previously this only split at ~4k (API limit), so normal replies were always a single
+        bubble. Discord already splits by line budget; match that behavior using harness YAML.
+        """
         t = text.strip()
         if not t:
             return
-        n = 4000
-        for i in range(0, len(t), n):
-            await self.send_message(channel, t[i : i + n])
-            if i + n < len(t):
-                await asyncio.sleep(pause)
+        try:
+            h = self._entity.config.harness.presence
+            max_len = max(120, min(3900, int(h.message_chunk_max)))
+        except (AttributeError, TypeError, ValueError):
+            max_len = 400
+        parts: list[str] = []
+        buf = ""
+        for sentence in t.replace("\n\n", "\n").split("\n"):
+            line = sentence.strip()
+            if not line:
+                continue
+            if len(buf) + len(line) + 1 > max_len:
+                if buf:
+                    parts.append(buf)
+                buf = line
+            else:
+                buf = (buf + " " + line).strip() if buf else line
+        if buf:
+            parts.append(buf)
+        if len(parts) == 1 and len(parts[0]) > max_len:
+            parts = [parts[0][i : i + max_len] for i in range(0, len(parts[0]), max_len)]
+        out_parts = [p for p in parts if p.strip()]
+        try:
+            h = self._entity.config.harness.presence
+            cps = max(8.0, float(h.typing_speed_base))
+            var = max(0.0, min(0.85, float(h.typing_speed_variance)))
+        except (AttributeError, TypeError, ValueError):
+            cps = 30.0
+            var = 0.3
+        cid: int | None = None
+        try:
+            cid = int(str(channel).strip())
+        except (TypeError, ValueError):
+            cid = None
+        for i, p in enumerate(out_parts):
+            await self.send_message(channel, p)
+            if i >= len(out_parts) - 1:
+                break
+            nxt = out_parts[i + 1]
+            if cid is not None:
+                try:
+                    await self.send_typing(cid)
+                except Exception:
+                    pass
+            # Human-paced gap: base pause with jitter + a fraction of "typing out" the next bubble.
+            jitter = float(pause) * random.uniform(max(0.2, 1.0 - var), 1.0 + var)
+            compose = min(6.0, max(0.15, len(nxt) / cps * 0.5))
+            await asyncio.sleep(max(0.05, jitter + compose))
 
     async def send_proactive_default(self, message: str) -> None:
         if self.last_chat_id:

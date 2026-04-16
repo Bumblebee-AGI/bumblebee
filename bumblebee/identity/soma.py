@@ -1784,13 +1784,17 @@ def _format_event_for_noise(ev: dict[str, Any]) -> str:
     return f"  {typ}" + (f" ({detail})" if detail else "")
 
 
-# Rotating "shape pressure" to keep batches varied but grounded.
+# Rotating "shape pressure" — biased toward hooks the conscious model can use this turn.
 _NOISE_SHAPE_HINTS: tuple[str, ...] = (
-    "At least one fragment under eight words; sharp and specific.",
-    "Include one concrete body sensation and one social trace (tone/phrase/reaction).",
+    "Every fragment names or clearly implies something already in BODY, RECENT EVENTS, "
+    "JOURNAL, or LAST CONVERSATION (word, person, tool, or situation — no new setting).",
+    "Half the fragments react to the noisiest bar in BODY STATE by name (social, curiosity, …).",
+    "Take one short phrase from LAST CONVERSATION and spin it three different ways.",
+    "At least one fragment under eight words; sharp, about this scene only.",
+    "Include one concrete body sensation and one social trace (tone/phrase/reaction) from context.",
     "Pull one fragment directly from recent events or conversation vocabulary.",
-    "One fragment is a practical next-step thought; one is associative or sideways.",
-    "Include one unfinished note-to-self and one line with momentum.",
+    "One fragment is a practical next-step thought about the live thread; one complicates it slightly.",
+    "Include one unfinished note-to-self tied to something that already happened.",
     "Use one vivid but grounded image from ordinary life; no fantasy framing.",
     "One line can be a short question; other lines should be statements.",
     "Include one tiny contradiction or self-correction across two lines.",
@@ -1810,8 +1814,8 @@ class NoiseEngine:
     (not a single polished monologue) into a rolling buffer for the body.
 
     The noise model cannot act — no tools, no messages, no state mutation.
-    High temperature is deliberate; shape hints rotate so tone doesn't freeze
-    into one metaphorical register.
+    Temperature is moderate by default; shape hints rotate so batches stay varied
+    while staying tethered to live context.
     """
 
     def __init__(
@@ -1927,12 +1931,13 @@ class NoiseEngine:
         mode_norm = "coherent" if str(mode).strip().lower() == "coherent" else "entropic"
         streak_block = self._streak_instruction(mode_norm)
         mode_guidance = (
-            "MODE: coherent/high-signal. Stay noisy and emergent, but pointed: most lines orbit "
-            "one central live preoccupation from current events/conversation. Vary angle, pressure, "
-            "and texture more than topic.\n\n"
+            "MODE: coherent / high-signal. Extend the live thread from RECENT EVENTS and "
+            "LAST CONVERSATION — same scene, new pressure or angle. Vary texture and length; "
+            "do not open a fresh topic unless it clearly bridges from a name or fact already above.\n\n"
             if mode_norm == "coherent"
-            else "MODE: entropic/quiet. Maximize randomness/chaos and weird emergent leaps while "
-            "still grounded in lived context. Fragments can jump topics abruptly and feel electric.\n\n"
+            else "MODE: idle / low-stimulation. Stay spare. Each fragment must still hang off "
+            "BODY STATE, RECENT EVENTS, JOURNAL, or LAST CONVERSATION (reuse a word, person, "
+            "tool, or situation). At most one line may twist sideways; no surreal riff with no anchor.\n\n"
         )
 
         appraisal_block = ""
@@ -1953,14 +1958,15 @@ class NoiseEngine:
         out_line_hint = (
             "Write 2–4 short inner-voice fragments."
             if pending_seed
-            else "What crosses your mind? (3-7 fragments, uneven, context-linked.)"
+            else "Write 3–6 uneven fragments. Most must be obviously about this session "
+            "(people, tools, topics, or body bars already listed)."
         )
 
         system = (
             f"You are the inner voice of {entity_name}. Not the part that speaks "
             "to people — the stray, uneven chatter underneath: half-sentences, "
             "boredom, stray sense-memories, dumb jokes, tiny itches, flat facts, "
-            "random questions, nothing grand.\n\n"
+            "small questions. Nothing grand or theatrical.\n\n"
             f"{streak_block}"
             f"{appraisal_block}"
             f"{mode_guidance}"
@@ -1968,17 +1974,20 @@ class NoiseEngine:
             "plain lines (or separate short paragraphs). First person, present tense, "
             "mostly lowercase. They can be different lengths — a three-word spike "
             "next to a longer mumble is good.\n\n"
-            "Do NOT write as one cohesive literary monologue. Keep it grounded in this "
-            "entity's recent context. Frequently connect lines to recent events, journal, "
-            "or conversation themes.\n\n"
+            "The conscious model reads these as situational color for *this* moment — "
+            "not free poetry. If a line would not plausibly spark a useful association "
+            "about current people, tasks, body, or chat, drop it.\n\n"
+            "Do NOT write as one cohesive literary monologue. Most lines should clearly "
+            "tie to recent events, journal, or conversation (echo a word, follow a thread, "
+            "push back on something that just happened).\n\n"
             "Avoid high-fantasy/RPG or mystical language (quest, oracle, prophecy, spell, "
             "mana, relic, destiny). Occasional compact figurative phrasing is okay only if "
             "it stays concrete and context-linked.\n\n"
             "No bullet points, no labels like 'thought:', no preamble, no quoting "
             "the prompt. Not analytical — just scraps.\n\n"
             "Each call: different substance than before. Never rephrase your last "
-            "batch; if context is thin, invent a small ordinary detail or sideways "
-            "ping rather than repeating the same theme."
+            "batch; if context is thin, stay with body bars or a single concrete idle detail "
+            "instead of random novelty."
         )
         rel_tail = (relationship_tail or "").strip()
         rel_block = ""
@@ -2349,7 +2358,7 @@ class TonicBody:
         self.noise = NoiseEngine(
             cycle_seconds=float(noise_cfg.get("cycle_seconds", 60)),
             max_fragments=int(noise_cfg.get("max_fragments", 8)),
-            temperature=float(noise_cfg.get("temperature", 1.1)),
+            temperature=float(noise_cfg.get("temperature", 0.88)),
             max_tokens=int(noise_cfg.get("max_tokens", 240)),
             thematic_streak_max=int(noise_cfg.get("thematic_streak_max", 0)),
             semantic_dedup=bool(noise_cfg.get("semantic_dedup", False)),
@@ -2570,19 +2579,24 @@ class TonicBody:
     def _noise_generation_mode(self, *, journal_tail: str = "", conversation_tail: str = "") -> str:
         """Choose GEN style based on immediate stimulation.
 
-        High internal salience or active external signal -> coherent mode.
-        Quiet periods -> entropic mode (more sparse, jumpy associations).
+        Any real conversation tail -> coherent (ground to chat + events).
+        High internal salience or external signal -> coherent.
+        True idle -> entropic (still prompt-grounded, but lower stimulation).
         """
+        conv_raw = (conversation_tail or "").strip()
+        if conv_raw and conv_raw.lower() != "(silence)":
+            return "coherent"
+
         sal = self.compute_salience()
         recent = self._recent_events[-8:]
         high_signal_types = {"message_received", "message_sent", "action", "appraisal", "world_poke"}
         signal_events = sum(1 for ev in recent if str(ev.get("type") or "") in high_signal_types)
-        conv_load = len((conversation_tail or "").strip())
+        conv_load = len(conv_raw)
         journal_load = len((journal_tail or "").strip())
 
-        if sal >= 0.58 or signal_events >= 2 or conv_load >= 220:
+        if sal >= 0.52 or signal_events >= 2 or conv_load >= 180:
             return "coherent"
-        if sal >= 0.42 and (signal_events >= 1 or conv_load >= 120 or journal_load >= 250):
+        if sal >= 0.38 and (signal_events >= 1 or conv_load >= 90 or journal_load >= 220):
             return "coherent"
         return "entropic"
 

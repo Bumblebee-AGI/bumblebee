@@ -9,4 +9,4 @@ Bump manually in this file, or run::
 The CLI ``bumblebee version`` and Telegram ``/version`` report this value.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"

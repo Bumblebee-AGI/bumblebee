@@ -880,3 +880,22 @@ class TestSomaEbb:
         body.emit({"type": "message_received", "from": "alice"})
         body.emit({"type": "action", "name": "search_web"})
         assert body._noise_generation_mode(journal_tail="", conversation_tail="ok") == "coherent"
+
+    def test_noise_generation_mode_any_conversation_tail_is_coherent(self, tmp_path: Path):
+        body = TonicBody(_default_bar_config(), tmp_path)
+        assert (
+            body._noise_generation_mode(
+                journal_tail="",
+                conversation_tail="user: ping\nassistant: pong",
+            )
+            == "coherent"
+        )
+
+    def test_noise_generation_mode_silence_placeholder_stays_entropic_without_signal(
+        self, tmp_path: Path
+    ):
+        body = TonicBody(_default_bar_config(), tmp_path)
+        assert (
+            body._noise_generation_mode(journal_tail="", conversation_tail="(silence)")
+            == "entropic"
+        )

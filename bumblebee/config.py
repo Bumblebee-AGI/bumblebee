@@ -11,6 +11,8 @@ from typing import Any
 
 import yaml
 
+from bumblebee.inference.factory import effective_inference_provider_name, inference_bearer_key_env
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -40,7 +42,7 @@ class DeploymentSettings:
 class InferenceSettings:
     """Brain endpoint selection (tunnel should terminate only at the inference gateway)."""
 
-    provider: str = ""  # local | remote_gateway — empty derives from deployment.mode
+    provider: str = ""  # local | remote_gateway | openrouter | venice — empty derives from deployment.mode
     base_url: str = ""  # remote gateway or OpenAI-compatible root; empty uses ollama.base_url
     api_key_env: str = "BUMBLEBEE_INFERENCE_GATEWAY_TOKEN"
     model: str = ""  # optional documentation default / operator hint
@@ -164,7 +166,7 @@ class PresenceHarnessSettings:
     typing_speed_base: float = 30.0
     typing_speed_variance: float = 0.3
     message_chunk_max: int = 400
-    chunk_delay: float = 1.5
+    chunk_delay: float = 2.0
 
 
 @dataclass
@@ -241,7 +243,7 @@ def default_soma_config() -> dict[str, Any]:
             "enabled": True,
             "model": "",
             "cycle_seconds": 90,
-            "temperature": 1.05,
+            "temperature": 0.88,
             "max_tokens": 240,
             "max_fragments": 8,
             # coherent GEN ticks in a row that keep thematic continuity (0 = off).
@@ -519,7 +521,7 @@ class EntityCognition:
     fast_deliberate_mode: bool = False
     deliberate_max_tokens: int = 0  # 0 => use harness.cognition.deliberate_max_tokens
     system_prompt_char_limit: int = 12000
-    rolling_history_max_messages: int = 40
+    rolling_history_max_messages: int = 200
     knowledge_recent_turns: int = 10
     history_message_char_limit: int = 4000
     thinking_mode: bool = True
@@ -784,7 +786,7 @@ def apply_harness_env_overrides(h: HarnessConfig) -> None:
     if dm in ("local", "hybrid_railway"):
         h.deployment.mode = dm
     ip = (os.environ.get("BUMBLEBEE_INFERENCE_PROVIDER") or "").strip().lower()
-    if ip in ("local", "remote_gateway"):
+    if ip in ("local", "remote_gateway", "openrouter", "venice"):
         h.inference.provider = ip
     ib = (os.environ.get("BUMBLEBEE_INFERENCE_BASE_URL") or "").strip()
     if ib:
@@ -801,6 +803,11 @@ def apply_harness_env_overrides(h: HarnessConfig) -> None:
             h.inference.timeout = float(ito)
         except ValueError:
             pass
+    inpnc = (os.environ.get("BUMBLEBEE_INFERENCE_PASS_NUM_CTX") or "").strip().lower()
+    if inpnc in ("0", "false", "no", "off"):
+        h.inference.pass_num_ctx = False
+    elif inpnc in ("1", "true", "yes", "on"):
+        h.inference.pass_num_ctx = True
     att = (os.environ.get("BUMBLEBEE_ATTACHMENTS_BACKEND") or "").strip().lower()
     if att in ("local_disk", "object_s3_compat"):
         h.attachments.backend = att
@@ -917,7 +924,7 @@ def entity_from_dict(harness: HarnessConfig, data: dict[str, Any]) -> EntityConf
             2000, int(cog.get("system_prompt_char_limit", 12000) or 12000)
         ),
         rolling_history_max_messages=max(
-            8, int(cog.get("rolling_history_max_messages", 40) or 40)
+            8, int(cog.get("rolling_history_max_messages", 200) or 200)
         ),
         knowledge_recent_turns=max(2, int(cog.get("knowledge_recent_turns", 10) or 10)),
         history_message_char_limit=max(
@@ -990,17 +997,21 @@ def validate_entity_env(entity: EntityConfig) -> list[str]:
     """Return list of warnings if platform env vars missing."""
     warnings: list[str] = []
     mode = (entity.harness.deployment.mode or "local").strip().lower()
-    prov = (entity.harness.inference.provider or "").strip().lower()
-    if mode == "hybrid_railway" or prov == "remote_gateway":
-        envk = entity.harness.inference.api_key_env or "BUMBLEBEE_INFERENCE_GATEWAY_TOKEN"
+    eff = effective_inference_provider_name(entity.harness)
+    if eff in ("remote_gateway", "openrouter", "venice"):
+        envk = inference_bearer_key_env(entity.harness)
         if not (os.environ.get(envk) or "").strip():
-            warnings.append(
-                f"Hybrid/remote inference: set {envk} (bearer token for the home inference gateway)"
+            hint = (
+                "home inference gateway"
+                if eff == "remote_gateway"
+                else f"{eff} API"
             )
-        if not (entity.harness.inference.base_url or "").strip() and mode == "hybrid_railway":
-            warnings.append(
-                "Hybrid Railway: set inference.base_url or BUMBLEBEE_INFERENCE_BASE_URL to the tunneled gateway URL"
-            )
+            warnings.append(f"Remote inference ({eff}): set {envk} (bearer token for the {hint})")
+        if eff == "remote_gateway" and mode == "hybrid_railway":
+            if not (entity.harness.inference.base_url or "").strip():
+                warnings.append(
+                    "Hybrid Railway: set inference.base_url or BUMBLEBEE_INFERENCE_BASE_URL to the tunneled gateway URL"
+                )
     if mode == "hybrid_railway" and not entity.database_url():
         warnings.append(
             "Hybrid Railway: set DATABASE_URL (Postgres) — container-local SQLite is not durable"

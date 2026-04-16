@@ -15,6 +15,7 @@ class InferenceProvider(Protocol):
         messages: list[dict[str, Any]],
         *,
         tools: Optional[list[dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: int = 1024,
         think: bool = False,

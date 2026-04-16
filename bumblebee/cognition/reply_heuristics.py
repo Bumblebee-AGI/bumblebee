@@ -167,6 +167,15 @@ def reply_looks_like_progress_only(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
         return False
+    
+    # Catch explicit promises to do something instead of doing it
+    promise_match = re.search(
+        r"(i['\u2019]?ll|i will|i['\u2019]?m going to|let me|lemme|i can)\s+(find|look|search|check|read|open|get|send|pull|try|run|execute|figure out)",
+        t[:150],
+    )
+    if promise_match:
+        return True
+
     starters = (
         "checking ",
         "checking the ",
@@ -182,6 +191,8 @@ def reply_looks_like_progress_only(text: str) -> bool:
         "give me a sec",
         "lemme ",
         "let me ",
+        "i'm on it",
+        "on it!",
     )
     if any(t.startswith(s) for s in starters):
         return True

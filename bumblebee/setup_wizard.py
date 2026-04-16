@@ -382,6 +382,41 @@ def _run_hybrid_env_and_home(
     return base_url, tok
 
 
+def _optional_managed_remote_inference(env_path: Path) -> None:
+    """Optional OpenRouter / Venice instead of the home tunnel gateway (harness testing)."""
+    click.echo("\n--- Optional: hosted inference (OpenRouter / Venice) ---\n")
+    click.echo(
+        "Use a frontier OpenAI-compatible API instead of the local Ollama stack or home gateway.\n"
+        "Same harness code paths; set your API key below. For hybrid Railway, also set the same\n"
+        "BUMBLEBEE_INFERENCE_* variables and key on bumblebee-worker / bumblebee-api.\n"
+    )
+    if not click.confirm("Configure OpenRouter or Venice for inference now?", default=False):
+        return
+    choice = click.prompt(
+        "Provider",
+        type=click.Choice(["openrouter", "venice"], case_sensitive=False),
+    )
+    key_env = "OPENROUTER_API_KEY" if choice == "openrouter" else "VENICE_API_KEY"
+    key = _prompt_secret(key_env)
+    if not key:
+        click.echo("No key pasted — skipped.")
+        return
+    updates: dict[str, str] = {
+        "BUMBLEBEE_INFERENCE_PROVIDER": choice,
+        key_env: key,
+        # Hosted APIs typically reject Ollama-only fields such as options.num_ctx.
+        "BUMBLEBEE_INFERENCE_PASS_NUM_CTX": "false",
+    }
+    if not click.confirm("Use the default API host for this provider (recommended)?", default=True):
+        custom = _prompt_line(
+            "BUMBLEBEE_INFERENCE_BASE_URL (root before /v1, e.g. https://openrouter.ai/api)"
+        )
+        if custom:
+            updates["BUMBLEBEE_INFERENCE_BASE_URL"] = custom.rstrip("/")
+    merge_dotenv_keys(env_path, updates)
+    click.echo(f"\nUpdated {env_path} with {choice} inference ({len(updates)} key(s)).")
+
+
 def _railway_volume_exists(service: str, mount: str) -> bool | None:
     """Check whether *service* has a volume at *mount*. Returns ``None`` when the check cannot run."""
     b = _railway_bin()
@@ -596,6 +631,8 @@ def run_setup_wizard(
         _run_local_flow(env_path)
     else:
         raise click.ClickException(f"Unknown profile: {profile!r}")
+
+    _optional_managed_remote_inference(env_path)
 
     entity_choice = _entity_section()
     if p == "hybrid" and hybrid_base is not None and hybrid_tok is not None:

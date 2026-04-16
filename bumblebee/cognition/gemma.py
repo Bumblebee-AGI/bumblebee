@@ -69,9 +69,11 @@ _INFORMAL_TOOL_TAGS = re.compile(
     re.IGNORECASE,
 )
 
-# Raw function-call-style leaks: say{message:...}, think{thought:...}, end_turn{...}
+# Raw function-call-style leaks: say{...}, end_turn: { ... } (models often add a colon),
+# think{thought:...}, etc. [^}] spans newlines; cap length so a stray "{" in chat does not
+# eat the rest of the message.
 _INFORMAL_TOOL_CALLS = re.compile(
-    r"(?:say|think|end_turn|wait)\s*\{[^}]{0,500}\}",
+    r"(?:say|think|end_turn|wait)\s*(?::\s*)?\{[^}]{0,8000}\}",
     re.IGNORECASE,
 )
 
@@ -79,6 +81,17 @@ _INFORMAL_TOOL_CALLS = re.compile(
 _META_TAG_LINE = re.compile(
     r"^\s*</?(?:mood|endofturn|end_of_turn|internal|meta|analysis)[^>]*>(?:[^<\n]{0,200}</[^>]{1,60}>)?\s*$",
     re.MULTILINE | re.IGNORECASE,
+)
+
+# Malformed thought-channel lines models sometimes spit when CoT runs wrong (not real <|channel>thought).
+_THOUGHT_LINE_JUNK = re.compile(
+    r"(?mi)^\s*</?thought\b[^>]*\s*/?>\s*$|^\s*<\s*channel\s*\|\s*>\s*$",
+)
+
+# Injected by deliberate loop for the model; must never appear in user chat.
+_LENGTH_STALL_OUTBOUND_LEAK = re.compile(
+    r"\n*\(?\s*your response was too long[^.]*(?:write_file|large content)[^.]*\.?\s*\)?",
+    re.IGNORECASE,
 )
 
 
@@ -103,6 +116,8 @@ def strip_leaked_control_tokens(text: str) -> str:
     t = _META_TAG_LINE.sub("", t).strip()
     t = _INFORMAL_TOOL_TAGS.sub("", t).strip()
     t = _INFORMAL_TOOL_CALLS.sub("", t).strip()
+    t = "\n".join(ln for ln in t.splitlines() if not _THOUGHT_LINE_JUNK.match(ln)).strip()
+    t = _LENGTH_STALL_OUTBOUND_LEAK.sub("", t).strip()
     return t
 
 

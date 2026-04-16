@@ -9,8 +9,8 @@ deployment:
   mode: local # local | hybrid_railway — overridden by BUMBLEBEE_DEPLOYMENT_MODE when set
 
 inference:
-  provider: "" # local | remote_gateway — empty derives from deployment.mode
-  base_url: "" # tunneled gateway URL in hybrid; empty uses ollama.base_url
+  provider: "" # local | remote_gateway | openrouter | venice — empty derives from deployment.mode
+  base_url: "" # gateway / OpenAI-compat root (before /v1); empty uses ollama or provider defaults
   api_key_env: BUMBLEBEE_INFERENCE_GATEWAY_TOKEN
   model: ""
   timeout: 120
@@ -48,6 +48,9 @@ cognition:
   image_token_budget: 280
   # Nudge the model when it describes a tool step but returns no tool_calls (multi-step tasks).
   tool_continuation_rounds: 21
+
+  # Entity YAML ``cognition.rolling_history_max_messages`` (default 200): max user+assistant pairs
+  # kept in rolling chat before oldest turns drop to the summary / compaction path.
 
   # History compression and proactive context compaction.
   # The compaction system fires *before* inference when estimated tokens approach the context
@@ -101,7 +104,7 @@ presence:
   typing_speed_base: 30
   typing_speed_variance: 0.3
   message_chunk_max: 400
-  chunk_delay: 1.5
+  chunk_delay: 2.0
 
 logging:
   level: "INFO"
@@ -204,7 +207,7 @@ soma:
     enabled: true
     model: ""  # empty uses reflex model; set to e.g. "gemma3:1b" for a dedicated small noise model
     cycle_seconds: 90
-    temperature: 1.05
+    temperature: 0.88
     max_tokens: 240
     max_fragments: 8
     # coherent GEN ticks in a row that ask for thematic continuity (0 = off).
@@ -395,3 +398,16 @@ tools:
     require_railway: false
     workspace_dir: ""
     rpc_path: "/rpc"
+  iot:
+    enabled: true
+    url_env: "HOME_ASSISTANT_URL"
+    token_env: "HOME_ASSISTANT_TOKEN"
+  social:
+    enabled: true
+    mastodon_url_env: "MASTODON_URL"
+    mastodon_token_env: "MASTODON_ACCESS_TOKEN"
+  observation:
+    enabled: true
+  rag:
+    enabled: true
+
