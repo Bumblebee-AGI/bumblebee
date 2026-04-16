@@ -6,12 +6,26 @@ import json
 import os
 import aiohttp
 
+try:
+    import tweepy
+    from tweepy.asynchronous import AsyncClient
+    HAS_TWEEPY = True
+except ImportError:
+    HAS_TWEEPY = False
+
 from bumblebee.presence.tools.registry import tool
 
 def _get_mastodon_config() -> tuple[str, str]:
     url = os.environ.get("MASTODON_URL", "").strip()
     token = os.environ.get("MASTODON_ACCESS_TOKEN", "").strip()
     return url, token
+
+def _get_zweet_config() -> tuple[str, str, str, str]:
+    api_key = os.environ.get("X_API_KEY", "").strip()
+    api_secret = os.environ.get("X_API_SECRET", "").strip()
+    access_token = os.environ.get("X_ACCESS_TOKEN", "").strip()
+    access_secret = os.environ.get("X_ACCESS_SECRET", "").strip()
+    return api_key, api_secret, access_token, access_secret
 
 @tool(
     name="post_mastodon_status",
@@ -97,5 +111,50 @@ async def read_mastodon_timeline(limit: int = 10) -> str:
                 "favourites_count": post.get("favourites_count", 0),
             })
         return json.dumps(out, ensure_ascii=False)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+@tool(
+    name="post_zweet_status",
+    description="Post a zweet (tweet/status update) to your configured X (Twitter) account. Note: Reading the timeline is not supported due to X API Free Tier limitations.",
+)
+async def post_zweet_status(status: str) -> str:
+    if not HAS_TWEEPY:
+        return json.dumps({"error": "The tweepy library is not installed. Please run `pip install tweepy`."})
+        
+    api_key, api_secret, acc_token, acc_secret = _get_zweet_config()
+    if not all([api_key, api_secret, acc_token, acc_secret]):
+        return json.dumps({
+            "error": "Missing environment variables. X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, and X_ACCESS_SECRET are all required."
+        })
+    
+    text = (status or "").strip()
+    if not text:
+        return json.dumps({"error": "status cannot be empty"})
+        
+    try:
+        client = AsyncClient(
+            consumer_key=api_key,
+            consumer_secret=api_secret,
+            access_token=acc_token,
+            access_token_secret=acc_secret
+        )
+        
+        # Twitter API v2
+        res = await client.create_tweet(text=text)
+        
+        if res.errors:
+            return json.dumps({"error": str(res.errors)})
+            
+        data = res.data
+        if not data:
+            return json.dumps({"error": "Empty response from X API"})
+            
+        tweet_id = data.get("id")
+        return json.dumps({
+            "success": True,
+            "id": tweet_id,
+            "url": f"https://x.com/user/status/{tweet_id}"
+        }, ensure_ascii=False)
     except Exception as e:
         return json.dumps({"error": str(e)})

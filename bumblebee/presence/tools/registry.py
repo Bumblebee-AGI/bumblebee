@@ -39,10 +39,10 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name in ("think", "say", "end_turn", "wait"):
         return None
     if tool_name == "search_web":
-        return f'🔍 looking up "{args.get("query", "something")}"...'
+        return f'🔍 scouting for "{args.get("query", "something")}"...'
     if tool_name == "fetch_url":
         domain = extract_domain(str(args.get("url", "") or ""))
-        return f"🌐 reading something on {domain}..." if domain else "🌐 reading that page..."
+        return f"🌐 landing on {domain}..." if domain else "🌐 landing on that page..."
     if tool_name == "send_journal_file":
         return "📎 sending journal.md..."
     if tool_name == "read_file":
@@ -50,12 +50,12 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         sl = int(args.get("start_line") or 0)
         el = int(args.get("end_line") or 0)
         if sl > 0 and el > 0 and el != sl:
-            return f"📄 reading {filename} lines {sl}–{el}..."
+            return f"📄 examining {filename} lines {sl}–{el}..."
         if sl > 0:
-            return f"📄 reading {filename} line {sl}..."
-        return f"📄 checking {filename}..."
+            return f"📄 examining {filename} line {sl}..."
+        return f"📄 examining {filename}..."
     if tool_name == "get_current_time":
-        return "🕐 checking the time..."
+        return "🕐 checking the hive clock..."
     if tool_name == "get_youtube_transcript":
         return "▶️ pulling transcript..."
     if tool_name == "search_youtube":
@@ -66,10 +66,10 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "read_wikipedia":
         return f'📚 reading about {args.get("topic", "something")}...'
     if tool_name == "get_weather":
-        return f'🌤️ checking weather in {args.get("location", "somewhere")}...'
+        return f'🌤️ checking weather near the hive in {args.get("location", "somewhere")}...'
     if tool_name == "get_news":
         topic = str(args.get("topic", "") or "").strip()
-        return f"📰 checking news about {topic}..." if topic else "📰 checking the news..."
+        return f"📰 scouting news about {topic}..." if topic else "📰 scouting the news..."
     if tool_name == "get_crypto_price":
         tok = str(args.get("token", "") or "").strip().upper()
         return f"📈 checking {tok} price..." if tok else "📈 checking crypto price..."
@@ -110,7 +110,7 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "run_command":
         cmd = str(args.get("command", "something") or "something")
         short = cmd[:40] + "..." if len(cmd) > 40 else cmd
-        return f"⚡ running: {short}"
+        return f"⚡ buzzing through: {short}"
     if tool_name == "run_background":
         return "🔄 starting background process..."
     if tool_name == "check_process":
@@ -118,12 +118,12 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "kill_process":
         return "🛑 stopping process..."
     if tool_name == "list_directory":
-        return "📁 looking around..."
+        return "📁 scouting the meadows..."
     if tool_name == "search_files":
-        return f'🔎 searching for {args.get("pattern", "files")}...'
+        return f'🔎 foraging for {args.get("pattern", "files")}...'
     if tool_name == "write_file":
         name = Path(str(args.get("path", "file") or "file")).name
-        return f"✏️ writing {name}..."
+        return f"✏️ crafting {name} in the hive..."
     if tool_name == "send_file":
         name = Path(str(args.get("path", "file") or "file")).name
         return f"📎 sending {name}..."
@@ -137,7 +137,7 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "rollback_checkpoint":
         return "↩️ rolling back checkpoint..."
     if tool_name == "execute_python":
-        return "🐍 running python..."
+        return "🐍 processing in the hive..."
     if tool_name == "execute_javascript":
         return "📜 running javascript..."
     if tool_name == "browser_navigate":
@@ -201,11 +201,11 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "end_wake_session":
         return "🌅 ending autonomous wake session..."
     if tool_name == "list_skills":
-        return "🧠 checking procedural memory..."
+        return "🧠 checking my wings..."
     if tool_name == "read_skill":
-        return "🧠 reading a skill..."
+        return "🧠 inspecting a skill..."
     if tool_name == "update_skill":
-        return "🧠 updating procedural memory..."
+        return "🧠 sharpening my wings..."
     if tool_name == "create_project":
         return "🧵 starting a long-horizon project..."
     if tool_name == "list_projects":
@@ -219,7 +219,7 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         name = Path(str(args.get("path", "file") or "file")).name
         return f"🩹 patching {name}..."
     if tool_name == "todo_add":
-        return "☑️ adding session todo..."
+        return "☑️ adding to the honeycomb..."
     if tool_name == "todo_list":
         return None
     if tool_name == "todo_complete":
@@ -227,7 +227,7 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
     if tool_name == "todo_remove":
         return "🗑️ removing todo..."
     if tool_name == "ask_user":
-        return "❓ asking you something..."
+        return "❓ buzzing you..."
     if tool_name == "delegate_task":
         return "🪄 delegating a sub-task..."
     if tool_name == "code_task_session":
@@ -243,9 +243,11 @@ def format_tool_activity(tool_name: str, args: dict[str, Any]) -> str | None:
         name = Path(str(args.get("path", "file") or "file")).name
         return f"👀 checking {name}..."
     if tool_name == "post_mastodon_status":
-        return "🐘 posting to timeline..."
+        return "🐘 sending a trumpet from the hive..."
     if tool_name == "read_mastodon_timeline":
-        return "🐘 reading social timeline..."
+        return "🐘 scanning the local timeline..."
+    if tool_name == "post_zweet_status":
+        return "🐦 sending a chirp from the hive..."
     if tool_name == "index_text":
         return f"📚 indexing {args.get('source_label', 'document')} into memory..."
     if tool_name == "search_collection":

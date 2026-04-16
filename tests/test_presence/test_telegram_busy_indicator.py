@@ -14,6 +14,10 @@ def test_busy_words_are_gerunds():
     assert all(w.endswith("ing") and " " not in w for w in _BUSY_ING_WORDS)
 
 
+def test_busy_word_count_is_129():
+    assert len(_BUSY_ING_WORDS) == 129
+
+
 def test_busy_word_rotation_schedule():
     """Gerund changes every N spinner edits (see run_busy_indicator)."""
     assert _BUSY_WORD_ROTATE_EVERY == 20

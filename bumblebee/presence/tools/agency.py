@@ -67,7 +67,8 @@ async def end_turn(mood: str = "", thought: str = "") -> str:
     "say",
     "Send a message to the user right now, mid-turn. The turn continues after. "
     "Use when you have something to share before you're done working — don't "
-    "bundle everything into one response. Talk while you work, like a person texting.",
+    "bundle everything into one response. Talk while you work, like a person texting. "
+    "CRITICAL: Do NOT write 'end_turn()' inside the message text itself. To end the turn, you must make a separate call to the end_turn tool.",
 )
 async def say(message: str) -> str:
     ctx = get_tool_runtime()

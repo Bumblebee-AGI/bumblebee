@@ -100,71 +100,138 @@ _BUSY_BRAILLE = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 _BUSY_EDIT_INTERVAL_SEC = 0.9
 # Pick a new random gerund after this many spinner edits (braille-only between rotations).
 _BUSY_WORD_ROTATE_EVERY = 20
-_BUSY_PIN_NOTICE_GRACE_SEC = 30.0
 
-# Claude Code–style spinner verbs (gerunds); braille animates between rotations.
+# Bee-themed spinner verbs (gerunds); braille animates between rotations.
 _BUSY_ING_WORDS: tuple[str, ...] = (
-    "accomplishing",
-    "actioning",
-    "actualizing",
-    "baking",
-    "brewing",
-    "calculating",
-    "cerebrating",
-    "churning",
-    "clauding",
-    "coalescing",
-    "cogitating",
-    "computing",
-    "conjuring",
-    "considering",
-    "cooking",
-    "crafting",
+    "absorbing",
+    "adapting",
+    "alighting",
+    "attracting",
+    "awakening",
+    "balancing",
+    "beekeeping",
+    "bending",
+    "biting",
+    "blooming",
+    "blossoming",
+    "blowing",
+    "breathing",
+    "breeding",
+    "budding",
+    "building",
+    "burrowing",
+    "buzzing",
+    "capping",
+    "carrying",
+    "cementing",
+    "chasing",
+    "chewing",
+    "circulating",
+    "cleaning",
+    "climbing",
+    "clinging",
+    "closing",
+    "clustering",
+    "collecting",
+    "colonizing",
+    "coloring",
+    "communicating",
+    "competing",
+    "concentrating",
+    "connecting",
+    "cooling",
+    "cooperating",
+    "crawling",
     "creating",
-    "crunching",
-    "deliberating",
-    "determining",
-    "doing",
-    "effecting",
-    "finagling",
-    "forging",
+    "crossing",
+    "dancing",
+    "decaying",
+    "defending",
+    "dehydrating",
+    "descending",
+    "discovering",
+    "distributing",
+    "diving",
+    "drinking",
+    "droning",
+    "drooping",
+    "dwelling",
+    "emerging",
+    "enchanting",
+    "enduring",
+    "enriching",
+    "evolving",
+    "excavating",
+    "expanding",
+    "exploring",
+    "extracting",
+    "fading",
+    "fanning",
+    "feeding",
+    "fertilizing",
+    "finding",
+    "flapping",
+    "flourishing",
+    "flowering",
+    "flowing",
+    "flying",
+    "following",
+    "foraging",
     "forming",
-    "generating",
+    "fruiting",
+    "gathering",
+    "germinating",
+    "gleaning",
+    "glueing",
+    "glowing",
+    "growing",
+    "guarding",
+    "guiding",
+    "handling",
+    "harvesting",
     "hatching",
-    "herding",
-    "honking",
-    "hustling",
-    "ideating",
-    "inferring",
+    "healing",
+    "heating",
+    "hibernating",
+    "hiding",
+    "hiving",
+    "hovering",
+    "humming",
+    "hunting",
+    "hybridizing",
+    "identifying",
+    "inhaling",
+    "inspecting",
+    "interacting",
+    "inviting",
+    "joining",
+    "landing",
+    "leading",
+    "leafing",
+    "learning",
+    "licking",
+    "lifting",
+    "lingering",
+    "living",
+    "locating",
+    "making",
+    "managing",
     "manifesting",
-    "marinating",
-    "moseying",
-    "mulling",
-    "mustering",
-    "musing",
-    "noodling",
-    "percolating",
-    "pondering",
-    "processing",
-    "puttering",
-    "reticulating",
-    "ruminating",
-    "schlepping",
-    "shucking",
-    "simmering",
-    "smooshing",
-    "spinning",
-    "stewing",
-    "synthesizing",
-    "thinking",
-    "transmuting",
-    "vibing",
-    "working",
-    # Reported in the wild / extras
-    "catapulting",
-    "sauteing",
-    "gusting",
-    "seasoning",
+    "marking",
+    "mellifying",
+    "migrating",
+    "molting",
+    "mounting",
+    "navigating",
+    "nesting",
+    "nourishing",
+    "nursing",
+    "opening",
+    "orienting",
+    "overwintering",
+    "packing",
+    "partaking",
+    "patrolling",
 )
 
 
@@ -282,10 +349,6 @@ class TelegramPlatform(Platform):
         self._remote_sessions_lock = asyncio.Lock()
         self._message_ring: list[dict[str, Any]] = []
         self._message_ring_cap = 200
-        # chat_id -> busy indicator message_id while pinned (delete "X pinned a message" service line)
-        self._busy_pin_notice_cleanup: dict[int, int] = {}
-        # Late Telegram delivery race: keep just-unpinned busy message ids briefly.
-        self._busy_recent_pin_notice_cleanup: dict[int, tuple[int, float]] = {}
         # Chats that opted out via /busy off (persisted in entity_state).
         self._busy_disabled_chats: set[int] = set()
         self._active_summon: dict[str, Any] | None = None
@@ -334,10 +397,7 @@ class TelegramPlatform(Platform):
         self.app.add_handler(CommandHandler("session_start", self._on_session_start), group=_g)
         self.app.add_handler(CommandHandler("session_status", self._on_session_status), group=_g)
         self.app.add_handler(CommandHandler("session_stop", self._on_session_stop), group=_g)
-        self.app.add_handler(
-            MessageHandler(filters.StatusUpdate.PINNED_MESSAGE, self._on_pinned_message_notice),
-            group=_g,
-        )
+        self.app.add_handler(CommandHandler("testemoji", self._on_testemoji_command), group=_g)
         self.app.add_handler(MessageHandler(filters.PHOTO, self._on_photo), group=_g)
         self.app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self._on_voice), group=_g)
         self.app.add_handler(MessageHandler(filters.Document.ALL, self._on_doc_image), group=_g)
@@ -776,6 +836,51 @@ class TelegramPlatform(Platform):
             "chat_type": str(getattr(msg.chat, "type", "") or "").lower(),
             "telegram_message_id": int(msg.message_id),
         }
+
+    @staticmethod
+    def _inject_custom_emojis_into_text(msg: Any, raw_text: str | None = None) -> str:
+        text = raw_text or getattr(msg, "text", None) or getattr(msg, "caption", None) or ""
+        entities = list(getattr(msg, "entities", None) or [])
+        entities += list(getattr(msg, "caption_entities", None) or [])
+        
+        custom_emojis = [e for e in entities if getattr(e, "type", "") == "custom_emoji"]
+        if not custom_emojis or not text:
+            return text
+            
+        try:
+            custom_emojis.sort(key=lambda x: getattr(x, "offset", 0), reverse=True)
+            text_utf16 = text.encode("utf-16-le")
+            
+            injected_any = False
+            for ent in custom_emojis:
+                off = int(getattr(ent, "offset", 0) or 0) * 2
+                ln = int(getattr(ent, "length", 0) or 0) * 2
+                eid = str(getattr(ent, "custom_emoji_id", "") or "")
+                
+                if not eid:
+                    continue
+                    
+                prefix = text_utf16[:off]
+                emoji_utf16 = text_utf16[off:off+ln]
+                suffix = text_utf16[off+ln:]
+                
+                emoji_str = emoji_utf16.decode("utf-16-le")
+                replacement = f'<tg-emoji emoji-id="{eid}">{emoji_str}</tg-emoji>'
+                
+                text_utf16 = prefix + replacement.encode("utf-16-le") + suffix
+                injected_any = True
+                
+            final_text = text_utf16.decode("utf-16-le")
+            if injected_any:
+                final_text += (
+                    "\n\n[System Note: The user's message contained custom Telegram emojis. "
+                    "You can output these exact HTML tags (e.g. <tg-emoji emoji-id=\"...\">...</tg-emoji>) "
+                    "in your reply to echo or use them!]"
+                )
+            return final_text
+        except Exception as e:
+            log.warning("telegram_emoji_inject_failed", error=str(e))
+            return text
 
     def _bot_identity(self) -> tuple[int | None, str]:
         """(bot_id, @username-lower) best effort; safe before full app init."""
@@ -1314,6 +1419,39 @@ class TelegramPlatform(Platform):
         _ = context
         await self._reply_html(update, format_ping_html(self._app_version))
 
+    async def _on_testemoji_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._take_update_if_fresh(update):
+            return
+        if not await self._check_allowed(update, notify=True):
+            return
+        msg = update.effective_message
+        if not msg:
+            return
+            
+        args = [str(a).strip() for a in (context.args or []) if str(a).strip()]
+        if not args:
+            await self._reply_html(update, "Please provide a custom emoji ID. Example: <code>/testemoji 5368324170671202286</code>")
+            return
+            
+        emoji_id = args[0]
+        from telegram import MessageEntity
+        
+        try:
+            await self.app.bot.send_message(
+                chat_id=msg.chat_id,
+                text="🐝",
+                entities=[
+                    MessageEntity(
+                        type="custom_emoji",
+                        offset=0,
+                        length=2,
+                        custom_emoji_id=emoji_id
+                    )
+                ]
+            )
+        except Exception as e:
+            await self._reply_html(update, f"Failed to send custom emoji. Does the bot have Premium/access? Error: {e}")
+
     async def _on_version_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._take_update_if_fresh(update):
             return
@@ -1719,7 +1857,7 @@ class TelegramPlatform(Platform):
         u = update.effective_user
         channel = str(msg.chat_id)
         sender_name = _telegram_display_name(u)
-        text = msg.text or ""
+        text = self._inject_custom_emojis_into_text(msg)
         if not self._should_respond_to_group_message(msg, text):
             return
 
@@ -1762,7 +1900,7 @@ class TelegramPlatform(Platform):
         if not await self._check_allowed(update, notify=True):
             return
         msg = update.message
-        caption = (msg.caption or "").strip()
+        caption = self._inject_custom_emojis_into_text(msg, raw_text=(msg.caption or "").strip())
         if not self._should_respond_to_group_message(msg, caption):
             return
         self._remember_last_chat(update)
@@ -1795,7 +1933,7 @@ class TelegramPlatform(Platform):
         if not await self._check_allowed(update, notify=True):
             return
         msg = update.message
-        cap = (msg.caption or "").strip()
+        cap = self._inject_custom_emojis_into_text(msg, raw_text=(msg.caption or "").strip())
         if not self._should_respond_to_group_message(msg, cap):
             return
         self._remember_last_chat(update)
@@ -1849,7 +1987,8 @@ class TelegramPlatform(Platform):
             if len(data) > 8_000_000:
                 return
             b64 = base64.standard_b64encode(bytes(data)).decode("ascii")
-            cap = (msg.caption or "").strip() or "What's in this image?"
+            raw_cap = (msg.caption or "").strip()
+            cap = self._inject_custom_emojis_into_text(msg, raw_text=raw_cap) or "What's in this image?"
             u = update.effective_user
             inp = Input(
                 text=cap,
@@ -1889,37 +2028,6 @@ class TelegramPlatform(Platform):
         except Exception as e:
             log.debug("send_typing_failed", error=str(e))
 
-    async def _on_pinned_message_notice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Delete the system 'pinned a message' line when it refers to our busy-indicator pin.
-
-        Telegram may attribute the service line to the bot or the user (e.g. private vs group);
-        we only require that ``pinned_message`` matches the message we pinned for the busy line.
-        """
-        if not await self._take_update_if_fresh(update):
-            return
-        msg = update.message
-        if not msg or not msg.pinned_message:
-            return
-        chat_id = int(msg.chat_id)
-        expected_mid = self._busy_pin_notice_cleanup.get(chat_id)
-        if expected_mid is None:
-            recent = self._busy_recent_pin_notice_cleanup.get(chat_id)
-            if recent is not None:
-                mid, expires_at = recent
-                if time.monotonic() <= float(expires_at):
-                    expected_mid = int(mid)
-                else:
-                    self._busy_recent_pin_notice_cleanup.pop(chat_id, None)
-        if expected_mid is None:
-            return
-        if int(msg.pinned_message.message_id) != int(expected_mid):
-            return
-        try:
-            await context.bot.delete_message(chat_id=chat_id, message_id=int(msg.message_id))
-            self._busy_recent_pin_notice_cleanup.pop(chat_id, None)
-        except TelegramError as e:
-            log.debug("busy_pin_notice_delete_failed", error=str(e))
-
     async def run_busy_indicator(
         self,
         chat_id: int,
@@ -1949,16 +2057,6 @@ class TelegramPlatform(Platform):
             log.debug("busy_indicator_send_failed", error=str(e))
             return
 
-        self._busy_pin_notice_cleanup[chat_id] = mid
-        try:
-            await self.app.bot.pin_chat_message(
-                chat_id=chat_id,
-                message_id=mid,
-                disable_notification=True,
-            )
-        except TelegramError as e:
-            log.debug("busy_indicator_pin_failed", error=str(e))
-
         try:
             while not stop.is_set():
                 try:
@@ -1983,31 +2081,28 @@ class TelegramPlatform(Platform):
                     )
                 except RetryAfter as e:
                     try:
-                        await asyncio.sleep(float(e.retry_after) + 0.05)
+                        await asyncio.wait_for(stop.wait(), timeout=float(e.retry_after) + 0.05)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
                     except (TypeError, ValueError):
-                        await asyncio.sleep(1.0)
+                        try:
+                            await asyncio.wait_for(stop.wait(), timeout=1.0)
+                            break
+                        except asyncio.TimeoutError:
+                            pass
                 except TelegramError as e:
                     log.debug("busy_indicator_edit_failed", error=str(e))
                     break
         finally:
-            last_mid = self._busy_pin_notice_cleanup.pop(chat_id, None)
-            if last_mid is not None:
-                self._busy_recent_pin_notice_cleanup[chat_id] = (
-                    int(last_mid),
-                    float(time.monotonic() + _BUSY_PIN_NOTICE_GRACE_SEC),
-                )
             if mid is not None:
-                try:
-                    await self.app.bot.unpin_chat_message(
-                        chat_id=chat_id,
-                        message_id=mid,
-                    )
-                except TelegramError:
-                    pass
-                try:
-                    await self.app.bot.delete_message(chat_id=chat_id, message_id=mid)
-                except TelegramError as e:
-                    log.debug("busy_indicator_delete_failed", error=str(e))
+                async def _cleanup() -> None:
+                    try:
+                        await self.app.bot.delete_message(chat_id=chat_id, message_id=mid)
+                    except TelegramError as e:
+                        log.debug("busy_indicator_delete_failed", error=str(e))
+                # Delete the message in the background so run_busy_indicator can return immediately
+                asyncio.create_task(_cleanup())
 
     async def send_attachment_bytes(
         self,

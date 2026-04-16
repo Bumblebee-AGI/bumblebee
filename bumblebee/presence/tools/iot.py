@@ -20,7 +20,7 @@ def _get_ha_config() -> tuple[str, str]:
 async def get_ha_state(entity_id: str) -> str:
     url, token = _get_ha_config()
     if not url or not token:
-        return json.dumps({"error": "Home Assistant URL or Token not configured in environment."})
+        return json.dumps({"error": "Missing environment variables: HOME_ASSISTANT_URL and HOME_ASSISTANT_TOKEN are required."})
     
     eid = (entity_id or "").strip()
     if not eid:
@@ -57,7 +57,7 @@ async def get_ha_state(entity_id: str) -> str:
 async def set_ha_state(domain: str, service: str, entity_id: str, service_data: str = "") -> str:
     url, token = _get_ha_config()
     if not url or not token:
-        return json.dumps({"error": "Home Assistant URL or Token not configured in environment."})
+        return json.dumps({"error": "Missing environment variables: HOME_ASSISTANT_URL and HOME_ASSISTANT_TOKEN are required."})
     
     dom = (domain or "").strip()
     srv = (service or "").strip()

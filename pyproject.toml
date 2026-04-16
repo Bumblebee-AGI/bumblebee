@@ -21,6 +21,7 @@ dependencies = [
     "dateparser>=1.2",
     "discord-py>=2.3",
     "python-telegram-bot>=21.0",
+    "tweepy[async]>=4.14",
 ]
 
 [project.optional-dependencies]
@@ -56,6 +57,7 @@ full = [
     "youtube-transcript-api>=0.6",
     "playwright>=1.40",
     "fal-client>=0.4",
+    "tweepy[async]>=4.14",
 ]
 dev = [
     "pytest>=8.0",

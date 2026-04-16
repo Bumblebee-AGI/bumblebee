@@ -48,6 +48,9 @@ _INTERNAL_PROACTIVE_MARKERS = (
     re.compile(r"\[\s*bb:proactive_outbound\s*\]", re.IGNORECASE),
 )
 
+# LLM sometimes dumps tool names into the say text when using tool forcing
+_TOOL_LEAK = re.compile(r"<?end_turn\(\)>?|\[end_turn\]", re.IGNORECASE)
+
 
 def strip_html_layout_leaks(text: str) -> str:
     """Remove common HTML tags from user-visible chat (plain-text platforms, no parse_mode)."""
@@ -115,6 +118,7 @@ def strip_stage_directions(text: str) -> str:
             break
         t = t[m.end() :].lstrip()
     t = _TRAILING_TOOL_META_DONE.sub("", t).strip()
+    t = _TOOL_LEAK.sub("", t).strip()
     return gemma.strip_leaked_control_tokens(t)
 
 

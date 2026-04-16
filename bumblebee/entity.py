@@ -830,6 +830,7 @@ class Entity:
         if self._tool_enabled("social", True):
             self.tools.register_decorated(social_tools.post_mastodon_status)
             self.tools.register_decorated(social_tools.read_mastodon_timeline)
+            self.tools.register_decorated(social_tools.post_zweet_status)
         if self._tool_enabled("rag", True):
             self.tools.register_decorated(rag_tools.index_text)
             self.tools.register_decorated(rag_tools.search_collection)
